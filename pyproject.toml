@@ -49,8 +49,8 @@ terno = "terno_agent.cli:main"
 terno-agent = "terno_agent.cli:main"
 
 [project.urls]
-Homepage = "https://github.com/sandeepakode/terno-agent"
-Issues = "https://github.com/sandeepakode/terno-agent/issues"
+Homepage = "https://github.com/terno-ai/terno-agent"
+Issues = "https://github.com/terno-ai/terno-agent/issues"
 
 [build-system]
 requires = ["hatchling"]
