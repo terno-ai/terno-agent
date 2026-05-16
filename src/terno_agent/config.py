@@ -12,37 +12,41 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass, field
+from functools import cache
 from pathlib import Path
 
-from dotenv import load_dotenv
+from dotenv import find_dotenv, load_dotenv
 
 from terno_agent.core.exceptions import ConfigError
 
-_DOTENV_LOADED = False
 
-
-def load_env(path: str | os.PathLike[str] | None = None, *, override: bool = False) -> Path | None:
-    """Load a .env file once per process. Returns the path that was loaded.
-
-    Searches the current working directory and its parents if ``path`` is not
-    given. Calling again is a no-op unless ``override`` or an explicit path is
-    passed.
-    """
-    global _DOTENV_LOADED
-    if path is not None:
-        load_dotenv(path, override=override)
-        _DOTENV_LOADED = True
-        return Path(path)
-    if _DOTENV_LOADED and not override:
-        return None
-
-    from dotenv import find_dotenv
-
+@cache
+def _default_env_path() -> Path | None:
+    """Search CWD and parents for a ``.env`` file (cached per process)."""
     found = find_dotenv(usecwd=True)
-    if found:
-        load_dotenv(found, override=override)
-    _DOTENV_LOADED = True
     return Path(found) if found else None
+
+
+def load_env(
+    path: str | os.PathLike[str] | None = None,
+    *,
+    override: bool = False,
+) -> Path | None:
+    """Load environment variables from a ``.env`` file.
+
+    If ``path`` is omitted, search CWD and its parents. Returns the path that
+    was loaded, or ``None`` if no file was found.
+
+    Calling this repeatedly is safe: ``python-dotenv`` does not overwrite
+    existing environment variables unless ``override=True`` is passed, and the
+    parent-directory search is cached.
+    """
+    resolved = Path(path) if path is not None else _default_env_path()
+    if resolved is None or not resolved.exists():
+        return None
+    load_dotenv(resolved, override=override)
+    return resolved
+
 
 DEFAULT_MODELS = {
     "anthropic": "claude-opus-4-7",

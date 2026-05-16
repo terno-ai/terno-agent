@@ -1,4 +1,4 @@
-# terno-agent
+# Terno Agent
 
 A multi-agent CLI that answers questions about your database. It plans,
 generates and executes SQL, and can write Python and run it in a sandbox
