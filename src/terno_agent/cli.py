@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 import json
 import sys
 from importlib.metadata import PackageNotFoundError, distribution
@@ -26,6 +27,7 @@ from terno_agent.core.events import (
     TurnEnd,
 )
 from terno_agent.core.exceptions import TernoError
+from terno_agent.knowledge.cli import run_knowledge_extraction
 
 _PACKAGE_NAME = "terno-agent"
 
@@ -102,6 +104,12 @@ def _build_parser() -> argparse.ArgumentParser:
     cfg = sub.add_parser("config", help="Show effective configuration.")
     cfg.set_defaults(func=_cmd_config)
 
+    know = sub.add_parser(
+        "knowledge",
+        help="Run the knowledge-extraction pipeline (org context, schema crawl, annotation, validation).",
+    )
+    know.set_defaults(func=_cmd_knowledge)
+
     return p
 
 
@@ -128,6 +136,14 @@ def _cmd_chat(args: argparse.Namespace) -> int:
             "For published installs, use [bold]terno ask \"...\"[/] instead."
         )
         return 2
+
+    if _ask_yes_no("Run knowledge extraction first?", default=False):
+        try:
+            asyncio.run(run_knowledge_extraction(console=console))
+        except TernoError as exc:
+            console.print(f"[bold red]knowledge extraction failed:[/] {exc}")
+        console.print()
+
     renderer = None if args.quiet else AgentRenderer(console)
     agent = Orchestrator.from_env(on_event=renderer)
     console.print("[bold]terno-agent REPL[/] — type 'exit' or Ctrl-D to quit.\n")
@@ -159,6 +175,26 @@ def _cmd_chat(args: argparse.Namespace) -> int:
 def _cmd_config(_args: argparse.Namespace) -> int:
     print(Config.from_env().display())
     return 0
+
+
+def _cmd_knowledge(_args: argparse.Namespace) -> int:
+    console = Console()
+    console.print("[bold]Knowledge extraction[/] — four phases, prompts inline.\n")
+    asyncio.run(run_knowledge_extraction(console=console))
+    return 0
+
+
+def _ask_yes_no(question: str, *, default: bool = False) -> bool:
+    if not sys.stdin.isatty():
+        return default
+    suffix = " [Y/n]" if default else " [y/N]"
+    try:
+        line = input(question + suffix + " ").strip().lower()
+    except EOFError:
+        return default
+    if not line:
+        return default
+    return line in {"y", "yes"}
 
 
 # --------------------------------------------------------------------------- #
