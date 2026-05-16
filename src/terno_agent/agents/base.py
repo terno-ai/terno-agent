@@ -71,13 +71,10 @@ class BaseAgent:
         for i in range(1, self.max_iterations + 1):
             self._emit(IterationStart(agent=self.name, iteration=i))
 
-            def _on_text(text: str) -> None:
-                self._emit(TextDelta(agent=self.name, text=text))
-
             response = self.llm.complete(
                 messages,
                 tools=[t.schema for t in self.tools.values()],
-                on_text_delta=_on_text,
+                on_text_delta=self._emit_text_delta,
             )
             assistant = response.message
             messages.append(assistant)
@@ -118,6 +115,9 @@ class BaseAgent:
             self.on_event(event)
         except Exception:
             pass
+
+    def _emit_text_delta(self, text: str) -> None:
+        self._emit(TextDelta(agent=self.name, text=text))
 
 
 __all__ = ["AgentRun", "BaseAgent", "EventHook", "Trace"]
