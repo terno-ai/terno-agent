@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from importlib.metadata import PackageNotFoundError, distribution
 from typing import Sequence
 
 from rich.console import Console
@@ -24,6 +25,31 @@ from terno_agent.core.events import (
     TurnEnd,
 )
 from terno_agent.core.exceptions import TernoError
+
+_PACKAGE_NAME = "terno-agent"
+
+
+def _is_editable_install() -> bool:
+    """Return True for development installs (editable or run-from-source).
+
+    Detection follows PEP 610: a non-editable install from a wheel/PyPI either
+    has no ``direct_url.json`` or has ``dir_info.editable = false``. An
+    editable install always sets ``dir_info.editable = true``. Running from
+    source without ``pip install`` will raise ``PackageNotFoundError``, which
+    we also treat as development mode.
+    """
+    try:
+        dist = distribution(_PACKAGE_NAME)
+    except PackageNotFoundError:
+        return True
+    raw = dist.read_text("direct_url.json")
+    if not raw:
+        return False
+    try:
+        info = json.loads(raw)
+    except json.JSONDecodeError:
+        return False
+    return bool((info.get("dir_info") or {}).get("editable"))
 
 
 _AGENT_COLORS = {
@@ -93,6 +119,14 @@ def _cmd_ask(args: argparse.Namespace) -> int:
 
 def _cmd_chat(args: argparse.Namespace) -> int:
     console = Console()
+    if not _is_editable_install():
+        Console(stderr=True).print(
+            "[bold red]error:[/] `terno chat` is only available in a development install.\n"
+            "Install from source to use the REPL:\n"
+            "  [bold]pip install -e .[/]   or   [bold]uv tool install --editable .[/]\n"
+            "For published installs, use [bold]terno ask \"...\"[/] instead."
+        )
+        return 2
     renderer = None if args.quiet else AgentRenderer(console)
     agent = Orchestrator.from_env(on_event=renderer)
     console.print("[bold]terno-agent REPL[/] — type 'exit' or Ctrl-D to quit.\n")
