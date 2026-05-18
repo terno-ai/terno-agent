@@ -6,7 +6,6 @@ import argparse
 import asyncio
 import json
 import sys
-from importlib.metadata import PackageNotFoundError, distribution
 from typing import Sequence
 
 from rich.console import Console
@@ -28,32 +27,6 @@ from terno_agent.core.events import (
 )
 from terno_agent.core.exceptions import TernoError
 from terno_agent.knowledge.cli import run_knowledge_extraction
-
-_PACKAGE_NAME = "terno-agent"
-
-
-def _is_editable_install() -> bool:
-    """Return True for development installs (editable or run-from-source).
-
-    Detection follows PEP 610: a non-editable install from a wheel/PyPI either
-    has no ``direct_url.json`` or has ``dir_info.editable = false``. An
-    editable install always sets ``dir_info.editable = true``. Running from
-    source without ``pip install`` will raise ``PackageNotFoundError``, which
-    we also treat as development mode.
-    """
-    try:
-        dist = distribution(_PACKAGE_NAME)
-    except PackageNotFoundError:
-        return True
-    raw = dist.read_text("direct_url.json")
-    if not raw:
-        return False
-    try:
-        info = json.loads(raw)
-    except json.JSONDecodeError:
-        return False
-    return bool((info.get("dir_info") or {}).get("editable"))
-
 
 _AGENT_COLORS = {
     "orchestrator": "bold magenta",
@@ -104,11 +77,13 @@ def _build_parser() -> argparse.ArgumentParser:
     cfg = sub.add_parser("config", help="Show effective configuration.")
     cfg.set_defaults(func=_cmd_config)
 
-    know = sub.add_parser(
-        "knowledge",
-        help="Run the knowledge-extraction pipeline (org context, schema crawl, annotation, validation).",
+    research = sub.add_parser(
+        "deep_research",
+        aliases=["knowledge"],
+        help="Run the deep-research / knowledge-extraction pipeline "
+        "(org context, schema crawl, annotation, validation).",
     )
-    know.set_defaults(func=_cmd_knowledge)
+    research.set_defaults(func=_cmd_deep_research)
 
     return p
 
@@ -128,25 +103,12 @@ def _cmd_ask(args: argparse.Namespace) -> int:
 
 def _cmd_chat(args: argparse.Namespace) -> int:
     console = Console()
-    if not _is_editable_install():
-        Console(stderr=True).print(
-            "[bold red]error:[/] `terno chat` is only available in a development install.\n"
-            "Install from source to use the REPL:\n"
-            "  [bold]pip install -e .[/]   or   [bold]uv tool install --editable .[/]\n"
-            "For published installs, use [bold]terno ask \"...\"[/] instead."
-        )
-        return 2
-
-    if _ask_yes_no("Run knowledge extraction first?", default=False):
-        try:
-            asyncio.run(run_knowledge_extraction(console=console))
-        except TernoError as exc:
-            console.print(f"[bold red]knowledge extraction failed:[/] {exc}")
-        console.print()
-
     renderer = None if args.quiet else AgentRenderer(console)
     agent = Orchestrator.from_env(on_event=renderer)
-    console.print("[bold]terno-agent REPL[/] — type 'exit' or Ctrl-D to quit.\n")
+    console.print(
+        "[bold]terno-agent REPL[/] — type 'exit' or Ctrl-D to quit. "
+        "Use [bold]/deep_research[/] to launch knowledge extraction.\n"
+    )
     while True:
         try:
             line = input("you> ").strip()
@@ -155,8 +117,13 @@ def _cmd_chat(args: argparse.Namespace) -> int:
             return 0
         if not line:
             continue
-        if line.lower() in {"exit", "quit", ":q"}:
+        lowered = line.lower()
+        if lowered in {"exit", "quit", ":q"}:
             return 0
+        if lowered in {"/deep_research", "/research", "/knowledge"}:
+            _run_deep_research(console)
+            console.print()
+            continue
         try:
             result = agent.ask(line)
         except TernoError as exc:
@@ -177,24 +144,18 @@ def _cmd_config(_args: argparse.Namespace) -> int:
     return 0
 
 
-def _cmd_knowledge(_args: argparse.Namespace) -> int:
+def _cmd_deep_research(_args: argparse.Namespace) -> int:
     console = Console()
-    console.print("[bold]Knowledge extraction[/] — four phases, prompts inline.\n")
-    asyncio.run(run_knowledge_extraction(console=console))
+    console.print("[bold]Deep research[/] — four phases, prompts inline.\n")
+    _run_deep_research(console)
     return 0
 
 
-def _ask_yes_no(question: str, *, default: bool = False) -> bool:
-    if not sys.stdin.isatty():
-        return default
-    suffix = " [Y/n]" if default else " [y/N]"
+def _run_deep_research(console: Console) -> None:
     try:
-        line = input(question + suffix + " ").strip().lower()
-    except EOFError:
-        return default
-    if not line:
-        return default
-    return line in {"y", "yes"}
+        asyncio.run(run_knowledge_extraction(console=console))
+    except TernoError as exc:
+        console.print(f"[bold red]deep research failed:[/] {exc}")
 
 
 # --------------------------------------------------------------------------- #

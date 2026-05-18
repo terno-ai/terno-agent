@@ -18,7 +18,11 @@ generates and executes SQL, and can write Python and run it in a sandbox
 - **Streaming + typed events**: assistant text streams live; tool calls and
   results render with syntax-highlighted panels and result tables.
 - **CLI + library**: `terno ask "..."` from the shell, or
-  `from terno_agent import Agent` in Python.
+  `from terno import Agent` in Python.
+- **Deep research**: a four-phase pipeline (org context, schema crawl,
+  semantic annotation, validation) builds a queryable knowledge base
+  from your database — run it as `terno deep_research` or from inside
+  `terno chat` via `/deep_research`.
 
 ## Architecture
 
@@ -152,8 +156,12 @@ mysql+pymysql://user:pass@host:3306/db
 # one-shot question
 terno ask "what were the top 10 customers by revenue last quarter?"
 
-# interactive REPL
+# interactive REPL — accepts `/deep_research` to launch the
+# knowledge-extraction pipeline mid-session
 terno chat
+
+# run the four-phase deep-research pipeline on its own
+terno deep_research
 
 # suppress streaming/activity, print only the final answer
 terno -q ask "how many tracks are in the database?"
@@ -181,36 +189,45 @@ uv run terno ask "..."
 
 ## Use as a library
 
-```python
-from terno_agent import Agent
+The simplest form — just pass an API key (everything else falls back
+to env vars / `.env`):
 
-# Reads .env + env vars
-agent = Agent.from_env()
-result = agent.ask("how many active users signed up this week?")
-print(result.answer)
+```python
+from terno import Agent
+
+agent = Agent(api_key="sk-ant-...")
+response = agent.run("Analyze this SQL: SELECT * FROM users WHERE created_at > now() - interval '7 days'")
+print(response.answer)
 ```
 
-Programmatic config (no env vars required):
+Pass settings programmatically — no env vars required:
 
 ```python
-from terno_agent import Agent
-from terno_agent.config import Config
+from terno import Agent
 
-cfg = Config(
-    llm_provider="anthropic",
-    llm_model="claude-opus-4-7",
-    llm_api_key="sk-ant-...",
+agent = Agent(
+    api_key="sk-ant-...",
     database_url="postgresql+psycopg://u:p@host/db",
-    sandbox="local",          # "docker" | "local" | "none"
+    provider="anthropic",           # "anthropic" | "openai"
+    model="claude-opus-4-7",
+    sandbox="local",                # "docker" | "local" | "none"
 )
-agent = Agent.from_config(cfg)
-print(agent.ask("top 5 tables by row count").answer)
+print(agent.run("top 5 tables by row count").answer)
+```
+
+Read everything from env / `.env`:
+
+```python
+from terno import Agent
+
+agent = Agent.from_env()
+print(agent.run("how many active users signed up this week?").answer)
 ```
 
 Stream events into your own UI:
 
 ```python
-from terno_agent import Agent
+from terno import Agent
 from terno_agent.core.events import TextDelta, ToolCallEvent, ToolResultEvent
 
 def on_event(e):
@@ -221,9 +238,22 @@ def on_event(e):
     elif isinstance(e, ToolResultEvent):
         print(f"[result] {e.result.content[:200]}")
 
-agent = Agent.from_env(on_event=on_event)
-agent.ask("describe the users table and count rows")
+agent = Agent(api_key="sk-ant-...", on_event=on_event)
+agent.run("describe the users table and count rows")
 ```
+
+Run deep research from code (same pipeline as `terno deep_research`):
+
+```python
+from terno import Agent
+
+agent = Agent(api_key="sk-ant-...", database_url="sqlite:///./demo.db")
+report = agent.deep_research()
+print("ok" if report.ok else "failed")
+```
+
+> `from terno_agent import Agent` is equivalent — `terno` is just a
+> short re-export of the same SDK.
 
 ## Project layout
 
