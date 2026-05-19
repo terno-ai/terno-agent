@@ -33,8 +33,8 @@ class KnowledgeExtractionAgent:
     def __init__(
         self,
         *,
-        db: "Database | None" = None,
-        llm: "LLMClient | None" = None,
+        db: Database | None = None,
+        llm: LLMClient | None = None,
         store: KnowledgeStore | None = None,
         channel: PromptChannel | None = None,
         phases: list[Phase] | None = None,

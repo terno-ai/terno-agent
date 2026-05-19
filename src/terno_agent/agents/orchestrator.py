@@ -117,17 +117,20 @@ class Orchestrator(BaseAgent):
 
         system = ORCHESTRATOR_PROMPT
         if sandbox is None:
-            system += "\n\nNote: the coder agent is disabled in this session — answer using SQL only."
+            system += (
+                "\n\nNote: the coder agent is disabled in this session "
+                "— answer using SQL only."
+            )
         super().__init__(llm, system, tools, on_event=on_event)
 
     # ----- Construction helpers -------------------------------------------------
 
     @classmethod
-    def from_env(cls, on_event=None) -> "Orchestrator":
+    def from_env(cls, on_event=None) -> Orchestrator:
         return cls.from_config(Config.from_env(), on_event=on_event)
 
     @classmethod
-    def from_config(cls, config: Config, *, on_event=None) -> "Orchestrator":
+    def from_config(cls, config: Config, *, on_event=None) -> Orchestrator:
         if not config.database_url:
             raise ConfigError("TERNO_DATABASE_URL is required.")
         llm = create_llm_client(

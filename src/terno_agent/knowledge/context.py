@@ -29,8 +29,8 @@ class PhaseContext:
     phases can pick them up without re-querying the store.
     """
 
-    db: "Database | None"
-    llm: "LLMClient | None"
+    db: Database | None
+    llm: LLMClient | None
     store: KnowledgeStore
     channel: PromptChannel
     org_prompt_ready: asyncio.Event = field(default_factory=asyncio.Event)
@@ -46,11 +46,11 @@ class TaskContext:
     task_name: str
 
     @property
-    def db(self) -> "Database | None":
+    def db(self) -> Database | None:
         return self.phase.db
 
     @property
-    def llm(self) -> "LLMClient | None":
+    def llm(self) -> LLMClient | None:
         return self.phase.llm
 
     @property

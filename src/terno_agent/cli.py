@@ -6,7 +6,7 @@ import argparse
 import asyncio
 import json
 import sys
-from typing import Sequence
+from collections.abc import Sequence
 
 from rich.console import Console
 from rich.panel import Panel

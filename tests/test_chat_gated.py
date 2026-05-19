@@ -20,11 +20,11 @@ def test_chat_starts_without_editable_gate(monkeypatch):
     reached construction (we don't actually want to talk to an LLM).
     """
 
-    class _Boom(RuntimeError):
+    class _BoomError(RuntimeError):
         pass
 
     def _from_env(**_kwargs):
-        raise _Boom("reached construction")
+        raise _BoomError("reached construction")
 
     monkeypatch.setattr(
         cli_mod.Orchestrator, "from_env",
@@ -32,5 +32,5 @@ def test_chat_starts_without_editable_gate(monkeypatch):
     )
 
     args = argparse.Namespace(quiet=True)
-    with pytest.raises(_Boom):
+    with pytest.raises(_BoomError):
         cli_mod._cmd_chat(args)

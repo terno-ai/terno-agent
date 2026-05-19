@@ -86,12 +86,12 @@ class Agent:
     # ----- Alternate constructors -------------------------------------------- #
 
     @classmethod
-    def from_env(cls, *, on_event: EventHook | None = None) -> "Agent":
+    def from_env(cls, *, on_event: EventHook | None = None) -> Agent:
         """Build an `Agent` from environment variables and `.env`."""
         return cls(config=Config.from_env(), on_event=on_event)
 
     @classmethod
-    def from_config(cls, config: Config, *, on_event: EventHook | None = None) -> "Agent":
+    def from_config(cls, config: Config, *, on_event: EventHook | None = None) -> Agent:
         """Build an `Agent` from an explicit `Config`."""
         return cls(config=config, on_event=on_event)
 
@@ -110,9 +110,9 @@ class Agent:
     def deep_research(
         self,
         *,
-        store: "KnowledgeStore | None" = None,
+        store: KnowledgeStore | None = None,
         console: Any = None,
-    ) -> "KnowledgeReport":
+    ) -> KnowledgeReport:
         """Run the four-phase knowledge-extraction pipeline.
 
         This is the same flow as ``terno deep_research`` on the command line:

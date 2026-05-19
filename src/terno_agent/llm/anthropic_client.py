@@ -25,7 +25,8 @@ class AnthropicClient:
             from anthropic import Anthropic
         except ImportError as exc:
             raise ConfigError(
-                "anthropic package not installed. Install with: pip install 'terno-agent[anthropic]'"
+                "anthropic package not installed. "
+                "Install with: pip install 'terno-agent[anthropic]'"
             ) from exc
         self._client = Anthropic(api_key=api_key) if api_key else Anthropic()
         self.model = model

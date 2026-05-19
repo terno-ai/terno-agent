@@ -10,8 +10,8 @@ from __future__ import annotations
 
 import asyncio
 import uuid
+from collections.abc import Iterable
 from dataclasses import dataclass
-from typing import Iterable
 
 
 @dataclass(frozen=True, slots=True)
@@ -43,7 +43,7 @@ class UserPrompt:
         multi_select: bool = False,
         allow_text: bool = True,
         text_label: str | None = None,
-    ) -> "UserPrompt":
+    ) -> UserPrompt:
         return cls(
             id=uuid.uuid4().hex,
             phase=phase,

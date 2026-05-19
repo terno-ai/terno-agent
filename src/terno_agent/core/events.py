@@ -6,8 +6,8 @@ library subscriber pattern is simply ``Callable[[AgentEvent], None]``.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Callable
 
 from terno_agent.core.messages import AssistantMessage, ToolCall, ToolResult
 

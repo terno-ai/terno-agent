@@ -28,3 +28,5 @@ config.local.toml
 .vscode/
 *.swp
 .DS_Store
+
+*.sqlite

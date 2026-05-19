@@ -12,14 +12,15 @@ from __future__ import annotations
 
 import asyncio
 from abc import ABC, abstractmethod
+from collections.abc import Iterable
 from dataclasses import dataclass, field
-from enum import Enum
-from typing import Any, Iterable
+from enum import StrEnum
+from typing import Any
 
 from terno_agent.knowledge.context import PhaseContext, TaskContext
 
 
-class TaskStatus(str, Enum):
+class TaskStatus(StrEnum):
     PENDING = "pending"
     RUNNING = "running"
     BLOCKED = "blocked"
@@ -93,7 +94,9 @@ class Phase:
                     )
                     pending.pop(name)
                     continue
-                ready = all(d in results and results[d].status is TaskStatus.COMPLETED for d in deps)
+                ready = all(
+                    d in results and results[d].status is TaskStatus.COMPLETED for d in deps
+                )
                 if ready:
                     tctx = TaskContext(phase=ctx, phase_name=self.name, task_name=name)
                     running[name] = asyncio.create_task(

@@ -7,8 +7,9 @@ provider-specific objects.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Callable, Protocol, runtime_checkable
+from typing import Protocol, runtime_checkable
 
 from terno_agent.core.messages import AssistantMessage, Message
 from terno_agent.core.tool import ToolSchema

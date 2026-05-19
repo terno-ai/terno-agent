@@ -80,7 +80,7 @@ async def _drain_prompts(
     while not stop.is_set():
         try:
             prompt = await asyncio.wait_for(channel.next_prompt(), timeout=0.25)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             continue
         _render_prompt(console, prompt)
         line = await asyncio.to_thread(input, "  selection> ")

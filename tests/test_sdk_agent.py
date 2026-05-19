@@ -6,7 +6,7 @@ import pytest
 
 import terno
 import terno_agent
-from terno_agent.config import Config
+from terno_agent.config import Config, ConfigError
 from terno_agent.sdk import Agent
 
 
@@ -104,5 +104,5 @@ def test_invalid_sandbox_rejected(monkeypatch):
         "terno_agent.sdk.Orchestrator.from_config",
         classmethod(lambda cls, config, **_kw: object()),
     )
-    with pytest.raises(Exception):
+    with pytest.raises(ConfigError):
         Agent(sandbox="not-a-real-sandbox")
