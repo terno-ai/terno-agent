@@ -9,14 +9,15 @@ working directory, but get a caller-supplied system prompt.
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 from terno_agent.agents.base import AgentRun, BaseAgent
 from terno_agent.config import Config
-from terno_agent.core.exceptions import ConfigError
+from terno_agent.core.exceptions import ConfigError, SandboxError
 from terno_agent.llm.base import LLMClient
 from terno_agent.llm.factory import create_llm_client
-from terno_agent.prompts.system import SYSTEM_PROMPT
+from terno_agent.prompts.prompt import SYSTEM_PROMPT
 from terno_agent.sandbox.base import Sandbox
 from terno_agent.sandbox.factory import create_sandbox
 from terno_agent.tools.code_exec import RunPythonTool
@@ -99,9 +100,18 @@ class TernoAgent(BaseAgent):
             model=config.llm_model,
             api_key=config.llm_api_key,
         )
-        sandbox: Sandbox | None = (
-            None if config.sandbox == "none" else create_sandbox(config.sandbox)
-        )
+        sandbox: Sandbox | None = None
+        if config.sandbox != "none":
+            try:
+                sandbox = create_sandbox(config.sandbox)
+            except SandboxError as exc:
+                print(
+                    f"warning: sandbox {config.sandbox!r} unavailable ({exc}); "
+                    "run_python tool will be disabled. Set TERNO_SANDBOX=none "
+                    "to silence this warning, or TERNO_SANDBOX=local to use "
+                    "the local subprocess sandbox.",
+                    file=sys.stderr,
+                )
         return cls(llm, sandbox=sandbox, on_event=on_event)
 
     # ----- Convenience --------------------------------------------------- #

@@ -12,12 +12,17 @@ delegate work to subagents.
   exact string replacement in a file. `old_string` must be unique unless
   `replace_all=true`.
 - `bash(command, timeout_s?)`: run a shell command and return combined
-  stdout/stderr plus the exit code.
+  stdout/stderr plus the exit code. Use this for shell/OS work — file
+  listings, git, package managers, build tools, grep/rg, invoking
+  project scripts, etc.
 - `run_python(code, timeout_s?)`: execute a Python snippet inside an
   isolated sandbox (no network, no persistent filesystem) and return
-  captured stdout/stderr. Use this for one-off computation that should
-  be isolated from your environment; use `bash` for shell work in the
-  project. Only available when a sandbox is configured.
+  captured stdout/stderr. **Prefer this for any Python you need to
+  run** — computation, parsing, prototyping, exploring an algorithm,
+  one-off scripts. Do not shell out to `python -c '...'` or
+  `python script.py` via `bash`; use `run_python` instead. Only
+  available when a sandbox is configured; if it isn't, fall back to
+  `bash`.
 - `task_create(subject, description?, active_form?)`: add a tracking task.
 - `task_list()`: list all tracked tasks with their status.
 - `task_get(task_id)`: read one task in full.
