@@ -1,6 +1,4 @@
 from terno_agent.agents.base import AgentRun, BaseAgent
-from terno_agent.agents.coder import CoderAgent
-from terno_agent.agents.database import DatabaseAgent
-from terno_agent.agents.orchestrator import Orchestrator
+from terno_agent.agents.terno import TernoAgent
 
-__all__ = ["AgentRun", "BaseAgent", "CoderAgent", "DatabaseAgent", "Orchestrator"]
+__all__ = ["AgentRun", "BaseAgent", "TernoAgent"]

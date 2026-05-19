@@ -6,8 +6,8 @@ values fall back to environment variables and `.env` files.
 
     from terno import Agent
 
-    agent = Agent(api_key="sk-ant-...", database_url="sqlite:///./demo.db")
-    result = agent.run("Top 10 customers by revenue last quarter")
+    agent = Agent(api_key="sk-ant-...")
+    result = agent.run("Refactor utils.py into smaller modules")
     print(result.answer)
 """
 
@@ -17,7 +17,7 @@ import asyncio
 from typing import TYPE_CHECKING, Any
 
 from terno_agent.agents.base import AgentRun
-from terno_agent.agents.orchestrator import Orchestrator
+from terno_agent.agents.terno import TernoAgent
 from terno_agent.config import Config
 from terno_agent.core.events import EventHook
 
@@ -27,33 +27,11 @@ if TYPE_CHECKING:
 
 
 class Agent:
-    """High-level facade around the orchestrator.
+    """High-level facade around the single Terno agent.
 
     All ``__init__`` keyword arguments are optional. Unspecified fields
     are read from the environment (and a ``.env`` file in CWD or any
     parent directory).
-
-    Examples
-    --------
-    Minimal — read everything from env:
-
-        agent = Agent()
-        agent.run("describe the users table").answer
-
-    Programmatic config:
-
-        agent = Agent(
-            api_key="sk-ant-...",
-            database_url="postgresql+psycopg://u:p@host/db",
-            provider="anthropic",
-            model="claude-opus-4-7",
-            sandbox="local",
-        )
-
-    Stream events to your own UI:
-
-        from terno_agent.core.events import TextDelta
-        agent = Agent(on_event=lambda e: ... )
     """
 
     def __init__(
@@ -63,10 +41,6 @@ class Agent:
         database_url: str | None = None,
         provider: str | None = None,
         model: str | None = None,
-        sandbox: str | None = None,
-        sandbox_image: str | None = None,
-        max_rows: int | None = None,
-        read_only_sql: bool | None = None,
         config: Config | None = None,
         on_event: EventHook | None = None,
     ) -> None:
@@ -75,13 +49,9 @@ class Agent:
             database_url=database_url,
             provider=provider,
             model=model,
-            sandbox=sandbox,
-            sandbox_image=sandbox_image,
-            max_rows=max_rows,
-            read_only_sql=read_only_sql,
         )
         self.on_event = on_event
-        self._orchestrator = Orchestrator.from_config(self.config, on_event=on_event)
+        self._agent = TernoAgent.from_config(self.config, on_event=on_event)
 
     # ----- Alternate constructors -------------------------------------------- #
 
@@ -97,13 +67,13 @@ class Agent:
 
     # ----- Inference --------------------------------------------------------- #
 
-    def run(self, question: str) -> AgentRun:
-        """Run one turn of the multi-agent loop and return the result."""
-        return self._orchestrator.run(question)
+    def run(self, task: str) -> AgentRun:
+        """Run the agent on a task and return the result."""
+        return self._agent.run(task)
 
-    def ask(self, question: str) -> AgentRun:
-        """Alias for `run` — kept for symmetry with the orchestrator."""
-        return self._orchestrator.ask(question)
+    def ask(self, task: str) -> AgentRun:
+        """Alias for `run`."""
+        return self._agent.ask(task)
 
     # ----- Knowledge extraction --------------------------------------------- #
 
@@ -117,9 +87,7 @@ class Agent:
 
         This is the same flow as ``terno deep_research`` on the command line:
         organization context, schema crawl, semantic annotation, and
-        validation. Prompts are rendered to the supplied (or default)
-        rich `Console`. Use the lower-level `KnowledgeExtractionAgent`
-        directly if you need to drive prompts programmatically.
+        validation. Requires `TERNO_DATABASE_URL` to be set.
         """
         from terno_agent.knowledge.cli import run_knowledge_extraction
 
@@ -138,10 +106,6 @@ def _build_config(
     database_url: str | None,
     provider: str | None,
     model: str | None,
-    sandbox: str | None,
-    sandbox_image: str | None,
-    max_rows: int | None,
-    read_only_sql: bool | None,
 ) -> Config:
     base = Config.from_env()
     return Config(
@@ -149,10 +113,10 @@ def _build_config(
         llm_model=model or base.llm_model,
         llm_api_key=api_key or base.llm_api_key,
         database_url=database_url if database_url is not None else base.database_url,
-        sandbox=sandbox or base.sandbox,
-        sandbox_image=sandbox_image or base.sandbox_image,
-        max_rows=max_rows if max_rows is not None else base.max_rows,
-        read_only_sql=read_only_sql if read_only_sql is not None else base.read_only_sql,
+        sandbox=base.sandbox,
+        sandbox_image=base.sandbox_image,
+        max_rows=base.max_rows,
+        read_only_sql=base.read_only_sql,
     )
 
 

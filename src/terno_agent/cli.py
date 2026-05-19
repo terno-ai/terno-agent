@@ -11,11 +11,10 @@ from collections.abc import Sequence
 from rich.console import Console
 from rich.panel import Panel
 from rich.syntax import Syntax
-from rich.table import Table
 from rich.text import Text
 
 from terno_agent import __version__
-from terno_agent.agents.orchestrator import Orchestrator
+from terno_agent.agents.terno import TernoAgent
 from terno_agent.config import Config
 from terno_agent.core.events import (
     AgentEvent,
@@ -27,12 +26,6 @@ from terno_agent.core.events import (
 )
 from terno_agent.core.exceptions import TernoError
 from terno_agent.knowledge.cli import run_knowledge_extraction
-
-_AGENT_COLORS = {
-    "orchestrator": "bold magenta",
-    "database": "bold cyan",
-    "coder": "bold green",
-}
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -56,7 +49,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 def _build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="terno",
-        description="Multi-agent CLI that answers questions about your database.",
+        description="Terno — an interactive coding agent.",
     )
     p.add_argument("--version", action="version", version=f"terno-agent {__version__}")
     p.add_argument(
@@ -67,8 +60,8 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     sub = p.add_subparsers(dest="command")
 
-    ask = sub.add_parser("ask", help="Ask a single question and exit.")
-    ask.add_argument("question", nargs="+", help="The question to ask.")
+    ask = sub.add_parser("ask", help="Run the agent on a single task and exit.")
+    ask.add_argument("task", nargs="+", help="The task to run.")
     ask.set_defaults(func=_cmd_ask)
 
     chat = sub.add_parser("chat", help="Start an interactive REPL.")
@@ -89,11 +82,11 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def _cmd_ask(args: argparse.Namespace) -> int:
-    question = " ".join(args.question)
+    task = " ".join(args.task)
     console = Console()
     renderer = None if args.quiet else AgentRenderer(console)
-    agent = Orchestrator.from_env(on_event=renderer)
-    result = agent.ask(question)
+    agent = TernoAgent.from_env(on_event=renderer)
+    result = agent.ask(task)
     if renderer is not None:
         renderer.finalize()
     if args.quiet:
@@ -104,7 +97,7 @@ def _cmd_ask(args: argparse.Namespace) -> int:
 def _cmd_chat(args: argparse.Namespace) -> int:
     console = Console()
     renderer = None if args.quiet else AgentRenderer(console)
-    agent = Orchestrator.from_env(on_event=renderer)
+    agent = TernoAgent.from_env(on_event=renderer)
     console.print(
         "[bold]terno-agent REPL[/] — type 'exit' or Ctrl-D to quit. "
         "Use [bold]/deep_research[/] to launch knowledge extraction.\n"
@@ -163,11 +156,14 @@ def _run_deep_research(console: Console) -> None:
 # --------------------------------------------------------------------------- #
 
 
+_AGENT_STYLE = "bold magenta"
+
+
 class AgentRenderer:
     """Render `AgentEvent`s to a rich Console.
 
     Streams assistant text inline; surrounds tool calls and results with
-    syntax-highlighted panels. Designed to be called from any thread.
+    syntax-highlighted panels.
     """
 
     def __init__(self, console: Console) -> None:
@@ -175,7 +171,6 @@ class AgentRenderer:
         self._stream_open = False
         self._current_agent: str | None = None
 
-    # callable as the event hook
     def __call__(self, event: AgentEvent) -> None:
         if isinstance(event, IterationStart):
             return
@@ -203,7 +198,7 @@ class AgentRenderer:
             return
         if not self._stream_open or self._current_agent != event.agent:
             self._close_stream()
-            tag = self._agent_tag(event.agent)
+            tag = Text(f"[{event.agent}]", style=_AGENT_STYLE)
             self.console.print(tag, end=" ", highlight=False)
             self._stream_open = True
             self._current_agent = event.agent
@@ -211,12 +206,8 @@ class AgentRenderer:
 
     def _close_stream(self) -> None:
         if self._stream_open:
-            self.console.print()  # newline to end the streaming line
+            self.console.print()
             self._stream_open = False
-
-    def _agent_tag(self, agent: str) -> Text:
-        style = _AGENT_COLORS.get(agent, "bold white")
-        return Text(f"[{agent}]", style=style)
 
     # ----- tool call/result panels --------------------------------------- #
 
@@ -229,16 +220,15 @@ class AgentRenderer:
                 body,
                 title=title,
                 title_align="left",
-                border_style=_AGENT_COLORS.get(event.agent, "white"),
+                border_style=_AGENT_STYLE,
                 padding=(0, 1),
             )
         )
 
     def _render_tool_result(self, event: ToolResultEvent) -> None:
-        result = event.result
-        body = _format_result_body(result.content)
-        style = "red" if result.is_error else "dim"
-        marker = "✗" if result.is_error else "✓"
+        body = _format_result_body(event.result.content)
+        style = "red" if event.result.is_error else "dim"
+        marker = "✗" if event.result.is_error else "✓"
         title = f"[{event.agent}] {marker} result"
         self.console.print(
             Panel(body, title=title, title_align="left", border_style=style, padding=(0, 1))
@@ -251,18 +241,30 @@ class AgentRenderer:
 
 
 def _format_call_body(name: str, args: dict) -> object:
-    """Pick the best rich renderable for the tool's payload."""
-    if name == "sql_query" and isinstance(args.get("sql"), str):
-        return Syntax(args["sql"].strip(), "sql", theme="ansi_dark", word_wrap=True)
-    if name == "run_python" and isinstance(args.get("code"), str):
-        return Syntax(args["code"], "python", theme="ansi_dark", word_wrap=True)
-    if name in {"ask_database_agent", "ask_coder_agent"}:
-        task = args.get("task", "")
-        extra = args.get("input_data")
-        body = Text(task, no_wrap=False)
-        if extra:
-            body.append("\n\ninput_data:\n", style="dim")
-            body.append(_truncate(extra, 800))
+    if name == "bash" and isinstance(args.get("command"), str):
+        return Syntax(args["command"], "bash", theme="ansi_dark", word_wrap=True)
+    if name == "write_file" and isinstance(args.get("content"), str):
+        return Syntax(
+            _truncate(args["content"], 2000),
+            _lang_for_path(args.get("path", "")),
+            theme="ansi_dark",
+            word_wrap=True,
+        )
+    if name == "edit_file":
+        parts = [
+            f"path: {args.get('path', '')}",
+            "--- old",
+            _truncate(str(args.get("old_string", "")), 800),
+            "+++ new",
+            _truncate(str(args.get("new_string", "")), 800),
+        ]
+        return Text("\n".join(parts))
+    if name == "spawn_agent":
+        body = Text("prompt:\n", style="bold")
+        body.append(_truncate(str(args.get("prompt", "")), 800))
+        if args.get("task"):
+            body.append("\n\ntask:\n", style="bold")
+            body.append(_truncate(str(args.get("task", "")), 800))
         return body
     pretty = json.dumps(args, indent=2, default=str)
     return Syntax(pretty, "json", theme="ansi_dark", word_wrap=True)
@@ -276,37 +278,29 @@ def _format_result_body(content: str) -> object:
         parsed = json.loads(text)
     except (json.JSONDecodeError, ValueError):
         return Text(_truncate(text, 4000))
-    if isinstance(parsed, dict) and {"columns", "rows"} <= parsed.keys():
-        return _format_query_result(parsed)
     pretty = json.dumps(parsed, indent=2, default=str)
     return Syntax(_truncate(pretty, 4000), "json", theme="ansi_dark", word_wrap=True)
 
 
-def _format_query_result(payload: dict) -> object:
-    columns: list[str] = payload.get("columns") or []
-    rows: list[list] = payload.get("rows") or []
-    table = Table(show_header=True, header_style="bold cyan", expand=False)
-    for col in columns:
-        table.add_column(str(col))
-    preview = rows[:20]
-    for row in preview:
-        table.add_row(*[_cell(v) for v in row])
-    footer = f"{payload.get('row_count', len(rows))} rows"
-    if payload.get("truncated"):
-        footer += " (truncated)"
-    if len(rows) > len(preview):
-        footer += f" — showing first {len(preview)}"
-    table.caption = footer
-    return table
-
-
-def _cell(value: object) -> str:
-    if value is None:
-        return "—"
-    text = str(value)
-    if len(text) > 80:
-        text = text[:77] + "..."
-    return text
+def _lang_for_path(path: str) -> str:
+    lower = path.lower()
+    for ext, lang in (
+        (".py", "python"),
+        (".js", "javascript"),
+        (".ts", "typescript"),
+        (".tsx", "tsx"),
+        (".jsx", "jsx"),
+        (".md", "markdown"),
+        (".sh", "bash"),
+        (".json", "json"),
+        (".yaml", "yaml"),
+        (".yml", "yaml"),
+        (".toml", "toml"),
+        (".sql", "sql"),
+    ):
+        if lower.endswith(ext):
+            return lang
+    return "text"
 
 
 def _truncate(text: str, limit: int) -> str:

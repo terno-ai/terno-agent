@@ -75,7 +75,7 @@ class Config:
             )
 
     @classmethod
-    def from_env(cls) -> "Config":
+    def from_env(cls) -> Config:
         load_env()
         provider = os.getenv("TERNO_LLM_PROVIDER", "anthropic").lower()
         model = os.getenv("TERNO_LLM_MODEL") or DEFAULT_MODELS.get(provider, "")
