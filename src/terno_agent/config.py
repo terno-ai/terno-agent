@@ -64,6 +64,8 @@ class Config:
     sandbox_image: str = "python:3.12-slim"
     max_rows: int = 200
     read_only_sql: bool = True
+    mcp_enabled: bool = True
+    mcp_config_path: str = ""
     extra: dict[str, str] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
@@ -94,6 +96,8 @@ class Config:
             sandbox_image=os.getenv("TERNO_SANDBOX_IMAGE", "python:3.12-slim"),
             max_rows=int(os.getenv("TERNO_MAX_ROWS", "200")),
             read_only_sql=os.getenv("TERNO_READ_ONLY_SQL", "true").lower() != "false",
+            mcp_enabled=os.getenv("TERNO_MCP_ENABLED", "true").lower() != "false",
+            mcp_config_path=os.getenv("TERNO_MCP_CONFIG", ""),
         )
 
     def display(self) -> str:
@@ -107,4 +111,6 @@ class Config:
             f"sandbox_image    = {self.sandbox_image}\n"
             f"max_rows         = {self.max_rows}\n"
             f"read_only_sql    = {self.read_only_sql}\n"
+            f"mcp_enabled      = {self.mcp_enabled}\n"
+            f"mcp_config_path  = {self.mcp_config_path or '(auto-discover)'}\n"
         )

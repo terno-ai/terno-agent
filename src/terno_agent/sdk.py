@@ -32,6 +32,12 @@ class Agent:
     All ``__init__`` keyword arguments are optional. Unspecified fields
     are read from the environment (and a ``.env`` file in CWD or any
     parent directory).
+
+    If you configure MCP servers (via ``.mcp.json``), use the agent as a
+    context manager so MCP subprocesses are shut down cleanly::
+
+        with Agent(api_key=...) as agent:
+            agent.run("...")
     """
 
     def __init__(
@@ -52,6 +58,7 @@ class Agent:
         )
         self.on_event = on_event
         self._agent = TernoAgent.from_config(self.config, on_event=on_event)
+        self._closed = False
 
     # ----- Alternate constructors -------------------------------------------- #
 
@@ -74,6 +81,27 @@ class Agent:
     def ask(self, task: str) -> AgentRun:
         """Alias for `run`."""
         return self._agent.ask(task)
+
+    # ----- Lifecycle --------------------------------------------------------- #
+
+    def close(self) -> None:
+        """Shut down owned resources (MCP servers, background loops).
+
+        Safe to call multiple times; safe to skip if no MCP servers were
+        configured. Also runs via ``atexit`` as a defensive net.
+        """
+        if self._closed:
+            return
+        self._closed = True
+        manager = getattr(self._agent, "mcp_manager", None)
+        if manager is not None:
+            manager.shutdown()
+
+    def __enter__(self) -> Agent:
+        return self
+
+    def __exit__(self, exc_type: object, exc: object, tb: object) -> None:
+        self.close()
 
     # ----- Knowledge extraction --------------------------------------------- #
 
@@ -117,6 +145,8 @@ def _build_config(
         sandbox_image=base.sandbox_image,
         max_rows=base.max_rows,
         read_only_sql=base.read_only_sql,
+        mcp_enabled=base.mcp_enabled,
+        mcp_config_path=base.mcp_config_path,
     )
 
 

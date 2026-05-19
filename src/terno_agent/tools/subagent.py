@@ -19,6 +19,7 @@ from terno_agent.llm.base import LLMClient
 from terno_agent.sandbox.base import Sandbox
 
 if TYPE_CHECKING:
+    from terno_agent.mcp.manager import McpManager
     from terno_agent.tools.tasks import TaskStore
 
 
@@ -28,6 +29,7 @@ class SpawnAgentTool:
     workdir: Path
     task_store: TaskStore
     sandbox: Sandbox | None = None
+    mcp_manager: McpManager | None = None
     bash_timeout_s: int = 120
     run_python_timeout_s: int = 30
     on_event: EventHook | None = None
@@ -81,6 +83,7 @@ class SpawnAgentTool:
             workdir=self.workdir,
             task_store=self.task_store,
             sandbox=self.sandbox,
+            mcp_manager=self.mcp_manager,
             bash_timeout_s=self.bash_timeout_s,
             run_python_timeout_s=self.run_python_timeout_s,
             on_event=self.on_event,

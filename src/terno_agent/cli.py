@@ -86,12 +86,15 @@ def _cmd_ask(args: argparse.Namespace) -> int:
     console = Console()
     renderer = None if args.quiet else AgentRenderer(console)
     agent = TernoAgent.from_env(on_event=renderer)
-    result = agent.ask(task)
-    if renderer is not None:
-        renderer.finalize()
-    if args.quiet:
-        print(result.answer)
-    return 0
+    try:
+        result = agent.ask(task)
+        if renderer is not None:
+            renderer.finalize()
+        if args.quiet:
+            print(result.answer)
+        return 0
+    finally:
+        _shutdown_mcp(agent)
 
 
 def _cmd_chat(args: argparse.Namespace) -> int:
@@ -102,34 +105,46 @@ def _cmd_chat(args: argparse.Namespace) -> int:
         "[bold]terno-agent REPL[/] — type 'exit' or Ctrl-D to quit. "
         "Use [bold]/deep_research[/] to launch knowledge extraction.\n"
     )
-    while True:
-        try:
-            line = input("you> ").strip()
-        except EOFError:
-            print()
-            return 0
-        if not line:
-            continue
-        lowered = line.lower()
-        if lowered in {"exit", "quit", ":q"}:
-            return 0
-        if lowered in {"/deep_research", "/research", "/knowledge"}:
-            _run_deep_research(console)
-            console.print()
-            continue
-        try:
-            result = agent.ask(line)
-        except TernoError as exc:
-            console.print(f"[bold red]error:[/] {exc}")
-            continue
-        if renderer is not None:
-            renderer.finalize()
-            renderer.reset()
-        if args.quiet:
-            print(f"terno> {result.answer}\n")
-        else:
-            console.print()
+    try:
+        while True:
+            try:
+                line = input("you> ").strip()
+            except EOFError:
+                print()
+                return 0
+            if not line:
+                continue
+            lowered = line.lower()
+            if lowered in {"exit", "quit", ":q"}:
+                return 0
+            if lowered in {"/deep_research", "/research", "/knowledge"}:
+                _run_deep_research(console)
+                console.print()
+                continue
+            try:
+                result = agent.ask(line)
+            except TernoError as exc:
+                console.print(f"[bold red]error:[/] {exc}")
+                continue
+            if renderer is not None:
+                renderer.finalize()
+                renderer.reset()
+            if args.quiet:
+                print(f"terno> {result.answer}\n")
+            else:
+                console.print()
+    finally:
+        _shutdown_mcp(agent)
     return 0
+
+
+def _shutdown_mcp(agent: TernoAgent) -> None:
+    manager = getattr(agent, "mcp_manager", None)
+    if manager is not None:
+        try:
+            manager.shutdown()
+        except Exception:  # pragma: no cover - defensive
+            pass
 
 
 def _cmd_config(_args: argparse.Namespace) -> int:

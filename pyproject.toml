@@ -30,12 +30,15 @@ openai = ["openai>=1.40"]
 docker = ["docker>=7.0"]
 postgres = ["psycopg[binary]>=3.1"]
 mysql = ["pymysql>=1.1"]
+mcp = ["mcp>=1.2", "anyio>=4.4"]
 all = [
     "anthropic>=0.39",
     "openai>=1.40",
     "docker>=7.0",
     "psycopg[binary]>=3.1",
     "pymysql>=1.1",
+    "mcp>=1.2",
+    "anyio>=4.4",
 ]
 dev = [
     "pytest>=8.0",

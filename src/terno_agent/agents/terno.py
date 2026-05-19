@@ -9,6 +9,7 @@ working directory, but get a caller-supplied system prompt.
 
 from __future__ import annotations
 
+import atexit
 import sys
 from pathlib import Path
 
@@ -17,6 +18,7 @@ from terno_agent.config import Config
 from terno_agent.core.exceptions import ConfigError, SandboxError
 from terno_agent.llm.base import LLMClient
 from terno_agent.llm.factory import create_llm_client
+from terno_agent.mcp.manager import McpManager
 from terno_agent.prompts.prompt import SYSTEM_PROMPT
 from terno_agent.sandbox.base import Sandbox
 from terno_agent.sandbox.factory import create_sandbox
@@ -45,6 +47,7 @@ class TernoAgent(BaseAgent):
         workdir: Path | None = None,
         task_store: TaskStore | None = None,
         sandbox: Sandbox | None = None,
+        mcp_manager: McpManager | None = None,
         bash_timeout_s: int = 120,
         run_python_timeout_s: int = 30,
         on_event=None,
@@ -52,6 +55,7 @@ class TernoAgent(BaseAgent):
         self.workdir = (workdir or Path.cwd()).resolve()
         self.task_store = task_store or TaskStore()
         self.sandbox = sandbox
+        self.mcp_manager = mcp_manager
 
         tools: list = [
             ReadFileTool(),
@@ -67,6 +71,7 @@ class TernoAgent(BaseAgent):
                 workdir=self.workdir,
                 task_store=self.task_store,
                 sandbox=sandbox,
+                mcp_manager=mcp_manager,
                 bash_timeout_s=bash_timeout_s,
                 run_python_timeout_s=run_python_timeout_s,
                 on_event=on_event,
@@ -74,6 +79,8 @@ class TernoAgent(BaseAgent):
         ]
         if sandbox is not None:
             tools.append(RunPythonTool(sandbox, timeout_s=run_python_timeout_s))
+        if mcp_manager is not None:
+            tools.extend(mcp_manager.tools())
 
         super().__init__(
             llm,
@@ -112,7 +119,14 @@ class TernoAgent(BaseAgent):
                     "the local subprocess sandbox.",
                     file=sys.stderr,
                 )
-        return cls(llm, sandbox=sandbox, on_event=on_event)
+
+        mcp_manager: McpManager | None = None
+        if config.mcp_enabled:
+            mcp_manager = McpManager.start_from_path(config.mcp_config_path or None)
+            if mcp_manager is not None:
+                atexit.register(mcp_manager.shutdown)
+
+        return cls(llm, sandbox=sandbox, mcp_manager=mcp_manager, on_event=on_event)
 
     # ----- Convenience --------------------------------------------------- #
 
