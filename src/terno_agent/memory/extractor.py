@@ -1,0 +1,115 @@
+"""Post-turn memory extractor.
+
+After the main agent finishes a turn, this extractor spawns a fresh
+``TernoAgent`` (system prompt = ``EXTRACTOR_SYSTEM_PROMPT``, tools = the
+memory CRUD set) in a daemon thread. The user is not blocked.
+
+Extraction failures are swallowed — they must never break the
+user-facing flow.
+"""
+
+from __future__ import annotations
+
+import threading
+from dataclasses import dataclass
+from pathlib import Path
+from typing import TYPE_CHECKING
+
+from terno_agent.core.events import EventHook
+from terno_agent.core.messages import (
+    AssistantMessage,
+    Message,
+    SystemMessage,
+    ToolResultMessage,
+    UserMessage,
+)
+from terno_agent.llm.base import LLMClient
+from terno_agent.memory.prompts import (
+    EXTRACTOR_SYSTEM_PROMPT,
+    EXTRACTOR_USER_PROMPT_TEMPLATE,
+)
+from terno_agent.memory.store import MemoryStore
+from terno_agent.memory.tools import extractor_tools
+
+if TYPE_CHECKING:
+    from terno_agent.agents.base import Trace
+
+
+@dataclass
+class MemoryExtractor:
+    llm: LLMClient
+    store: MemoryStore
+    workdir: Path
+    on_event: EventHook | None = None
+    max_iterations: int = 8
+    wait: bool = False  # if True, run synchronously (used in tests)
+
+    def extract(self, trace: Trace) -> None:
+        """Run extraction. Fire-and-forget by default."""
+        if self.wait:
+            self._run_safely(trace)
+            return
+        thread = threading.Thread(
+            target=self._run_safely,
+            args=(trace,),
+            name="memory-extractor",
+            daemon=True,
+        )
+        thread.start()
+
+    # ----- impl -------------------------------------------------------- #
+
+    def _run_safely(self, trace: Trace) -> None:
+        try:
+            self._run(trace)
+        except Exception:  # pragma: no cover - defensive; never break the host
+            return
+
+    def _run(self, trace: Trace) -> None:
+        transcript = _format_trace(trace)
+        if not transcript.strip():
+            return
+        # Lazy import to avoid a cycle (extractor -> TernoAgent -> agents/base).
+        from terno_agent.agents.terno import TernoAgent
+
+        subagent = TernoAgent(
+            self.llm,
+            system_prompt=EXTRACTOR_SYSTEM_PROMPT,
+            workdir=self.workdir,
+            on_event=self.on_event,
+        )
+        # Replace the default toolset with just the memory CRUD tools — the
+        # extractor must not run bash, edit files, etc.
+        subagent.tools = {t.schema.name: t for t in extractor_tools(self.store)}
+        subagent.max_iterations = self.max_iterations
+        subagent.run(EXTRACTOR_USER_PROMPT_TEMPLATE.format(transcript=transcript))
+
+
+def _format_trace(trace: Trace) -> str:
+    """Serialize a turn's trace into a plain transcript for the extractor.
+
+    We deliberately strip system messages and tool-result payloads; the
+    extractor only cares about what the USER said and what the ASSISTANT
+    finally said. Tool calls are summarized by name only.
+    """
+    parts: list[str] = []
+    for msg in trace:
+        if isinstance(msg, SystemMessage):
+            continue
+        if isinstance(msg, UserMessage):
+            parts.append(f"USER:\n{msg.content.strip()}")
+        elif isinstance(msg, AssistantMessage):
+            text = msg.content.strip()
+            if text:
+                parts.append(f"ASSISTANT:\n{text}")
+            if msg.tool_calls:
+                names = ", ".join(tc.name for tc in msg.tool_calls)
+                parts.append(f"(assistant called tools: {names})")
+        elif isinstance(msg, ToolResultMessage):
+            continue
+        else:  # pragma: no cover - exhaustive
+            _: Message = msg
+    return "\n\n".join(parts)
+
+
+__all__ = ["MemoryExtractor"]

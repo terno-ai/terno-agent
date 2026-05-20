@@ -11,7 +11,7 @@ text deltas, tool calls, tool results, and turn endings.
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 
 from terno_agent.core.events import (
@@ -36,6 +36,8 @@ from terno_agent.llm.base import LLMClient
 
 Trace = list[Message]
 
+PostTurnHook = Callable[["Trace"], None]
+
 
 @dataclass(slots=True)
 class AgentRun:
@@ -55,11 +57,13 @@ class BaseAgent:
         tools: Iterable[Tool] = (),
         *,
         on_event: EventHook | None = None,
+        post_turn_hook: PostTurnHook | None = None,
     ) -> None:
         self.llm = llm
         self.system_prompt = system_prompt
         self.tools: dict[str, Tool] = {t.schema.name: t for t in tools}
         self.on_event = on_event
+        self.post_turn_hook = post_turn_hook
 
     def run(self, task: str, *, extra_context: str | None = None) -> AgentRun:
         system = self.system_prompt
@@ -81,6 +85,7 @@ class BaseAgent:
             self._emit(TurnEnd(agent=self.name, message=assistant))
 
             if not assistant.tool_calls:
+                self._run_post_turn_hook(messages)
                 return AgentRun(answer=assistant.content, trace=messages, iterations=i)
 
             results: list[ToolResult] = []
@@ -119,5 +124,14 @@ class BaseAgent:
     def _emit_text_delta(self, text: str) -> None:
         self._emit(TextDelta(agent=self.name, text=text))
 
+    def _run_post_turn_hook(self, trace: Trace) -> None:
+        if self.post_turn_hook is None:
+            return
+        try:
+            self.post_turn_hook(trace)
+        except Exception:
+            # Hooks must never break the user-facing flow.
+            pass
 
-__all__ = ["AgentRun", "BaseAgent", "EventHook", "Trace"]
+
+__all__ = ["AgentRun", "BaseAgent", "EventHook", "PostTurnHook", "Trace"]

@@ -25,6 +25,11 @@ any [Model Context Protocol (MCP)][mcp] servers you configure.
 - **Subagent spawner.** `spawn_agent` recursively launches a fresh
   `TernoAgent` with a caller-supplied system prompt — useful for isolating
   focused subtasks from your main context.
+- **Persistent memory.** The agent extracts long-lived facts (user
+  preferences, project context, feedback, external references) after
+  each task into markdown files indexed by vector embeddings, and
+  recalls the most relevant ones at the start of the next turn. See
+  [Memory](#memory).
 - **Streaming + typed events.** Assistant text streams live; tool calls
   and results render with syntax-highlighted panels.
 - **CLI + library.** `terno ask "..."` / `terno chat` from the shell, or
@@ -134,6 +139,12 @@ TERNO_DATABASE_URL=sqlite:///./demo.db
 # or disable it entirely
 TERNO_MCP_ENABLED=true
 TERNO_MCP_CONFIG=/path/to/.mcp.json
+
+# optional — memory is on by default; needs an OpenAI key for embeddings
+TERNO_MEMORY_ENABLED=true
+TERNO_MEMORY_TOP_K=5
+TERNO_EMBEDDING_MODEL=text-embedding-3-small
+# TERNO_EMBEDDING_API_KEY=     # falls back to OPENAI_API_KEY
 ```
 
 Run `terno config` to print the effective settings (API keys masked).
@@ -356,6 +367,40 @@ version:
 
 (or set `"UV_PYTHON": "3.12"` in the server's `env` block).
 
+## Memory
+
+After every task, an extraction subagent reviews the conversation and
+decides whether anything is worth keeping. If so, it writes one
+markdown file per memory and embeds it with OpenAI's
+`text-embedding-3-small`. On the next turn, the user's task is
+embedded too, and the top-K most similar memories are prepended to the
+system prompt as extra context.
+
+There are four memory types, each with a different scope:
+
+| Type        | Scope    | Use                                          |
+|-------------|----------|----------------------------------------------|
+| `user`      | global   | Facts about the human (role, expertise…)     |
+| `feedback`  | global   | "Do this", "don't do that" + the reason      |
+| `project`   | workdir  | Goals, deadlines, decisions for this repo    |
+| `reference` | workdir  | Pointers to Linear, Slack, dashboards…       |
+
+Storage paths (markdown + a single-vector-store JSON):
+
+```
+~/.terno_agent/memory/        # global memories (user, feedback)
+<your-project>/.terno/memory/ # workdir memories (project, reference)
+```
+
+The agent has a `search_memory` tool for ad-hoc lookups when it
+suspects relevant context wasn't recalled automatically.
+
+Disable for a single session with `terno --no-memory chat`, or
+permanently with `TERNO_MEMORY_ENABLED=false`. Embedding the contents
+requires the `openai` extra and an `OPENAI_API_KEY` (or an explicit
+`TERNO_EMBEDDING_API_KEY`); if that's missing the agent prints one
+warning and keeps running without memory.
+
 ## Project layout
 
 ```
@@ -372,6 +417,10 @@ src/terno_agent/
   sandbox/             # Docker + local subprocess runners (for run_python)
   mcp/                 # .mcp.json parser, runner resolver, async bridge,
                        # session manager, sync Tool adapter
+  memory/              # extractor + retriever + on-disk markdown store
+                       # + a SearchMemoryTool surfaced to the agent
+  rag/                 # embedding client + file-backed vector store
+                       # (shared infrastructure for memory)
   knowledge/           # deep_research pipeline (uses db/ + an LLM)
   db/                  # SQLAlchemy engine + inspector (knowledge only)
 tests/                 # pytest suite, including tests/mcp/

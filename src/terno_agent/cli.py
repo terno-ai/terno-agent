@@ -58,6 +58,11 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Suppress agent activity; print only the final answer.",
     )
+    p.add_argument(
+        "--no-memory",
+        action="store_true",
+        help="Disable persistent memory (no recall, no extraction) for this session.",
+    )
     sub = p.add_subparsers(dest="command")
 
     ask = sub.add_parser("ask", help="Run the agent on a single task and exit.")
@@ -85,7 +90,7 @@ def _cmd_ask(args: argparse.Namespace) -> int:
     task = " ".join(args.task)
     console = Console()
     renderer = None if args.quiet else AgentRenderer(console)
-    agent = TernoAgent.from_env(on_event=renderer)
+    agent = _build_agent(args, on_event=renderer)
     try:
         result = agent.ask(task)
         if renderer is not None:
@@ -100,7 +105,7 @@ def _cmd_ask(args: argparse.Namespace) -> int:
 def _cmd_chat(args: argparse.Namespace) -> int:
     console = Console()
     renderer = None if args.quiet else AgentRenderer(console)
-    agent = TernoAgent.from_env(on_event=renderer)
+    agent = _build_agent(args, on_event=renderer)
     console.print(
         "[bold]terno-agent REPL[/] — type 'exit' or Ctrl-D to quit. "
         "Use [bold]/deep_research[/] to launch knowledge extraction.\n"
@@ -136,6 +141,15 @@ def _cmd_chat(args: argparse.Namespace) -> int:
     finally:
         _shutdown_mcp(agent)
     return 0
+
+
+def _build_agent(args: argparse.Namespace, *, on_event=None) -> TernoAgent:
+    """Build a TernoAgent from env, honoring CLI flags like ``--no-memory``."""
+    if not getattr(args, "no_memory", False):
+        return TernoAgent.from_env(on_event=on_event)
+    config = Config.from_env()
+    config.memory_enabled = False
+    return TernoAgent.from_config(config, on_event=on_event)
 
 
 def _shutdown_mcp(agent: TernoAgent) -> None:

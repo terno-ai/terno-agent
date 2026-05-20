@@ -147,6 +147,11 @@ def _build_config(
         read_only_sql=base.read_only_sql,
         mcp_enabled=base.mcp_enabled,
         mcp_config_path=base.mcp_config_path,
+        memory_enabled=base.memory_enabled,
+        memory_top_k=base.memory_top_k,
+        embedding_provider=base.embedding_provider,
+        embedding_model=base.embedding_model,
+        embedding_api_key=base.embedding_api_key,
     )
 
 

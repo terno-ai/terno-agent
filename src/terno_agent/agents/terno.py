@@ -19,7 +19,12 @@ from terno_agent.core.exceptions import ConfigError, SandboxError
 from terno_agent.llm.base import LLMClient
 from terno_agent.llm.factory import create_llm_client
 from terno_agent.mcp.manager import McpManager
+from terno_agent.memory.extractor import MemoryExtractor
+from terno_agent.memory.retriever import MemoryRetriever
+from terno_agent.memory.store import MemoryStore
+from terno_agent.memory.tools import SearchMemoryTool
 from terno_agent.prompts.prompt import SYSTEM_PROMPT
+from terno_agent.rag.embeddings import create_embedding_client
 from terno_agent.sandbox.base import Sandbox
 from terno_agent.sandbox.factory import create_sandbox
 from terno_agent.tools.code_exec import RunPythonTool
@@ -51,11 +56,17 @@ class TernoAgent(BaseAgent):
         bash_timeout_s: int = 120,
         run_python_timeout_s: int = 30,
         on_event=None,
+        memory_store: MemoryStore | None = None,
+        memory_retriever: MemoryRetriever | None = None,
+        memory_extractor: MemoryExtractor | None = None,
     ) -> None:
         self.workdir = (workdir or Path.cwd()).resolve()
         self.task_store = task_store or TaskStore()
         self.sandbox = sandbox
         self.mcp_manager = mcp_manager
+        self.memory_store = memory_store
+        self.memory_retriever = memory_retriever
+        self.memory_extractor = memory_extractor
 
         tools: list = [
             ReadFileTool(),
@@ -81,13 +92,29 @@ class TernoAgent(BaseAgent):
             tools.append(RunPythonTool(sandbox, timeout_s=run_python_timeout_s))
         if mcp_manager is not None:
             tools.extend(mcp_manager.tools())
+        if memory_store is not None:
+            tools.append(SearchMemoryTool(memory_store))
 
         super().__init__(
             llm,
             system_prompt or SYSTEM_PROMPT,
             tools,
             on_event=on_event,
+            post_turn_hook=(
+                memory_extractor.extract if memory_extractor is not None else None
+            ),
         )
+
+    # ----- run with memory recall --------------------------------------- #
+
+    def run(self, task: str, *, extra_context: str | None = None) -> AgentRun:
+        if self.memory_retriever is not None:
+            recalled = self.memory_retriever.fetch_relevant(task)
+            if recalled:
+                extra_context = (
+                    recalled if not extra_context else f"{recalled}\n\n---\n{extra_context}"
+                )
+        return super().run(task, extra_context=extra_context)
 
     # ----- Construction helpers ----------------------------------------- #
 
@@ -126,9 +153,63 @@ class TernoAgent(BaseAgent):
             if mcp_manager is not None:
                 atexit.register(mcp_manager.shutdown)
 
-        return cls(llm, sandbox=sandbox, mcp_manager=mcp_manager, on_event=on_event)
+        memory_store, memory_retriever, memory_extractor = _build_memory(
+            config, llm, workdir=Path.cwd(), on_event=on_event
+        )
+
+        return cls(
+            llm,
+            sandbox=sandbox,
+            mcp_manager=mcp_manager,
+            on_event=on_event,
+            memory_store=memory_store,
+            memory_retriever=memory_retriever,
+            memory_extractor=memory_extractor,
+        )
 
     # ----- Convenience --------------------------------------------------- #
 
     def ask(self, task: str) -> AgentRun:
         return self.run(task)
+
+
+def _build_memory(
+    config: Config,
+    llm: LLMClient,
+    *,
+    workdir: Path,
+    on_event=None,
+) -> tuple[MemoryStore | None, MemoryRetriever | None, MemoryExtractor | None]:
+    """Construct the memory pipeline if enabled in config.
+
+    Returns ``(None, None, None)`` if memory is disabled or if the
+    embedding client can't be constructed (e.g. ``openai`` not installed).
+    Failure here must never block the agent — we just log to stderr and
+    proceed without memory.
+    """
+    if not config.memory_enabled:
+        return (None, None, None)
+    embedding_key = config.embedding_api_key
+    if not embedding_key and config.llm_provider == "openai":
+        embedding_key = config.llm_api_key
+    try:
+        embedder = create_embedding_client(
+            provider=config.embedding_provider,
+            api_key=embedding_key,
+            model=config.embedding_model,
+        )
+    except Exception as exc:
+        print(
+            f"warning: memory disabled — could not build embedding client: {exc}",
+            file=sys.stderr,
+        )
+        return (None, None, None)
+    store = MemoryStore(workdir=workdir, embedder=embedder)
+    retriever = MemoryRetriever(store=store, k=config.memory_top_k)
+    extractor = MemoryExtractor(
+        llm=llm,
+        store=store,
+        workdir=workdir,
+        on_event=on_event,
+    )
+    return (store, retriever, extractor)
