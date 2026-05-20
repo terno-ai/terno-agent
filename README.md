@@ -181,53 +181,102 @@ python -m terno_agent ask "..."
 
 ## Use as a library
 
-The simplest form — just pass an API key:
+`from terno import Agent` is the SDK entry point. `Agent` is a thin
+facade — the inference loop, tool dispatch, MCP manager, and memory
+pipeline all live behind it. You drive the agent via one method
+(`run` / `ask`), receive results as an `AgentRun` dataclass, and
+optionally subscribe to a stream of typed events.
+
+### Quick start
 
 ```python
 from terno import Agent
 
+# All kwargs are optional — anything missing falls back to env / .env.
 agent = Agent(api_key="sk-ant-...")
-result = agent.run("read README.md and tell me what the agent does")
+result = agent.run("read README.md and summarize what the agent does")
 print(result.answer)
 ```
 
-Pass settings programmatically — no env vars required:
+`Agent(...)` accepts `api_key`, `provider`, `model`, `database_url`,
+`config`, and `on_event`. For everything else (sandbox, MCP, memory),
+build a `Config` and pass it via `config=`.
+
+### Constructors
 
 ```python
 from terno import Agent
+from terno_agent.config import Config
 
+# 1. Inline kwargs (simplest). Missing fields read from env / .env.
 agent = Agent(
     api_key="sk-ant-...",
-    provider="anthropic",            # "anthropic" | "openai"
+    provider="anthropic",         # "anthropic" | "openai"
     model="claude-opus-4-7",
 )
-print(agent.run("count lines in src/terno_agent/cli.py").answer)
+
+# 2. Everything from environment + .env.
+agent = Agent.from_env()
+
+# 3. Explicit Config — exposes the full surface (sandbox, MCP, memory…).
+config = Config(
+    llm_provider="anthropic",
+    llm_api_key="sk-ant-...",
+    sandbox="local",              # "docker" | "local" | "none"
+    mcp_enabled=False,            # skip .mcp.json
+    memory_enabled=True,          # persistent recall
+    memory_top_k=5,
+    embedding_provider="openai",
+    embedding_api_key="sk-openai-...",
+)
+agent = Agent.from_config(config)
 ```
 
-Read everything from env / `.env`:
+### Running tasks
+
+`run(task)` and `ask(task)` are equivalent. Both block until the agent
+emits a final assistant message (no remaining tool calls) and return an
+`AgentRun`:
 
 ```python
-from terno import Agent
-
-agent = Agent.from_env()
-print(agent.run("list the largest Python files in this repo").answer)
+result = agent.run("count Python files under src/")
+result.answer       # str — final assistant message
+result.iterations   # int — LLM turns taken
+result.trace        # list[Message] — full conversation incl. tool calls
 ```
 
-**If you've configured MCP servers**, use the agent as a context manager
-so background subprocesses are shut down cleanly:
+Each call starts a fresh conversation (new system prompt + your task).
+The agent keeps task-tracking state (`task_list`) across calls within
+one `Agent` instance.
+
+### Lifecycle — always close when done
+
+If you configured MCP servers or memory (both on by default), the agent
+owns background resources: subprocesses for stdio MCP servers, an
+asyncio loop on a worker thread, OpenAI clients. Use it as a context
+manager so they shut down cleanly:
 
 ```python
 from terno import Agent
 
 with Agent.from_env() as agent:
-    agent.run("...")
+    print(agent.run("...").answer)
+    print(agent.run("...follow-up").answer)
 ```
 
-Stream events into your own UI:
+Or call `agent.close()` explicitly. Both are idempotent; `close()` is
+also registered with `atexit` as a defensive net.
+
+### Streaming events
+
+Pass `on_event=` to receive typed events as the agent works. The hook
+runs synchronously inside the agent loop — keep it fast.
 
 ```python
 from terno import Agent
-from terno_agent.core.events import TextDelta, ToolCallEvent, ToolResultEvent
+from terno_agent.core.events import (
+    IterationStart, TextDelta, ToolCallEvent, ToolResultEvent, TurnEnd,
+)
 
 def on_event(e):
     if isinstance(e, TextDelta):
@@ -235,13 +284,37 @@ def on_event(e):
     elif isinstance(e, ToolCallEvent):
         print(f"\n[tool] {e.call.name}({e.call.arguments})")
     elif isinstance(e, ToolResultEvent):
-        print(f"[result] {e.result.content[:200]}")
+        marker = "✗" if e.result.is_error else "✓"
+        print(f" {marker} {e.result.content[:200]}")
+    # IterationStart and TurnEnd are also available
 
-agent = Agent(api_key="sk-ant-...", on_event=on_event)
-agent.run("explain agents/terno.py in two sentences")
+with Agent(api_key="sk-ant-...", on_event=on_event) as agent:
+    agent.run("explain src/terno_agent/agents/terno.py in two sentences")
 ```
 
-Run deep research from code (same pipeline as `terno deep_research`):
+| Event              | When                                        |
+|--------------------|---------------------------------------------|
+| `IterationStart`   | start of each LLM call                      |
+| `TextDelta`        | streamed token chunk from the assistant     |
+| `ToolCallEvent`    | the LLM picked a tool, before it runs       |
+| `ToolResultEvent`  | tool returned (carries success / error)     |
+| `TurnEnd`          | LLM call finished, message appended         |
+
+### Disabling MCP or memory in code
+
+`.mcp.json` is loaded by default if present. To skip it for a single
+run without touching the file:
+
+```python
+from terno_agent.config import Config
+
+config = Config.from_env()
+config.mcp_enabled = False        # don't load .mcp.json
+config.memory_enabled = False     # no recall, no extraction
+agent = Agent.from_config(config)
+```
+
+### Deep research over a database
 
 ```python
 from terno import Agent
