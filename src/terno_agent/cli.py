@@ -5,7 +5,10 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import signal
 import sys
+import threading
+import time
 from collections.abc import Sequence
 
 from rich.console import Console
@@ -14,6 +17,7 @@ from rich.syntax import Syntax
 from rich.text import Text
 
 from terno_agent import __version__
+from terno_agent.agents.base import AgentRun
 from terno_agent.agents.terno import TernoAgent
 from terno_agent.config import Config
 from terno_agent.core.events import (
@@ -26,6 +30,8 @@ from terno_agent.core.events import (
 )
 from terno_agent.core.exceptions import TernoError
 from terno_agent.knowledge.cli import run_knowledge_extraction
+
+_DOUBLE_CTRLC_WINDOW_S = 2.0
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -92,10 +98,15 @@ def _cmd_ask(args: argparse.Namespace) -> int:
     renderer = None if args.quiet else AgentRenderer(console)
     agent = _build_agent(args, on_event=renderer)
     try:
-        result = agent.ask(task)
+        result, _exc = _run_turn_with_cancel(agent, task, console)
+        if _exc is not None and not isinstance(_exc, TernoError):
+            raise _exc
+        if _exc is not None:
+            console.print(f"[bold red]error:[/] {_exc}")
+            return 2
         if renderer is not None:
             renderer.finalize()
-        if args.quiet:
+        if args.quiet and result is not None:
             print(result.answer)
         return 0
     finally:
@@ -108,8 +119,10 @@ def _cmd_chat(args: argparse.Namespace) -> int:
     agent = _build_agent(args, on_event=renderer)
     console.print(
         "[bold]terno-agent REPL[/] — type 'exit' or Ctrl-D to quit. "
-        "Use [bold]/deep_research[/] to launch knowledge extraction.\n"
+        "Use [bold]/deep_research[/] to launch knowledge extraction. "
+        "Hit Ctrl-C once to stop a running turn; twice in 2s to quit.\n"
     )
+    last_ctrlc = 0.0
     try:
         while True:
             try:
@@ -117,6 +130,14 @@ def _cmd_chat(args: argparse.Namespace) -> int:
             except EOFError:
                 print()
                 return 0
+            except KeyboardInterrupt:
+                now = time.monotonic()
+                if now - last_ctrlc < _DOUBLE_CTRLC_WINDOW_S:
+                    console.print()
+                    return 0
+                last_ctrlc = now
+                console.print("\n[dim](press Ctrl-C again to quit)[/]")
+                continue
             if not line:
                 continue
             lowered = line.lower()
@@ -126,21 +147,77 @@ def _cmd_chat(args: argparse.Namespace) -> int:
                 _run_deep_research(console)
                 console.print()
                 continue
-            try:
-                result = agent.ask(line)
-            except TernoError as exc:
-                console.print(f"[bold red]error:[/] {exc}")
+
+            result, exc = _run_turn_with_cancel(agent, line, console)
+            if exc is not None:
+                if isinstance(exc, TernoError):
+                    console.print(f"[bold red]error:[/] {exc}")
+                else:
+                    console.print(f"[bold red]error:[/] {exc!r}")
                 continue
             if renderer is not None:
                 renderer.finalize()
                 renderer.reset()
-            if args.quiet:
+            if result is not None and result.cancelled:
+                console.print("[dim](turn cancelled)[/]")
+            if args.quiet and result is not None and not result.cancelled:
                 print(f"terno> {result.answer}\n")
-            else:
+            elif not args.quiet:
                 console.print()
     finally:
         _shutdown_mcp(agent)
     return 0
+
+
+def _run_turn_with_cancel(
+    agent: TernoAgent,
+    task: str,
+    console: Console,
+) -> tuple[AgentRun | None, BaseException | None]:
+    """Run one agent turn on a worker thread with Ctrl-C → cancel wired up.
+
+    Returns ``(result, None)`` on success, ``(None, exception)`` on failure.
+    Cancellation produces an `AgentRun(cancelled=True)`, not an exception.
+    """
+    holder: dict[str, AgentRun | BaseException | None] = {"result": None, "exc": None}
+
+    def _worker() -> None:
+        try:
+            holder["result"] = agent.run(task)
+        except BaseException as exc:
+            holder["exc"] = exc
+
+    thread = threading.Thread(target=_worker, name="terno-turn", daemon=True)
+    cancel_pressed = {"count": 0, "last": 0.0}
+
+    def _on_sigint(signum, frame):  # noqa: ARG001 - signal handler signature
+        cancel_pressed["count"] += 1
+        cancel_pressed["last"] = time.monotonic()
+        try:
+            agent.cancel()
+        except Exception:
+            pass
+        console.print("\n[dim](stopping… press again to force-kill the chat)[/]")
+
+    previous = signal.signal(signal.SIGINT, _on_sigint)
+    try:
+        thread.start()
+        # Watchdog: if the user presses Ctrl-C twice while the worker is
+        # ignoring cooperative cancellation, restore the default handler
+        # so a third press kills the whole process.
+        force_threshold = 2
+        while thread.is_alive():
+            thread.join(timeout=0.2)
+            if cancel_pressed["count"] >= force_threshold:
+                # Hand control back to the OS — user really wants out.
+                signal.signal(signal.SIGINT, signal.default_int_handler)
+                # Keep waiting; next ^C will raise KeyboardInterrupt.
+                force_threshold = 10**9  # only restore once
+    finally:
+        signal.signal(signal.SIGINT, previous)
+        agent.reset_cancel()
+
+    return (holder["result"], holder["exc"])
 
 
 def _build_agent(args: argparse.Namespace, *, on_event=None) -> TernoAgent:

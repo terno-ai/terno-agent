@@ -1,3 +1,4 @@
+from terno_agent.core.cancel import CancelToken
 from terno_agent.core.events import (
     AgentEvent,
     EventHook,
@@ -8,6 +9,7 @@ from terno_agent.core.events import (
     TurnEnd,
 )
 from terno_agent.core.exceptions import (
+    AgentCancelled,
     AgentError,
     ConfigError,
     LLMError,
@@ -27,9 +29,11 @@ from terno_agent.core.messages import (
 from terno_agent.core.tool import Tool, ToolSchema
 
 __all__ = [
+    "AgentCancelled",
     "AgentError",
     "AgentEvent",
     "AssistantMessage",
+    "CancelToken",
     "ConfigError",
     "EventHook",
     "IterationStart",

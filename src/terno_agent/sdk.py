@@ -82,6 +82,16 @@ class Agent:
         """Alias for `run`."""
         return self._agent.ask(task)
 
+    # ----- Cancellation ----------------------------------------------------- #
+
+    def cancel(self) -> None:
+        """Ask the agent to abort its current turn. Safe across threads."""
+        self._agent.cancel()
+
+    def reset_cancel(self) -> None:
+        """Clear a previous cancel signal so the next call runs normally."""
+        self._agent.reset_cancel()
+
     # ----- Lifecycle --------------------------------------------------------- #
 
     def close(self) -> None:

@@ -2,17 +2,26 @@
 
 from __future__ import annotations
 
+import inspect
 from typing import Any
 
+from terno_agent.core.cancel import CancelToken
 from terno_agent.core.exceptions import ToolError
 from terno_agent.core.tool import ToolSchema
 from terno_agent.sandbox.base import Sandbox
 
 
 class RunPythonTool:
-    def __init__(self, sandbox: Sandbox, *, timeout_s: int = 30) -> None:
+    def __init__(
+        self,
+        sandbox: Sandbox,
+        *,
+        timeout_s: int = 30,
+        cancel_token: CancelToken | None = None,
+    ) -> None:
         self.sandbox = sandbox
         self.timeout_s = timeout_s
+        self.cancel_token = cancel_token
 
     @property
     def schema(self) -> ToolSchema:
@@ -44,5 +53,11 @@ class RunPythonTool:
         if not code:
             raise ToolError("run_python requires a 'code' argument.")
         timeout = int(kwargs.get("timeout_s") or self.timeout_s)
-        result = self.sandbox.run_python(code, timeout_s=timeout)
+        # Only pass cancel_token if the sandbox supports it (custom sandboxes
+        # implementing the older Sandbox protocol shouldn't break).
+        params = inspect.signature(self.sandbox.run_python).parameters
+        kwargs_extra: dict[str, Any] = {}
+        if "cancel_token" in params and self.cancel_token is not None:
+            kwargs_extra["cancel_token"] = self.cancel_token
+        result = self.sandbox.run_python(code, timeout_s=timeout, **kwargs_extra)
         return result.render()

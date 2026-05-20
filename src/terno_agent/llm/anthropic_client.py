@@ -52,6 +52,8 @@ class AnthropicClient:
         if tool_schemas:
             kwargs["tools"] = tool_schemas
 
+        from terno_agent.core.exceptions import AgentCancelled
+
         try:
             with self._client.messages.stream(**kwargs) as stream:
                 if on_text_delta is not None:
@@ -63,6 +65,10 @@ class AnthropicClient:
                     for _ in stream.text_stream:
                         pass
                 final = stream.get_final_message()
+        except AgentCancelled:
+            # The agent asked to stop — propagate untouched so the run
+            # loop can short-circuit instead of treating it as an LLM error.
+            raise
         except Exception as exc:
             raise LLMError(f"Anthropic API call failed: {exc}") from exc
 

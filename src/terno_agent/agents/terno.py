@@ -15,6 +15,7 @@ from pathlib import Path
 
 from terno_agent.agents.base import AgentRun, BaseAgent
 from terno_agent.config import Config
+from terno_agent.core.cancel import CancelToken
 from terno_agent.core.exceptions import ConfigError, SandboxError
 from terno_agent.llm.base import LLMClient
 from terno_agent.llm.factory import create_llm_client
@@ -59,6 +60,7 @@ class TernoAgent(BaseAgent):
         memory_store: MemoryStore | None = None,
         memory_retriever: MemoryRetriever | None = None,
         memory_extractor: MemoryExtractor | None = None,
+        cancel_token: CancelToken | None = None,
     ) -> None:
         self.workdir = (workdir or Path.cwd()).resolve()
         self.task_store = task_store or TaskStore()
@@ -68,11 +70,17 @@ class TernoAgent(BaseAgent):
         self.memory_retriever = memory_retriever
         self.memory_extractor = memory_extractor
 
+        token = cancel_token or CancelToken()
+
         tools: list = [
             ReadFileTool(),
             WriteFileTool(),
             EditFileTool(),
-            BashTool(workdir=self.workdir, default_timeout_s=bash_timeout_s),
+            BashTool(
+                workdir=self.workdir,
+                default_timeout_s=bash_timeout_s,
+                cancel_token=token,
+            ),
             TaskCreateTool(self.task_store),
             TaskListTool(self.task_store),
             TaskGetTool(self.task_store),
@@ -86,10 +94,17 @@ class TernoAgent(BaseAgent):
                 bash_timeout_s=bash_timeout_s,
                 run_python_timeout_s=run_python_timeout_s,
                 on_event=on_event,
+                cancel_token=token,
             ),
         ]
         if sandbox is not None:
-            tools.append(RunPythonTool(sandbox, timeout_s=run_python_timeout_s))
+            tools.append(
+                RunPythonTool(
+                    sandbox,
+                    timeout_s=run_python_timeout_s,
+                    cancel_token=token,
+                )
+            )
         if mcp_manager is not None:
             tools.extend(mcp_manager.tools())
         if memory_store is not None:
@@ -103,7 +118,29 @@ class TernoAgent(BaseAgent):
             post_turn_hook=(
                 memory_extractor.extract if memory_extractor is not None else None
             ),
+            cancel_token=token,
         )
+
+    # ----- Cancellation -------------------------------------------------- #
+
+    def cancel(self) -> None:
+        """Request the agent to abort its current turn ASAP.
+
+        Safe to call from any thread or from a signal handler. The agent
+        will return a partial `AgentRun` with ``cancelled=True``.
+        """
+        self.cancel_token.cancel()
+        if self.mcp_manager is not None:
+            # Free any future the agent is currently blocked on.
+            bridge = getattr(self.mcp_manager, "_bridge", None)
+            if bridge is not None:
+                cancel_inflight = getattr(bridge, "cancel_inflight", None)
+                if callable(cancel_inflight):
+                    cancel_inflight()
+
+    def reset_cancel(self) -> None:
+        """Clear the cancel signal so the next ``run`` starts fresh."""
+        self.cancel_token.clear()
 
     # ----- run with memory recall --------------------------------------- #
 

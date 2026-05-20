@@ -20,3 +20,7 @@ class SandboxError(TernoError):
 
 class AgentError(TernoError):
     """An agent could not complete its task."""
+
+
+class AgentCancelled(TernoError):  # noqa: N818 - "Cancelled" reads better than "CancelledError" here
+    """Raised when the user (or another caller) cancels the agent mid-turn."""

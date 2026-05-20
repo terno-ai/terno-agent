@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from terno_agent.core.cancel import CancelToken
 from terno_agent.core.events import EventHook
 from terno_agent.core.exceptions import ToolError
 from terno_agent.core.tool import ToolSchema
@@ -33,6 +34,7 @@ class SpawnAgentTool:
     bash_timeout_s: int = 120
     run_python_timeout_s: int = 30
     on_event: EventHook | None = None
+    cancel_token: CancelToken | None = None
 
     @property
     def schema(self) -> ToolSchema:
@@ -87,6 +89,7 @@ class SpawnAgentTool:
             bash_timeout_s=self.bash_timeout_s,
             run_python_timeout_s=self.run_python_timeout_s,
             on_event=self.on_event,
+            cancel_token=self.cancel_token,
         )
         result = subagent.run(task)
         return result.answer

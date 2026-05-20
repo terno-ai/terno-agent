@@ -51,9 +51,13 @@ class OpenAIClient:
         if _supports_custom_temperature(self.model):
             kwargs["temperature"] = temperature
 
+        from terno_agent.core.exceptions import AgentCancelled
+
         try:
             stream = self._client.chat.completions.create(**kwargs)
             return _consume_openai_stream(stream, on_text_delta)
+        except AgentCancelled:
+            raise
         except Exception as exc:
             raise LLMError(f"OpenAI API call failed: {exc}") from exc
 

@@ -14,6 +14,7 @@ from __future__ import annotations
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 
+from terno_agent.core.cancel import CancelToken
 from terno_agent.core.events import (
     EventHook,
     IterationStart,
@@ -22,7 +23,7 @@ from terno_agent.core.events import (
     ToolResultEvent,
     TurnEnd,
 )
-from terno_agent.core.exceptions import AgentError, ToolError
+from terno_agent.core.exceptions import AgentCancelled, AgentError, ToolError
 from terno_agent.core.messages import (
     Message,
     SystemMessage,
@@ -44,6 +45,7 @@ class AgentRun:
     answer: str
     trace: Trace = field(default_factory=list)
     iterations: int = 0
+    cancelled: bool = False
 
 
 class BaseAgent:
@@ -58,12 +60,14 @@ class BaseAgent:
         *,
         on_event: EventHook | None = None,
         post_turn_hook: PostTurnHook | None = None,
+        cancel_token: CancelToken | None = None,
     ) -> None:
         self.llm = llm
         self.system_prompt = system_prompt
         self.tools: dict[str, Tool] = {t.schema.name: t for t in tools}
         self.on_event = on_event
         self.post_turn_hook = post_turn_hook
+        self.cancel_token = cancel_token or CancelToken()
 
     def run(self, task: str, *, extra_context: str | None = None) -> AgentRun:
         system = self.system_prompt
@@ -71,31 +75,47 @@ class BaseAgent:
             system += "\n\n---\n" + extra_context
 
         messages: Trace = [SystemMessage(system), UserMessage(task)]
+        last_iteration = 0
 
-        for i in range(1, self.max_iterations + 1):
-            self._emit(IterationStart(agent=self.name, iteration=i))
+        try:
+            for i in range(1, self.max_iterations + 1):
+                last_iteration = i
+                self.cancel_token.check()
+                self._emit(IterationStart(agent=self.name, iteration=i))
 
-            response = self.llm.complete(
-                messages,
-                tools=[t.schema for t in self.tools.values()],
-                on_text_delta=self._emit_text_delta,
+                response = self.llm.complete(
+                    messages,
+                    tools=[t.schema for t in self.tools.values()],
+                    on_text_delta=self._emit_text_delta,
+                )
+                assistant = response.message
+                messages.append(assistant)
+                self._emit(TurnEnd(agent=self.name, message=assistant))
+
+                if not assistant.tool_calls:
+                    self._run_post_turn_hook(messages)
+                    return AgentRun(
+                        answer=assistant.content,
+                        trace=messages,
+                        iterations=i,
+                    )
+
+                results: list[ToolResult] = []
+                for tc in assistant.tool_calls:
+                    self.cancel_token.check()
+                    self._emit(ToolCallEvent(agent=self.name, call=tc))
+                    result = self._run_tool_call(tc)
+                    self._emit(ToolResultEvent(agent=self.name, result=result))
+                    results.append(result)
+
+                messages.append(ToolResultMessage(results=results))
+        except AgentCancelled:
+            return AgentRun(
+                answer="(cancelled by user)",
+                trace=messages,
+                iterations=last_iteration,
+                cancelled=True,
             )
-            assistant = response.message
-            messages.append(assistant)
-            self._emit(TurnEnd(agent=self.name, message=assistant))
-
-            if not assistant.tool_calls:
-                self._run_post_turn_hook(messages)
-                return AgentRun(answer=assistant.content, trace=messages, iterations=i)
-
-            results: list[ToolResult] = []
-            for tc in assistant.tool_calls:
-                self._emit(ToolCallEvent(agent=self.name, call=tc))
-                result = self._run_tool_call(tc)
-                self._emit(ToolResultEvent(agent=self.name, result=result))
-                results.append(result)
-
-            messages.append(ToolResultMessage(results=results))
 
         raise AgentError(
             f"{self.name} exceeded max_iterations ({self.max_iterations}) without finishing."
@@ -108,6 +128,8 @@ class BaseAgent:
         try:
             output = tool.run(**tc.arguments)
             return ToolResult(call_id=tc.id, content=output, is_error=False)
+        except AgentCancelled:
+            raise
         except ToolError as exc:
             return ToolResult(call_id=tc.id, content=str(exc), is_error=True)
         except Exception as exc:  # pragma: no cover - defensive
@@ -122,6 +144,9 @@ class BaseAgent:
             pass
 
     def _emit_text_delta(self, text: str) -> None:
+        # Streaming is the lowest-latency place to notice cancellation;
+        # raising here propagates out of the LLM client's stream loop.
+        self.cancel_token.check()
         self._emit(TextDelta(agent=self.name, text=text))
 
     def _run_post_turn_hook(self, trace: Trace) -> None:

@@ -30,6 +30,8 @@ class AsyncBridge:
         self._started = threading.Event()
         self._stopped = False
         self._lock = threading.Lock()
+        self._inflight: set[concurrent.futures.Future] = set()
+        self._inflight_lock = threading.Lock()
 
     # ----- lifecycle ----------------------------------------------------- #
 
@@ -76,6 +78,8 @@ class AsyncBridge:
         if loop is None or self._stopped:
             raise BridgeError("AsyncBridge is not running")
         future = asyncio.run_coroutine_threadsafe(coro, loop)
+        with self._inflight_lock:
+            self._inflight.add(future)
         try:
             return future.result(timeout=timeout)
         except concurrent.futures.TimeoutError as exc:
@@ -83,6 +87,21 @@ class AsyncBridge:
             raise TimeoutError(
                 f"mcp call timed out after {timeout}s"
             ) from exc
+        except concurrent.futures.CancelledError as exc:
+            raise CancelledFuture("mcp call cancelled") from exc
+        finally:
+            with self._inflight_lock:
+                self._inflight.discard(future)
+
+    def cancel_inflight(self) -> None:
+        """Cancel every in-flight future. Used by the chat's stop signal.
+
+        Safe to call from any thread including a signal handler.
+        """
+        with self._inflight_lock:
+            futures = list(self._inflight)
+        for f in futures:
+            f.cancel()
 
     # ----- internals ----------------------------------------------------- #
 
@@ -97,4 +116,8 @@ class AsyncBridge:
             asyncio.set_event_loop(None)
 
 
-__all__ = ["AsyncBridge", "BridgeError"]
+class CancelledFuture(RuntimeError):  # noqa: N818 - parallels concurrent.futures.CancelledError
+    """A bridge future was cancelled out from under the waiter."""
+
+
+__all__ = ["AsyncBridge", "BridgeError", "CancelledFuture"]

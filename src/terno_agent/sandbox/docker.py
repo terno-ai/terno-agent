@@ -11,8 +11,11 @@ import io
 import tarfile
 import time
 
-from terno_agent.core.exceptions import SandboxError
+from terno_agent.core.cancel import CancelToken
+from terno_agent.core.exceptions import AgentCancelled, SandboxError
 from terno_agent.sandbox.base import ExecutionResult
+
+_POLL_INTERVAL_S = 0.2
 
 
 class DockerSandbox:
@@ -58,7 +61,11 @@ class DockerSandbox:
         *,
         timeout_s: int = 30,
         env: dict[str, str] | None = None,
+        cancel_token: CancelToken | None = None,
     ) -> ExecutionResult:
+        if cancel_token is not None and cancel_token.is_cancelled:
+            raise AgentCancelled("cancelled before run_python started")
+
         container = self._client.containers.create(
             self.image,
             command=["python", "/work/snippet.py"],
@@ -74,22 +81,47 @@ class DockerSandbox:
         try:
             container.put_archive(self.workdir, _tar_bytes("snippet.py", code))
             container.start()
+
+            deadline = time.monotonic() + timeout_s
             timed_out = False
-            try:
-                result = container.wait(timeout=timeout_s)
-                exit_code = int(result.get("StatusCode", 1))
-            except Exception:
-                timed_out = True
-                exit_code = 124
+            cancelled = False
+            exit_code = 0
+
+            while True:
+                if cancel_token is not None and cancel_token.is_cancelled:
+                    cancelled = True
+                    try:
+                        container.kill()
+                    except Exception:
+                        pass
+                    break
+                if time.monotonic() >= deadline:
+                    timed_out = True
+                    try:
+                        container.kill()
+                    except Exception:
+                        pass
+                    break
                 try:
-                    container.kill()
+                    result = container.wait(timeout=_POLL_INTERVAL_S)
+                    exit_code = int(result.get("StatusCode", 1))
+                    break
                 except Exception:
-                    pass
-                # Give docker a moment to flush logs.
+                    # `wait` raised because the poll timeout fired; loop and
+                    # re-check the cancel token + deadline.
+                    continue
+
+            # Give docker a moment to flush logs after a hard kill.
+            if timed_out or cancelled:
                 time.sleep(0.1)
+                exit_code = 124 if timed_out else 130
 
             stdout = container.logs(stdout=True, stderr=False).decode("utf-8", errors="replace")
             stderr = container.logs(stdout=False, stderr=True).decode("utf-8", errors="replace")
+
+            if cancelled:
+                raise AgentCancelled("run_python cancelled by user")
+
             return ExecutionResult(
                 stdout=stdout, stderr=stderr, exit_code=exit_code, timed_out=timed_out
             )

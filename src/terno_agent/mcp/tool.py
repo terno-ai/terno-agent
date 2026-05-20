@@ -16,8 +16,9 @@ import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
-from terno_agent.core.exceptions import ToolError
+from terno_agent.core.exceptions import AgentCancelled, ToolError
 from terno_agent.core.tool import ToolSchema
+from terno_agent.mcp.bridge import CancelledFuture
 
 if TYPE_CHECKING:
     from terno_agent.mcp.bridge import AsyncBridge
@@ -71,6 +72,10 @@ class McpTool:
                 self.session.call_tool(self.tool_name, dict(kwargs)),
                 timeout=self.timeout_s,
             )
+        except CancelledFuture as exc:
+            raise AgentCancelled(
+                f"mcp {self.server}.{self.tool_name} cancelled"
+            ) from exc
         except TimeoutError as exc:
             raise ToolError(
                 f"mcp {self.server}.{self.tool_name} timed out after {self.timeout_s}s"
