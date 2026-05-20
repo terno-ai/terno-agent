@@ -157,6 +157,8 @@ def _build_config(
         read_only_sql=base.read_only_sql,
         mcp_enabled=base.mcp_enabled,
         mcp_config_path=base.mcp_config_path,
+        skills_enabled=base.skills_enabled,
+        skill_paths=list(base.skill_paths),
         memory_enabled=base.memory_enabled,
         memory_top_k=base.memory_top_k,
         embedding_provider=base.embedding_provider,

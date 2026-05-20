@@ -28,6 +28,7 @@ from terno_agent.prompts.prompt import SYSTEM_PROMPT
 from terno_agent.rag.embeddings import create_embedding_client
 from terno_agent.sandbox.base import Sandbox
 from terno_agent.sandbox.factory import create_sandbox
+from terno_agent.skills import ActivateSkillTool, SkillCatalog, discover_skills
 from terno_agent.tools.code_exec import RunPythonTool
 from terno_agent.tools.files import EditFileTool, ReadFileTool, WriteFileTool
 from terno_agent.tools.shell import BashTool
@@ -54,6 +55,7 @@ class TernoAgent(BaseAgent):
         task_store: TaskStore | None = None,
         sandbox: Sandbox | None = None,
         mcp_manager: McpManager | None = None,
+        skill_catalog: SkillCatalog | None = None,
         bash_timeout_s: int = 120,
         run_python_timeout_s: int = 30,
         on_event=None,
@@ -66,6 +68,7 @@ class TernoAgent(BaseAgent):
         self.task_store = task_store or TaskStore()
         self.sandbox = sandbox
         self.mcp_manager = mcp_manager
+        self.skill_catalog = skill_catalog or SkillCatalog()
         self.memory_store = memory_store
         self.memory_retriever = memory_retriever
         self.memory_extractor = memory_extractor
@@ -105,6 +108,8 @@ class TernoAgent(BaseAgent):
                     cancel_token=token,
                 )
             )
+        if self.skill_catalog.skills:
+            tools.append(ActivateSkillTool(self.skill_catalog))
         if mcp_manager is not None:
             tools.extend(mcp_manager.tools())
         if memory_store is not None:
@@ -112,7 +117,7 @@ class TernoAgent(BaseAgent):
 
         super().__init__(
             llm,
-            system_prompt or SYSTEM_PROMPT,
+            _with_skill_catalog(system_prompt or SYSTEM_PROMPT, self.skill_catalog),
             tools,
             on_event=on_event,
             post_turn_hook=(
@@ -193,11 +198,20 @@ class TernoAgent(BaseAgent):
         memory_store, memory_retriever, memory_extractor = _build_memory(
             config, llm, workdir=Path.cwd(), on_event=on_event
         )
+        skill_catalog = (
+            discover_skills(
+                Path.cwd(),
+                extra_roots=[Path(p) for p in config.skill_paths],
+            )
+            if config.skills_enabled
+            else SkillCatalog()
+        )
 
         return cls(
             llm,
             sandbox=sandbox,
             mcp_manager=mcp_manager,
+            skill_catalog=skill_catalog,
             on_event=on_event,
             memory_store=memory_store,
             memory_retriever=memory_retriever,
@@ -250,3 +264,10 @@ def _build_memory(
         on_event=on_event,
     )
     return (store, retriever, extractor)
+
+
+def _with_skill_catalog(system_prompt: str, catalog: SkillCatalog) -> str:
+    section = catalog.prompt_section()
+    if not section:
+        return system_prompt
+    return f"{system_prompt}\n\n---\n{section}"

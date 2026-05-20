@@ -66,6 +66,9 @@ class Config:
     read_only_sql: bool = True
     mcp_enabled: bool = True
     mcp_config_path: str = ""
+    # ----- agent skills ---------------------------------------------------- #
+    skills_enabled: bool = True
+    skill_paths: list[str] = field(default_factory=list)
     # ----- memory ---------------------------------------------------------- #
     memory_enabled: bool = True
     memory_top_k: int = 5
@@ -95,6 +98,8 @@ class Config:
                 api_key = os.getenv("OPENAI_API_KEY")
         embedding_api_key = os.getenv("TERNO_EMBEDDING_API_KEY") or os.getenv("OPENAI_API_KEY")
         memory_enabled_raw = os.getenv("TERNO_MEMORY_ENABLED", "true").lower()
+        skills_enabled_raw = os.getenv("TERNO_SKILLS_ENABLED", "true").lower()
+        skill_paths_raw = os.getenv("TERNO_SKILL_PATHS", "")
         return cls(
             llm_provider=provider,
             llm_model=model,
@@ -106,6 +111,12 @@ class Config:
             read_only_sql=os.getenv("TERNO_READ_ONLY_SQL", "true").lower() != "false",
             mcp_enabled=os.getenv("TERNO_MCP_ENABLED", "true").lower() != "false",
             mcp_config_path=os.getenv("TERNO_MCP_CONFIG", ""),
+            skills_enabled=skills_enabled_raw not in {"false", "0", "no", "off"},
+            skill_paths=[
+                path.strip()
+                for path in skill_paths_raw.split(os.pathsep)
+                if path.strip()
+            ],
             memory_enabled=memory_enabled_raw not in {"false", "0", "no", "off"},
             memory_top_k=int(os.getenv("TERNO_MEMORY_TOP_K", "5")),
             embedding_provider=os.getenv("TERNO_EMBEDDING_PROVIDER", "openai").lower(),
@@ -127,6 +138,8 @@ class Config:
             f"read_only_sql      = {self.read_only_sql}\n"
             f"mcp_enabled        = {self.mcp_enabled}\n"
             f"mcp_config_path    = {self.mcp_config_path or '(auto-discover)'}\n"
+            f"skills_enabled     = {self.skills_enabled}\n"
+            f"skill_paths        = {os.pathsep.join(self.skill_paths) or '(auto-discover)'}\n"
             f"memory_enabled     = {self.memory_enabled}\n"
             f"memory_top_k       = {self.memory_top_k}\n"
             f"embedding_provider = {self.embedding_provider}\n"

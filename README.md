@@ -22,6 +22,11 @@ any [Model Context Protocol (MCP)][mcp] servers you configure.
   format) and every remote tool shows up as `mcp__server__tool`. Servers
   can be launched via `uvx`, `npx`, or Docker, or connected to over
   HTTP/SSE. See [MCP](#mcp).
+- **Agent Skills.** Terno ships common built-in skills for data science
+  and general-purpose work, and you can add `SKILL.md`-based skills in
+  `.terno/skills/`, `.agents/skills/`, or `.claude/skills/`. Either
+  Anthropic or OpenAI models load full instructions through
+  `activate_skill` only when needed.
 - **Subagent spawner.** `spawn_agent` recursively launches a fresh
   `TernoAgent` with a caller-supplied system prompt — useful for isolating
   focused subtasks from your main context.
@@ -55,6 +60,7 @@ any [Model Context Protocol (MCP)][mcp] servers you configure.
   edit_file                 task store)                via uvx /
   bash                                                 npx / docker
   run_python (sandbox)                                 / HTTP / SSE)
+  activate_skill
   task_* (in-memory)
 ```
 
@@ -139,6 +145,10 @@ TERNO_DATABASE_URL=sqlite:///./demo.db
 # or disable it entirely
 TERNO_MCP_ENABLED=true
 TERNO_MCP_CONFIG=/path/to/.mcp.json
+
+# optional — Agent Skills are on by default
+TERNO_SKILLS_ENABLED=true
+# TERNO_SKILL_PATHS=/path/to/skills
 
 # optional — memory is on by default; needs an OpenAI key for embeddings
 TERNO_MEMORY_ENABLED=true
@@ -310,8 +320,72 @@ from terno_agent.config import Config
 
 config = Config.from_env()
 config.mcp_enabled = False        # don't load .mcp.json
+config.skills_enabled = False     # don't discover Agent Skills
 config.memory_enabled = False     # no recall, no extraction
 agent = Agent.from_config(config)
+```
+
+## Agent Skills
+
+Terno supports Agent Skills using the standard `SKILL.md` shape: a skill
+is a directory containing a required `SKILL.md` file with YAML
+frontmatter (`name` and `description`) followed by Markdown
+instructions. At startup, Terno loads only each skill's metadata into the
+system prompt. When the model decides a skill is relevant, it calls
+`activate_skill(name)` to load the full instructions and a capped list of
+bundled resources.
+
+Built-in skills are available by default:
+
+| Skill | Use for |
+| ----- | ------- |
+| `code-review` | code reviews, regressions, missing tests |
+| `debugging` | failing tests, runtime errors, flaky behavior |
+| `data-analysis` | dataset exploration, summaries, metrics |
+| `data-cleaning` | messy data, deduplication, standardization |
+| `data-visualization` | charts, dashboards, visual summaries |
+| `documentation` | README, API docs, runbooks, tutorials |
+| `machine-learning` | models, experiments, metrics, leakage checks |
+| `python-data` | dataframe, notebook, numerical, and file-based analysis |
+| `research-synthesis` | research, comparisons, decision briefs |
+| `sql-analysis` | analytical SQL, joins, cohorts, funnels |
+| `task-planning` | multi-step planning, milestones, risks |
+
+Custom discovery checks these roots, with later roots overriding earlier
+ones. That means project skills can replace built-in skills with the
+same name:
+
+```text
+built-in packaged skills
+~/.terno/skills/
+~/.agents/skills/
+~/.claude/skills/
+<cwd or ancestor>/.terno/skills/
+<cwd or ancestor>/.agents/skills/
+<cwd or ancestor>/.claude/skills/
+```
+
+Add extra roots with `TERNO_SKILL_PATHS` (use your OS path separator).
+Set `TERNO_SKILLS_ENABLED=false` to disable skills for a session. The
+implementation is provider-neutral: skills are just prompt context plus
+a normal tool call, so they work with both `anthropic` and `openai`.
+
+Minimal skill:
+
+```text
+.agents/skills/code-review/SKILL.md
+```
+
+```markdown
+---
+name: code-review
+description: Review code for regressions, missing tests, and maintainability. Use when the user asks for a code review.
+---
+
+# Code Review
+
+Focus on bugs and behavioral risk first. Report findings with file and
+line references, then summarize test coverage.
 ```
 
 ### Deep research over a database
@@ -486,7 +560,8 @@ src/terno_agent/
   agents/              # BaseAgent + the single TernoAgent
   prompts/             # the single SYSTEM_PROMPT
   tools/               # read_file, write_file, edit_file, bash,
-                       # run_python, tasks, spawn_agent
+                       # run_python, tasks, spawn_agent, activate_skill
+  skills/              # SKILL.md discovery + activate_skill adapter
   sandbox/             # Docker + local subprocess runners (for run_python)
   mcp/                 # .mcp.json parser, runner resolver, async bridge,
                        # session manager, sync Tool adapter

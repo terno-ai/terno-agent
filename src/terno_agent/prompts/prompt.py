@@ -34,6 +34,9 @@ delegate work to subagents.
   (recursively) and returns its final answer. Use this to parallelize
   independent work or to isolate a focused subtask from your main
   context.
+- `activate_skill(name)`: load specialized Agent Skill instructions
+  when available skills are listed later in this prompt and the user's
+  task matches one of their descriptions.
 
 # Doing tasks
 
