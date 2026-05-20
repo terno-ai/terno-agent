@@ -214,18 +214,7 @@ class TernoAgent(BaseAgent):
             model=config.llm_model,
             api_key=config.llm_api_key,
         )
-        sandbox: Sandbox | None = None
-        if config.sandbox != "none":
-            try:
-                sandbox = create_sandbox(config.sandbox)
-            except SandboxError as exc:
-                print(
-                    f"warning: sandbox {config.sandbox!r} unavailable ({exc}); "
-                    "run_python tool will be disabled. Set TERNO_SANDBOX=none "
-                    "to silence this warning, or TERNO_SANDBOX=local to use "
-                    "the local subprocess sandbox.",
-                    file=sys.stderr,
-                )
+        sandbox = _init_sandbox(config)
 
         mcp_manager: McpManager | None = None
         if config.mcp_enabled:
@@ -350,3 +339,67 @@ def _wrap_memory_extractor(extractor: MemoryExtractor):
         extractor.extract(ctx.history)
 
     return hook
+
+
+def _sandbox_options(config: Config, kind: str) -> dict[str, object]:
+    """Compose kwargs for ``create_sandbox`` for ``kind``.
+
+    Free-form ``sandbox_options`` win on conflict so users can override
+    the legacy ``sandbox_image`` field per-invocation. ``image`` is added
+    only for the docker backend; plugin backends declare their own knobs
+    via ``sandbox_options``.
+    """
+    opts: dict[str, object] = dict(config.sandbox_options)
+    if kind == "docker" and "image" not in opts:
+        opts["image"] = config.sandbox_image
+    return opts
+
+
+def _init_sandbox(config: Config) -> Sandbox | None:
+    """Build the primary sandbox, falling back per ``config.sandbox_fallback``.
+
+    Returns the working `Sandbox`, or ``None`` if neither the primary nor
+    the fallback could initialize. Emits a single concise notice on
+    successful fallback; the louder warning fires only when no sandbox is
+    usable.
+    """
+    primary = config.sandbox
+    if primary == "none":
+        return None
+
+    try:
+        return create_sandbox(primary, **_sandbox_options(config, primary))
+    except SandboxError as primary_exc:
+        fallback = config.sandbox_fallback
+        if not fallback or fallback in {"none", primary}:
+            _warn_no_sandbox(primary, primary_exc, fallback_tried=None)
+            return None
+        try:
+            sb = create_sandbox(fallback, **_sandbox_options(config, fallback))
+        except SandboxError as fallback_exc:
+            _warn_no_sandbox(primary, primary_exc, fallback_tried=(fallback, fallback_exc))
+            return None
+        print(
+            f"notice: sandbox {primary!r} unavailable — falling back to "
+            f"{fallback!r}. Set TERNO_SANDBOX={fallback} (or "
+            "TERNO_SANDBOX_FALLBACK=none) to silence this notice.",
+            file=sys.stderr,
+        )
+        return sb
+
+
+def _warn_no_sandbox(
+    primary: str,
+    primary_exc: SandboxError,
+    *,
+    fallback_tried: tuple[str, SandboxError] | None,
+) -> None:
+    detail = f"sandbox {primary!r} unavailable ({primary_exc})"
+    if fallback_tried is not None:
+        fb_name, fb_exc = fallback_tried
+        detail += f"; fallback {fb_name!r} also failed ({fb_exc})"
+    print(
+        f"warning: {detail}. run_python tool will be disabled. "
+        "Set TERNO_SANDBOX=none to silence this warning.",
+        file=sys.stderr,
+    )

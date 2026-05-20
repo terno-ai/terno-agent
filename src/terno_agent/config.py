@@ -60,8 +60,12 @@ class Config:
     llm_model: str = ""
     llm_api_key: str | None = None
     database_url: str = ""
-    sandbox: str = "docker"  # docker | local | none
+    sandbox: str = "docker"  # built-ins: docker | local | none; plus any plugin name
     sandbox_image: str = "python:3.12-slim"
+    sandbox_options: dict[str, str] = field(default_factory=dict)
+    # Backend to try when the primary sandbox fails to initialize. Empty
+    # string or "none" disables fallback (the old strict behavior).
+    sandbox_fallback: str = "local"
     max_rows: int = 200
     read_only_sql: bool = True
     mcp_enabled: bool = True
@@ -90,10 +94,8 @@ class Config:
     def __post_init__(self) -> None:
         if not self.llm_model:
             self.llm_model = DEFAULT_MODELS.get(self.llm_provider, "")
-        if self.sandbox not in {"docker", "local", "none"}:
-            raise ConfigError(
-                f"Invalid sandbox {self.sandbox!r}. Must be one of: docker, local, none."
-            )
+        # Sandbox kind is validated by the sandbox registry at construction
+        # time so plugin names work without core-side allowlisting.
         if self.attachment_image_mode not in {"auto", "native", "metadata"}:
             raise ConfigError(
                 "Invalid attachment_image_mode "
@@ -121,8 +123,10 @@ class Config:
             llm_model=model,
             llm_api_key=api_key,
             database_url=os.getenv("TERNO_DATABASE_URL", ""),
-            sandbox=os.getenv("TERNO_SANDBOX", "docker").lower(),
+            sandbox=_normalize_sandbox(os.getenv("TERNO_SANDBOX", "docker")),
             sandbox_image=os.getenv("TERNO_SANDBOX_IMAGE", "python:3.12-slim"),
+            sandbox_options=_parse_sandbox_options(os.getenv("TERNO_SANDBOX_OPTIONS", "")),
+            sandbox_fallback=_normalize_sandbox(os.getenv("TERNO_SANDBOX_FALLBACK", "local")),
             max_rows=int(os.getenv("TERNO_MAX_ROWS", "200")),
             read_only_sql=os.getenv("TERNO_READ_ONLY_SQL", "true").lower() != "false",
             mcp_enabled=os.getenv("TERNO_MCP_ENABLED", "true").lower() != "false",
@@ -165,6 +169,9 @@ class Config:
             f"database_url       = {self.database_url or '(unset)'}\n"
             f"sandbox            = {self.sandbox}\n"
             f"sandbox_image      = {self.sandbox_image}\n"
+            f"sandbox_options    = "
+            f"{', '.join(f'{k}={v}' for k, v in self.sandbox_options.items()) or '(none)'}\n"
+            f"sandbox_fallback   = {self.sandbox_fallback or '(disabled)'}\n"
             f"max_rows           = {self.max_rows}\n"
             f"read_only_sql      = {self.read_only_sql}\n"
             f"mcp_enabled        = {self.mcp_enabled}\n"
@@ -185,3 +192,37 @@ class Config:
             f"max_attachments_per_turn = {self.max_attachments_per_turn}\n"
             f"attachment_image_mode = {self.attachment_image_mode}\n"
         )
+
+
+def _normalize_sandbox(raw: str) -> str:
+    """Lowercase a registry-style sandbox name but keep import strings intact.
+
+    ``"module.Path:Class"`` is case-sensitive (Python attribute lookup), so
+    only registered short names go through ``str.lower()``.
+    """
+    raw = raw.strip()
+    if ":" in raw:
+        return raw
+    return raw.lower()
+
+
+def _parse_sandbox_options(raw: str) -> dict[str, str]:
+    """Parse ``key=val,key=val`` env strings into a dict.
+
+    Whitespace around keys/values is stripped. Empty entries are
+    skipped. Entries without ``=`` raise `ConfigError`.
+    """
+    out: dict[str, str] = {}
+    if not raw:
+        return out
+    for piece in raw.split(","):
+        piece = piece.strip()
+        if not piece:
+            continue
+        if "=" not in piece:
+            raise ConfigError(
+                f"TERNO_SANDBOX_OPTIONS entry {piece!r} must be 'key=value'"
+            )
+        key, _, value = piece.partition("=")
+        out[key.strip()] = value.strip()
+    return out

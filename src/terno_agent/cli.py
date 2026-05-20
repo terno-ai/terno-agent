@@ -70,6 +70,27 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Disable persistent memory (no recall, no extraction) for this session.",
     )
+    p.add_argument(
+        "--sandbox",
+        metavar="NAME",
+        default=None,
+        help=(
+            "Override the sandbox backend for this invocation. Built-ins: "
+            "docker, local, none. Also accepts plugin names registered via "
+            "the 'terno_agent.sandboxes' entry-point group, or "
+            "'package.module:ClassName' for ad-hoc backends."
+        ),
+    )
+    p.add_argument(
+        "--sandbox-option",
+        action="append",
+        default=[],
+        metavar="KEY=VALUE",
+        help=(
+            "Pass a key=value option through to the sandbox constructor. "
+            "May be passed multiple times. Merges with TERNO_SANDBOX_OPTIONS."
+        ),
+    )
     sub = p.add_subparsers(dest="command")
 
     ask = sub.add_parser("ask", help="Run the agent on a single task and exit.")
@@ -271,11 +292,42 @@ def _run_turn_with_cancel(
 
 def _build_agent(args: argparse.Namespace, *, on_event=None) -> TernoAgent:
     """Build a TernoAgent from env, honoring CLI flags like ``--no-memory``."""
-    if not getattr(args, "no_memory", False):
-        return TernoAgent.from_env(on_event=on_event)
     config = Config.from_env()
-    config.memory_enabled = False
-    return TernoAgent.from_config(config, on_event=on_event)
+    overridden = False
+
+    if getattr(args, "no_memory", False):
+        config.memory_enabled = False
+        overridden = True
+
+    sandbox_arg = getattr(args, "sandbox", None)
+    if sandbox_arg:
+        config.sandbox = sandbox_arg if ":" in sandbox_arg else sandbox_arg.strip().lower()
+        overridden = True
+
+    cli_sandbox_opts = _parse_cli_kv(getattr(args, "sandbox_option", []) or [])
+    if cli_sandbox_opts:
+        merged = dict(config.sandbox_options)
+        merged.update(cli_sandbox_opts)
+        config.sandbox_options = merged
+        overridden = True
+
+    if overridden:
+        return TernoAgent.from_config(config, on_event=on_event)
+    return TernoAgent.from_env(on_event=on_event)
+
+
+def _parse_cli_kv(entries: list[str]) -> dict[str, str]:
+    """Parse repeated ``--sandbox-option key=value`` flags into a dict."""
+    out: dict[str, str] = {}
+    for raw in entries:
+        if "=" not in raw:
+            raise TernoError(f"--sandbox-option entry {raw!r} must be 'key=value'")
+        key, _, value = raw.partition("=")
+        key = key.strip()
+        if not key:
+            raise TernoError(f"--sandbox-option entry {raw!r} has empty key")
+        out[key] = value.strip()
+    return out
 
 
 def _shutdown_mcp(agent: TernoAgent) -> None:

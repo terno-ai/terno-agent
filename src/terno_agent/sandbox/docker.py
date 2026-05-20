@@ -7,15 +7,26 @@ removed after execution.
 
 from __future__ import annotations
 
-import io
-import tarfile
+import json
+import os
 import time
+from pathlib import Path
 
 from terno_agent.core.cancel import CancelToken
 from terno_agent.core.exceptions import AgentCancelled, SandboxError
 from terno_agent.sandbox.base import ExecutionResult
 
 _POLL_INTERVAL_S = 0.2
+
+# Per-user socket paths used by common macOS / Linux Docker installs when
+# `/var/run/docker.sock` isn't symlinked. Probed in order.
+_CANDIDATE_SOCKETS = (
+    ".docker/run/docker.sock",       # Docker Desktop (modern)
+    ".colima/default/docker.sock",   # Colima default profile
+    ".colima/docker.sock",           # Colima older layout
+    ".rd/docker.sock",               # Rancher Desktop
+    ".orbstack/run/docker.sock",     # OrbStack
+)
 
 
 class DockerSandbox:
@@ -34,11 +45,23 @@ class DockerSandbox:
             raise SandboxError(
                 "docker package not installed. Install with: pip install 'terno-agent[docker]'"
             ) from exc
+        base_url = discover_docker_base_url()
         try:
-            self._client = docker.from_env()
+            if base_url:
+                self._client = docker.DockerClient(base_url=base_url)
+            else:
+                self._client = docker.from_env()
             self._client.ping()
         except Exception as exc:
-            raise SandboxError(f"Could not connect to Docker daemon: {exc}") from exc
+            hint = ""
+            if not base_url and not os.environ.get("DOCKER_HOST"):
+                hint = (
+                    " (Hint: docker-py defaults to /var/run/docker.sock. If "
+                    "you're using Docker Desktop, Colima, Rancher, or OrbStack, "
+                    "either set DOCKER_HOST or ensure your active 'docker context' "
+                    "host is discoverable.)"
+                )
+            raise SandboxError(f"Could not connect to Docker daemon: {exc}{hint}") from exc
         self.image = image
         self.network = network
         self.memory = memory
@@ -66,9 +89,13 @@ class DockerSandbox:
         if cancel_token is not None and cancel_token.is_cancelled:
             raise AgentCancelled("cancelled before run_python started")
 
+        # Pass the snippet as an inline argument so we don't need to write
+        # it into the container's filesystem. put_archive would race with
+        # the tmpfs mounts (which only become active at start time) and
+        # blow up with "container rootfs is marked read-only".
         container = self._client.containers.create(
             self.image,
-            command=["python", "/work/snippet.py"],
+            command=["python", "-c", code],
             working_dir=self.workdir,
             network_mode=self.network,
             mem_limit=self.memory,
@@ -79,7 +106,6 @@ class DockerSandbox:
             detach=True,
         )
         try:
-            container.put_archive(self.workdir, _tar_bytes("snippet.py", code))
             container.start()
 
             deadline = time.monotonic() + timeout_s
@@ -132,12 +158,68 @@ class DockerSandbox:
                 pass
 
 
-def _tar_bytes(name: str, contents: str) -> bytes:
-    buf = io.BytesIO()
-    data = contents.encode("utf-8")
-    with tarfile.open(fileobj=buf, mode="w") as tar:
-        info = tarfile.TarInfo(name=name)
-        info.size = len(data)
-        info.mode = 0o644
-        tar.addfile(info, io.BytesIO(data))
-    return buf.getvalue()
+def discover_docker_base_url() -> str | None:
+    """Find the right Docker daemon endpoint, mirroring the Docker CLI.
+
+    Resolution order (matches `docker context` behavior):
+
+    1. ``DOCKER_HOST`` env var — returns ``None`` so ``docker.from_env()``
+       handles it (it already honors this variable).
+    2. ``DOCKER_CONTEXT`` env var, or ``currentContext`` in
+       ``~/.docker/config.json``. The matching context's
+       ``Endpoints.docker.Host`` is read from
+       ``~/.docker/contexts/meta/<sha>/meta.json``.
+    3. Common per-user socket paths used by Docker Desktop, Colima,
+       Rancher Desktop, and OrbStack.
+
+    Returns ``None`` if nothing better than the docker-py default was
+    found; the caller then falls back to ``docker.from_env()``.
+    """
+    if os.environ.get("DOCKER_HOST"):
+        return None
+
+    name = os.environ.get("DOCKER_CONTEXT") or _read_current_context()
+    if name and name not in ("", "default"):
+        host = _read_context_host(name)
+        if host:
+            return host
+
+    home = Path.home()
+    for relative in _CANDIDATE_SOCKETS:
+        candidate = home / relative
+        if candidate.exists():
+            return f"unix://{candidate}"
+    return None
+
+
+def _read_current_context() -> str | None:
+    cfg = Path.home() / ".docker" / "config.json"
+    if not cfg.exists():
+        return None
+    try:
+        data = json.loads(cfg.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    value = data.get("currentContext")
+    return value if isinstance(value, str) and value else None
+
+
+def _read_context_host(name: str) -> str | None:
+    meta_root = Path.home() / ".docker" / "contexts" / "meta"
+    if not meta_root.is_dir():
+        return None
+    for entry in meta_root.iterdir():
+        meta = entry / "meta.json"
+        if not meta.is_file():
+            continue
+        try:
+            data = json.loads(meta.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if data.get("Name") != name:
+            continue
+        host = data.get("Endpoints", {}).get("docker", {}).get("Host")
+        return host if isinstance(host, str) and host else None
+    return None
+
+

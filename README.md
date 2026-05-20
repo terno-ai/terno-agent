@@ -17,7 +17,9 @@ any [Model Context Protocol (MCP)][mcp] servers you configure.
 - **Sandboxed Python.** `run_python` runs inside Docker by default
   (`--network none`, read-only rootfs, mem/CPU caps); a local subprocess
   sandbox is available for dev. The tool is auto-hidden when no sandbox
-  is reachable.
+  is reachable. The sandbox layer is **pluggable** — third-party backends
+  (QEMU, browser-based, vendor APIs) register via Python entry points;
+  see [Sandbox plugins](#sandbox-plugins).
 - **MCP support.** Drop a `.terno/mcp.json` in your repo (Claude-Code-compatible
   format) and every remote tool shows up as `mcp__server__tool`. Servers
   can be launched via `uvx`, `npx`, or Docker, or connected to over
@@ -140,7 +142,12 @@ cp .env.example .env
 ANTHROPIC_API_KEY=sk-ant-...           # or OPENAI_API_KEY=
 TERNO_LLM_PROVIDER=anthropic           # anthropic | openai
 TERNO_LLM_MODEL=claude-opus-4-7
-TERNO_SANDBOX=docker                   # docker | local | none
+TERNO_SANDBOX=docker                   # docker | local | none | <plugin name> | pkg.mod:Cls
+# When the primary sandbox can't initialize, try this one (default: local).
+# Set to 'none' to disable fallback.
+TERNO_SANDBOX_FALLBACK=local
+# Optional kwargs forwarded to the sandbox constructor:
+# TERNO_SANDBOX_OPTIONS=image=python:3.13,memory=1g
 
 # optional — only needed for `terno deep_research`
 TERNO_DATABASE_URL=sqlite:///./demo.db
@@ -533,6 +540,95 @@ version:
 ```
 
 (or set `"UV_PYTHON": "3.12"` in the server's `env` block).
+
+## Sandbox
+
+`run_python` executes LLM-generated code inside a sandbox. Two backends
+ship in the core package:
+
+- **`docker`** (default) — `--network none`, read-only rootfs, memory + CPU
+  caps. If the daemon isn't reachable, the agent **automatically falls
+  back to `local`** with a one-line notice. Set `TERNO_SANDBOX_FALLBACK=none`
+  for strict Docker-only behavior.
+- **`local`** — direct subprocess. Not a security boundary; only for dev.
+
+Plus a `none` sentinel that skips sandbox construction entirely.
+
+### Fallback
+
+`TERNO_SANDBOX_FALLBACK` (default `local`) names the backend to try when
+the primary sandbox fails to initialize. Empty string or `none` disables
+fallback. The notice prints only when fallback actually fires; the louder
+warning is reserved for the case where no sandbox is usable.
+
+### Selecting a backend
+
+Env or CLI:
+
+```bash
+TERNO_SANDBOX=local terno ask "print(1+1)"
+terno --sandbox local ask "print(1+1)"
+```
+
+Pass per-backend options:
+
+```bash
+# As env (CSV of key=value pairs):
+TERNO_SANDBOX_OPTIONS="image=python:3.13,memory=1g" terno ask ...
+# As CLI (repeatable):
+terno --sandbox docker --sandbox-option image=python:3.13 ask ...
+```
+
+`TERNO_SANDBOX_IMAGE` still works for the docker backend; equivalent to
+passing `--sandbox-option image=...`.
+
+### Sandbox plugins
+
+Third-party backends (QEMU, browser-based, vendor APIs) register via the
+`terno_agent.sandboxes` entry-point group in their own package's
+`pyproject.toml`:
+
+```toml
+[project.entry-points."terno_agent.sandboxes"]
+qemu = "terno_qemu:QemuSandbox"
+```
+
+After `pip install terno-qemu` the backend is selectable as
+`TERNO_SANDBOX=qemu` or `terno --sandbox qemu`. For one-off backends
+that don't warrant publishing, point `TERNO_SANDBOX` at a fully-
+qualified import string instead:
+
+```bash
+TERNO_SANDBOX=my_pkg.module:CustomSandbox terno ask ...
+```
+
+A plugin only needs to satisfy the `Sandbox` Protocol:
+
+```python
+from terno_agent.sandbox import ExecutionResult, Sandbox
+
+
+class CustomSandbox:
+    def __init__(self, **options):
+        # Read whatever options the user passes via TERNO_SANDBOX_OPTIONS
+        # / --sandbox-option / explicit kwargs.
+        ...
+
+    def run_python(
+        self,
+        code: str,
+        *,
+        timeout_s: int = 30,
+        env: dict[str, str] | None = None,
+    ) -> ExecutionResult:
+        ...
+        return ExecutionResult(stdout=..., stderr=..., exit_code=...)
+```
+
+Raise `terno_agent.core.exceptions.SandboxError` from `__init__` if the
+backend can't initialize (missing dependency, daemon offline, etc.) —
+the agent will warn and continue with `run_python` disabled, the same
+way the built-in Docker check behaves today.
 
 ## Memory
 

@@ -51,6 +51,14 @@ dev = [
 terno = "terno_agent.cli:main"
 terno-agent = "terno_agent.cli:main"
 
+# Third-party sandbox backends register here. Each entry's name becomes the
+# value users pass via TERNO_SANDBOX / --sandbox; the value points at a
+# callable returning an object that satisfies `terno_agent.sandbox.Sandbox`.
+# Example (in a plugin package's own pyproject.toml):
+#   [project.entry-points."terno_agent.sandboxes"]
+#   qemu = "terno_qemu:QemuSandbox"
+[project.entry-points."terno_agent.sandboxes"]
+
 [project.urls]
 Homepage = "https://github.com/terno-ai/terno-agent"
 Issues = "https://github.com/terno-ai/terno-agent/issues"
