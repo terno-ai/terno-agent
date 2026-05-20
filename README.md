@@ -146,6 +146,12 @@ TERNO_SANDBOX=docker                   # docker | local | none | <plugin name> |
 # When the primary sandbox can't initialize, try this one (default: local).
 # Set to 'none' to disable fallback.
 TERNO_SANDBOX_FALLBACK=local
+# Keep the sandbox container alive after the session ends so the next
+# `terno` invocation in the same cwd attaches to it (vars + imports + /work
+# files all preserved).
+TERNO_SANDBOX_PERSIST=false
+# Override the auto-derived per-cwd container name. Only used when persist=true.
+# TERNO_SANDBOX_CONTAINER_NAME=my-sandbox
 # Optional kwargs forwarded to the sandbox constructor:
 # TERNO_SANDBOX_OPTIONS=image=python:3.13,memory=1g
 
@@ -553,6 +559,37 @@ ship in the core package:
 - **`local`** — direct subprocess. Not a security boundary; only for dev.
 
 Plus a `none` sentinel that skips sandbox construction entirely.
+
+### Session lifetime
+
+The Docker sandbox keeps **one container per session** and runs a small
+Python driver inside it. Each `run_python` call sends the snippet over
+the container's stdin, so:
+
+- Variables, imports, and function definitions persist across calls
+  within the same `terno chat` session or `Agent` instance.
+- Files written under `/work` persist for the lifetime of the container.
+- Timeouts and cancellations SIGKILL the container and the next call
+  recreates a fresh one — session state is lost but the agent keeps
+  working.
+
+By default the container is killed and removed when the session ends
+(CLI exit, or `Agent.close()` / context-manager exit). To keep the
+container across sessions:
+
+```bash
+TERNO_SANDBOX_PERSIST=true terno chat
+# next session reuses the same per-cwd container:
+TERNO_SANDBOX_PERSIST=true terno ask "print(session_token)"
+```
+
+The default container name is `terno-sandbox-<8-hex>` derived from the
+current working directory, so each project gets its own container.
+Override with `TERNO_SANDBOX_CONTAINER_NAME=my-name` if you want
+something explicit.
+
+The `local` backend is stateless — each call spawns a fresh subprocess
+— and ignores the persist knobs.
 
 ### Fallback
 

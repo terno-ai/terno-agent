@@ -139,14 +139,23 @@ class Agent:
     # ----- Lifecycle --------------------------------------------------------- #
 
     def close(self) -> None:
-        """Shut down owned resources (MCP servers, background loops).
+        """Shut down owned resources (sandbox, MCP servers, background loops).
 
-        Safe to call multiple times; safe to skip if no MCP servers were
-        configured. Also runs via ``atexit`` as a defensive net.
+        The sandbox container is torn down here unless `sandbox_persist`
+        is set, in which case it's left running so the next session can
+        attach to it. Safe to call multiple times.
         """
         if self._closed:
             return
         self._closed = True
+        sandbox = getattr(self._agent, "sandbox", None)
+        if sandbox is not None:
+            closer = getattr(sandbox, "close", None)
+            if callable(closer):
+                try:
+                    closer()
+                except Exception:
+                    pass
         manager = getattr(self._agent, "mcp_manager", None)
         if manager is not None:
             manager.shutdown()

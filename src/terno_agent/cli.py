@@ -331,6 +331,21 @@ def _parse_cli_kv(entries: list[str]) -> dict[str, str]:
 
 
 def _shutdown_mcp(agent: TernoAgent) -> None:
+    """Tear down the agent's per-session resources.
+
+    Despite the legacy name this closes the sandbox container (unless
+    `sandbox_persist=True`) as well as MCP servers. Kept under the old
+    function name so the two existing call sites don't need to be
+    touched.
+    """
+    sandbox = getattr(agent, "sandbox", None)
+    if sandbox is not None:
+        closer = getattr(sandbox, "close", None)
+        if callable(closer):
+            try:
+                closer()
+            except Exception:  # pragma: no cover - defensive
+                pass
     manager = getattr(agent, "mcp_manager", None)
     if manager is not None:
         try:

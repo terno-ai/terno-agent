@@ -24,8 +24,19 @@ _TERM_GRACE_S = 0.5
 
 
 class LocalSandbox:
-    def __init__(self, *, python: str | None = None) -> None:
+    def __init__(self, *, python: str | None = None, **_unused) -> None:
+        # Accepts (and silently ignores) `persist` / `container_name` so it
+        # can stand in for the Docker backend in fallback paths without the
+        # caller having to special-case option dicts.
         self.python = python or sys.executable
+
+    def close(self) -> None:
+        """No-op — LocalSandbox spawns fresh subprocesses per call.
+
+        Provided for protocol symmetry with `DockerSandbox.close()` so the
+        agent's shutdown path can call it unconditionally.
+        """
+        return None
 
     def run_python(
         self,

@@ -66,6 +66,13 @@ class Config:
     # Backend to try when the primary sandbox fails to initialize. Empty
     # string or "none" disables fallback (the old strict behavior).
     sandbox_fallback: str = "local"
+    # When True, the sandbox container is given a stable name and left
+    # running after this session ends so the next session can attach to
+    # it. Otherwise the container is killed + removed on Agent.close().
+    sandbox_persist: bool = False
+    # Override the auto-derived per-cwd container name. Only honored when
+    # sandbox_persist is True.
+    sandbox_container_name: str = ""
     max_rows: int = 200
     read_only_sql: bool = True
     mcp_enabled: bool = True
@@ -127,6 +134,9 @@ class Config:
             sandbox_image=os.getenv("TERNO_SANDBOX_IMAGE", "python:3.12-slim"),
             sandbox_options=_parse_sandbox_options(os.getenv("TERNO_SANDBOX_OPTIONS", "")),
             sandbox_fallback=_normalize_sandbox(os.getenv("TERNO_SANDBOX_FALLBACK", "local")),
+            sandbox_persist=os.getenv("TERNO_SANDBOX_PERSIST", "false").lower()
+            not in {"false", "0", "no", "off", ""},
+            sandbox_container_name=os.getenv("TERNO_SANDBOX_CONTAINER_NAME", "").strip(),
             max_rows=int(os.getenv("TERNO_MAX_ROWS", "200")),
             read_only_sql=os.getenv("TERNO_READ_ONLY_SQL", "true").lower() != "false",
             mcp_enabled=os.getenv("TERNO_MCP_ENABLED", "true").lower() != "false",
@@ -172,6 +182,8 @@ class Config:
             f"sandbox_options    = "
             f"{', '.join(f'{k}={v}' for k, v in self.sandbox_options.items()) or '(none)'}\n"
             f"sandbox_fallback   = {self.sandbox_fallback or '(disabled)'}\n"
+            f"sandbox_persist    = {self.sandbox_persist}\n"
+            f"sandbox_container_name = {self.sandbox_container_name or '(auto-derived per cwd)'}\n"
             f"max_rows           = {self.max_rows}\n"
             f"read_only_sql      = {self.read_only_sql}\n"
             f"mcp_enabled        = {self.mcp_enabled}\n"

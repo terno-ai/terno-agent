@@ -350,8 +350,11 @@ def _sandbox_options(config: Config, kind: str) -> dict[str, object]:
     via ``sandbox_options``.
     """
     opts: dict[str, object] = dict(config.sandbox_options)
-    if kind == "docker" and "image" not in opts:
-        opts["image"] = config.sandbox_image
+    if kind == "docker":
+        opts.setdefault("image", config.sandbox_image)
+        opts.setdefault("persist", config.sandbox_persist)
+        if config.sandbox_container_name:
+            opts.setdefault("container_name", config.sandbox_container_name)
     return opts
 
 
