@@ -75,6 +75,10 @@ class Config:
     embedding_provider: str = "openai"
     embedding_model: str = "text-embedding-3-small"
     embedding_api_key: str | None = None
+    # ----- compaction ------------------------------------------------------ #
+    compaction_enabled: bool = True
+    compaction_threshold_tokens: int = 80_000
+    compaction_keep_last_turns: int = 4
     extra: dict[str, str] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
@@ -122,6 +126,14 @@ class Config:
             embedding_provider=os.getenv("TERNO_EMBEDDING_PROVIDER", "openai").lower(),
             embedding_model=os.getenv("TERNO_EMBEDDING_MODEL", "text-embedding-3-small"),
             embedding_api_key=embedding_api_key,
+            compaction_enabled=os.getenv("TERNO_COMPACTION_ENABLED", "true").lower()
+            not in {"false", "0", "no", "off"},
+            compaction_threshold_tokens=int(
+                os.getenv("TERNO_COMPACTION_THRESHOLD_TOKENS", "80000")
+            ),
+            compaction_keep_last_turns=int(
+                os.getenv("TERNO_COMPACTION_KEEP_LAST_TURNS", "4")
+            ),
         )
 
     def display(self) -> str:
@@ -145,4 +157,7 @@ class Config:
             f"embedding_provider = {self.embedding_provider}\n"
             f"embedding_model    = {self.embedding_model}\n"
             f"embedding_api_key  = {embedding_masked}\n"
+            f"compaction_enabled = {self.compaction_enabled}\n"
+            f"compaction_threshold_tokens = {self.compaction_threshold_tokens}\n"
+            f"compaction_keep_last_turns  = {self.compaction_keep_last_turns}\n"
         )

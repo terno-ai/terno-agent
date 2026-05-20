@@ -16,7 +16,9 @@ from pathlib import Path
 from terno_agent.agents.base import AgentRun, BaseAgent
 from terno_agent.config import Config
 from terno_agent.core.cancel import CancelToken
+from terno_agent.core.compaction import CompactionHook
 from terno_agent.core.exceptions import ConfigError, SandboxError
+from terno_agent.core.hooks import HookContext, HookEvent, HookManager
 from terno_agent.llm.base import LLMClient
 from terno_agent.llm.factory import create_llm_client
 from terno_agent.mcp.manager import McpManager
@@ -63,6 +65,8 @@ class TernoAgent(BaseAgent):
         memory_retriever: MemoryRetriever | None = None,
         memory_extractor: MemoryExtractor | None = None,
         cancel_token: CancelToken | None = None,
+        hook_manager: HookManager | None = None,
+        compaction_hook: CompactionHook | None = None,
     ) -> None:
         self.workdir = (workdir or Path.cwd()).resolve()
         self.task_store = task_store or TaskStore()
@@ -115,14 +119,21 @@ class TernoAgent(BaseAgent):
         if memory_store is not None:
             tools.append(SearchMemoryTool(memory_store))
 
+        hooks = hook_manager or HookManager()
+        if memory_extractor is not None:
+            hooks.register(
+                HookEvent.CHAT_END,
+                _wrap_memory_extractor(memory_extractor),
+            )
+        if compaction_hook is not None:
+            hooks.register(HookEvent.CHAT_END, compaction_hook)
+
         super().__init__(
             llm,
             _with_skill_catalog(system_prompt or SYSTEM_PROMPT, self.skill_catalog),
             tools,
             on_event=on_event,
-            post_turn_hook=(
-                memory_extractor.extract if memory_extractor is not None else None
-            ),
+            hook_manager=hooks,
             cancel_token=token,
         )
 
@@ -207,6 +218,14 @@ class TernoAgent(BaseAgent):
             else SkillCatalog()
         )
 
+        compaction_hook: CompactionHook | None = None
+        if config.compaction_enabled:
+            compaction_hook = CompactionHook(
+                llm=llm,
+                threshold_input_tokens=config.compaction_threshold_tokens,
+                keep_last_turns=config.compaction_keep_last_turns,
+            )
+
         return cls(
             llm,
             sandbox=sandbox,
@@ -216,6 +235,7 @@ class TernoAgent(BaseAgent):
             memory_store=memory_store,
             memory_retriever=memory_retriever,
             memory_extractor=memory_extractor,
+            compaction_hook=compaction_hook,
         )
 
     # ----- Convenience --------------------------------------------------- #
@@ -271,3 +291,14 @@ def _with_skill_catalog(system_prompt: str, catalog: SkillCatalog) -> str:
     if not section:
         return system_prompt
     return f"{system_prompt}\n\n---\n{section}"
+
+
+def _wrap_memory_extractor(extractor: MemoryExtractor):
+    """Adapt the trace-based MemoryExtractor.extract() to the hook signature."""
+
+    def hook(ctx: HookContext) -> None:
+        if ctx.run is not None and ctx.run.cancelled:
+            return
+        extractor.extract(ctx.history)
+
+    return hook

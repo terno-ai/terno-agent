@@ -20,6 +20,8 @@ from terno_agent.agents.base import AgentRun
 from terno_agent.agents.terno import TernoAgent
 from terno_agent.config import Config
 from terno_agent.core.events import EventHook
+from terno_agent.core.hooks import Hook, HookEvent, UsageMeter
+from terno_agent.core.messages import Message
 
 if TYPE_CHECKING:
     from terno_agent.knowledge.runner import KnowledgeReport
@@ -81,6 +83,33 @@ class Agent:
     def ask(self, task: str) -> AgentRun:
         """Alias for `run`."""
         return self._agent.ask(task)
+
+    # ----- Conversation state ----------------------------------------------- #
+
+    @property
+    def history(self) -> list[Message]:
+        """The agent's persistent conversation (mutated in place across runs)."""
+        return self._agent.history
+
+    @property
+    def usage(self) -> UsageMeter:
+        """Cumulative LLM token usage reported by the provider."""
+        return self._agent.usage
+
+    def clear_history(self) -> None:
+        """Reset the conversation to just the system message and zero usage."""
+        self._agent.clear_history()
+
+    # ----- Hooks ------------------------------------------------------------ #
+
+    def add_hook(self, event: str, hook: Hook) -> None:
+        """Register a lifecycle hook (e.g. ``HookEvent.CHAT_END``).
+
+        See :class:`terno_agent.core.hooks.HookEvent` for the supported
+        event names. Hooks receive a ``HookContext`` and may mutate
+        ``ctx.history`` in place (the built-in compaction hook does this).
+        """
+        self._agent.add_hook(event, hook)
 
     # ----- Cancellation ----------------------------------------------------- #
 
@@ -164,7 +193,10 @@ def _build_config(
         embedding_provider=base.embedding_provider,
         embedding_model=base.embedding_model,
         embedding_api_key=base.embedding_api_key,
+        compaction_enabled=base.compaction_enabled,
+        compaction_threshold_tokens=base.compaction_threshold_tokens,
+        compaction_keep_last_turns=base.compaction_keep_last_turns,
     )
 
 
-__all__ = ["Agent"]
+__all__ = ["Agent", "HookEvent"]

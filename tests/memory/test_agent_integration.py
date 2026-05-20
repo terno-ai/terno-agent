@@ -21,6 +21,7 @@ class _OneShotLLM:
     def __init__(self, answer: str = "ok") -> None:
         self.answer = answer
         self.seen_systems: list[str] = []
+        self.seen_users: list[str] = []
 
     def complete(
         self,
@@ -31,9 +32,15 @@ class _OneShotLLM:
         temperature: float = 0.2,
         on_text_delta=None,
     ) -> LLMResponse:
-        # Capture the system prompt so the test can assert recall injection.
+        # Capture system + user content so the test can inspect recall injection
+        # (which now rides on the user message rather than the system prompt).
         system = next((m.content for m in messages if m.__class__.__name__ == "SystemMessage"), "")
+        user = next(
+            (m.content for m in reversed(messages) if m.__class__.__name__ == "UserMessage"),
+            "",
+        )
         self.seen_systems.append(system)
+        self.seen_users.append(user)
         return LLMResponse(
             message=AssistantMessage(content=self.answer),
             stop_reason="end_turn",
@@ -51,7 +58,7 @@ def test_search_memory_tool_registered_when_store_present(
     assert "search_memory" in agent.tools
 
 
-def test_memory_retriever_injects_into_system_prompt(
+def test_memory_retriever_injects_recall_into_user_turn(
     isolated_memory_dirs: Path, stub_embedder
 ) -> None:
     workdir = isolated_memory_dirs / "p"
@@ -76,9 +83,10 @@ def test_memory_retriever_injects_into_system_prompt(
     )
     result = agent.run("Tell me about my role")
     assert result.answer == "hello"
-    # First (and only) LLM call should have seen the recalled memory.
-    assert any("Relevant memories" in s for s in llm.seen_systems)
-    assert any("user-role" in s for s in llm.seen_systems)
+    # Recalled memory now rides on the user message (extra_context is per-turn,
+    # not part of the persistent system prompt).
+    assert any("Relevant memories" in u for u in llm.seen_users)
+    assert any("user-role" in u for u in llm.seen_users)
 
 
 def test_post_turn_hook_fires(isolated_memory_dirs: Path, stub_embedder) -> None:

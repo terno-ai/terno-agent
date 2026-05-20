@@ -119,7 +119,8 @@ def _cmd_chat(args: argparse.Namespace) -> int:
     agent = _build_agent(args, on_event=renderer)
     console.print(
         "[bold]terno-agent REPL[/] — type 'exit' or Ctrl-D to quit. "
-        "Use [bold]/deep_research[/] to launch knowledge extraction. "
+        "Use [bold]/deep_research[/] to launch knowledge extraction, "
+        "[bold]/clear[/] to reset the conversation. "
         "Hit Ctrl-C once to stop a running turn; twice in 2s to quit.\n"
     )
     last_ctrlc = 0.0
@@ -146,6 +147,18 @@ def _cmd_chat(args: argparse.Namespace) -> int:
             if lowered in {"/deep_research", "/research", "/knowledge"}:
                 _run_deep_research(console)
                 console.print()
+                continue
+            if lowered in {"/clear", "/reset"}:
+                agent.clear_history()
+                console.print("[dim](conversation cleared)[/]\n")
+                continue
+            if lowered in {"/usage", "/tokens"}:
+                u = agent.usage
+                console.print(
+                    f"[dim]usage: {u.total_input_tokens} in / "
+                    f"{u.total_output_tokens} out across {u.llm_calls} calls "
+                    f"(last: {u.last_input_tokens} in / {u.last_output_tokens} out)[/]\n"
+                )
                 continue
 
             result, exc = _run_turn_with_cancel(agent, line, console)

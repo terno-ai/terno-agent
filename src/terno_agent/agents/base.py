@@ -5,13 +5,19 @@ tools. The `run` loop is the standard "think → call tools → think" cycle,
 terminating when the model produces a final assistant message with no tool
 calls (or when a per-agent iteration cap is reached).
 
-The agent emits `AgentEvent`s to an optional ``on_event`` hook: streamed
-text deltas, tool calls, tool results, and turn endings.
+Conversation history is maintained on the agent across multiple `run()`
+calls so that `terno chat` and repeated SDK calls form a real
+multi-turn conversation. A `HookManager` is dispatched at well-defined
+points so users can plug in compaction, telemetry, memory extraction,
+etc., without modifying the loop.
+
+The agent also emits per-iteration `AgentEvent`s to an optional
+``on_event`` callback — used by the CLI to render streamed text.
 """
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 
 from terno_agent.core.cancel import CancelToken
@@ -24,6 +30,7 @@ from terno_agent.core.events import (
     TurnEnd,
 )
 from terno_agent.core.exceptions import AgentCancelled, AgentError, ToolError
+from terno_agent.core.hooks import HookContext, HookEvent, HookManager, UsageMeter
 from terno_agent.core.messages import (
     Message,
     SystemMessage,
@@ -36,8 +43,6 @@ from terno_agent.core.tool import Tool
 from terno_agent.llm.base import LLMClient
 
 Trace = list[Message]
-
-PostTurnHook = Callable[["Trace"], None]
 
 
 @dataclass(slots=True)
@@ -59,23 +64,42 @@ class BaseAgent:
         tools: Iterable[Tool] = (),
         *,
         on_event: EventHook | None = None,
-        post_turn_hook: PostTurnHook | None = None,
+        hook_manager: HookManager | None = None,
         cancel_token: CancelToken | None = None,
     ) -> None:
         self.llm = llm
         self.system_prompt = system_prompt
         self.tools: dict[str, Tool] = {t.schema.name: t for t in tools}
         self.on_event = on_event
-        self.post_turn_hook = post_turn_hook
+        self.hooks = hook_manager or HookManager()
         self.cancel_token = cancel_token or CancelToken()
+        self.usage = UsageMeter()
+        self.history: Trace = [SystemMessage(system_prompt)]
+
+    # ----- public history controls -------------------------------------- #
+
+    def clear_history(self) -> None:
+        """Drop the current conversation; keep the system message."""
+        self.history = [SystemMessage(self.system_prompt)]
+        self.usage.reset()
+
+    def add_hook(self, event: str, hook) -> None:
+        """Shorthand for ``self.hooks.register(event, hook)``."""
+        self.hooks.register(event, hook)
+
+    # ----- run loop ----------------------------------------------------- #
 
     def run(self, task: str, *, extra_context: str | None = None) -> AgentRun:
-        system = self.system_prompt
+        # Per-call context becomes part of the user message rather than the
+        # persistent system prompt, so memory recall / per-task hints are
+        # scoped to one turn.
+        user_content = task
         if extra_context:
-            system += "\n\n---\n" + extra_context
+            user_content = f"<context>\n{extra_context}\n</context>\n\n{task}"
+        self.history.append(UserMessage(user_content))
 
-        messages: Trace = [SystemMessage(system), UserMessage(task)]
         last_iteration = 0
+        run_start = len(self.history) - 1  # index of the UserMessage we just appended
 
         try:
             for i in range(1, self.max_iterations + 1):
@@ -84,21 +108,23 @@ class BaseAgent:
                 self._emit(IterationStart(agent=self.name, iteration=i))
 
                 response = self.llm.complete(
-                    messages,
+                    self.history,
                     tools=[t.schema for t in self.tools.values()],
                     on_text_delta=self._emit_text_delta,
                 )
+                self.usage.record(response)
                 assistant = response.message
-                messages.append(assistant)
+                self.history.append(assistant)
                 self._emit(TurnEnd(agent=self.name, message=assistant))
 
                 if not assistant.tool_calls:
-                    self._run_post_turn_hook(messages)
-                    return AgentRun(
+                    run = AgentRun(
                         answer=assistant.content,
-                        trace=messages,
+                        trace=self.history[run_start:],
                         iterations=i,
                     )
+                    self._dispatch_chat_end(run)
+                    return run
 
                 results: list[ToolResult] = []
                 for tc in assistant.tool_calls:
@@ -108,18 +134,22 @@ class BaseAgent:
                     self._emit(ToolResultEvent(agent=self.name, result=result))
                     results.append(result)
 
-                messages.append(ToolResultMessage(results=results))
+                self.history.append(ToolResultMessage(results=results))
         except AgentCancelled:
-            return AgentRun(
+            run = AgentRun(
                 answer="(cancelled by user)",
-                trace=messages,
+                trace=self.history[run_start:],
                 iterations=last_iteration,
                 cancelled=True,
             )
+            self._dispatch_chat_end(run)
+            return run
 
         raise AgentError(
             f"{self.name} exceeded max_iterations ({self.max_iterations}) without finishing."
         )
+
+    # ----- internals ---------------------------------------------------- #
 
     def _run_tool_call(self, tc: ToolCall) -> ToolResult:
         tool = self.tools.get(tc.name)
@@ -149,14 +179,17 @@ class BaseAgent:
         self.cancel_token.check()
         self._emit(TextDelta(agent=self.name, text=text))
 
-    def _run_post_turn_hook(self, trace: Trace) -> None:
-        if self.post_turn_hook is None:
+    def _dispatch_chat_end(self, run: AgentRun) -> None:
+        if not self.hooks.has(HookEvent.CHAT_END):
             return
-        try:
-            self.post_turn_hook(trace)
-        except Exception:
-            # Hooks must never break the user-facing flow.
-            pass
+        ctx = HookContext(
+            event=HookEvent.CHAT_END,
+            agent=self,
+            history=self.history,
+            usage=self.usage,
+            run=run,
+        )
+        self.hooks.dispatch(HookEvent.CHAT_END, ctx)
 
 
-__all__ = ["AgentRun", "BaseAgent", "EventHook", "PostTurnHook", "Trace"]
+__all__ = ["AgentRun", "BaseAgent", "EventHook", "Trace"]
