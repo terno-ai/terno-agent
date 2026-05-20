@@ -28,5 +28,6 @@ config.local.toml
 .vscode/
 *.swp
 .DS_Store
+.terno
 
 *.sqlite

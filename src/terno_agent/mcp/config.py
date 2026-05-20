@@ -14,9 +14,11 @@ or ``url``. ``${VAR}`` references in ``env``, ``headers``, and
 ``runner.args`` are expanded from the process environment at load
 time; missing variables raise `ConfigError` naming the server.
 
-Discovery order when ``path`` is omitted: ``$TERNO_MCP_CONFIG``, then
-``./.mcp.json``, then ``~/.terno/mcp.json``. First hit wins. A missing
-file is not an error — it just yields an empty list.
+Discovery when ``path`` is omitted: ``$TERNO_MCP_CONFIG`` if set,
+otherwise ``./.terno/mcp.json``. When ``path`` is provided explicitly
+the project default (``./.terno/mcp.json``) is *also* loaded and the
+two are merged — servers from the explicit path win on name conflict.
+A missing file is not an error; it just contributes nothing.
 """
 
 from __future__ import annotations
@@ -34,6 +36,7 @@ _VAR_RE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
 _VALID_RUNNER_TYPES = {"auto", "uvx", "npx", "docker", "command"}
 _VALID_TRANSPORTS = {"sse", "http"}
 _VALID_PACKAGE_TYPES = {"python", "npm"}
+_DEFAULT_PATH = "./.terno/mcp.json"
 
 
 # --------------------------------------------------------------------------- #
@@ -96,35 +99,30 @@ McpServerConfig = StdioServerConfig | HttpServerConfig
 
 
 def load_mcp_config(path: Path | str | None = None) -> list[McpServerConfig]:
-    """Load and validate `.mcp.json`. Returns `[]` if no file is found."""
-    resolved = _resolve_path(path)
-    if resolved is None:
-        return []
-    try:
-        raw = json.loads(resolved.read_text(encoding="utf-8"))
-    except json.JSONDecodeError as exc:
-        raise ConfigError(f"mcp config {resolved} is not valid JSON: {exc}") from exc
-    except OSError as exc:
-        raise ConfigError(f"could not read mcp config {resolved}: {exc}") from exc
+    """Load and validate MCP servers.
 
-    if not isinstance(raw, dict):
-        raise ConfigError(f"mcp config {resolved}: top-level must be an object")
-    servers = raw.get("mcpServers")
-    if servers is None:
-        return []
-    if not isinstance(servers, dict):
-        raise ConfigError(f"mcp config {resolved}: 'mcpServers' must be an object")
+    With no ``path``: load ``$TERNO_MCP_CONFIG`` if set, otherwise the
+    project default ``./.terno/mcp.json``. With an explicit ``path``:
+    load *both* it and the project default, with the explicit file's
+    servers overriding the default on name conflict. Returns ``[]`` if
+    nothing is found.
+    """
+    default_path = Path(_DEFAULT_PATH).expanduser()
+    default_exists = default_path.exists()
 
-    out: list[McpServerConfig] = []
-    for name, entry in servers.items():
-        if not isinstance(name, str) or not name:
-            raise ConfigError(f"mcp config {resolved}: server name must be a non-empty string")
-        if not isinstance(entry, dict):
-            raise ConfigError(
-                f"mcp config {resolved}: server '{name}' must be an object"
-            )
-        out.append(_parse_server(name, entry))
-    return out
+    if path is not None:
+        explicit = Path(path).expanduser()
+        layers: list[Path] = []
+        if default_exists and explicit.resolve() != default_path.resolve():
+            layers.append(default_path)
+        if explicit.exists():
+            layers.append(explicit)
+        return _merge_layers(layers)
+
+    env_path = os.environ.get("TERNO_MCP_CONFIG")
+    if env_path:
+        return _merge_layers([Path(env_path).expanduser()])
+    return _merge_layers([default_path] if default_exists else [])
 
 
 # --------------------------------------------------------------------------- #
@@ -132,21 +130,41 @@ def load_mcp_config(path: Path | str | None = None) -> list[McpServerConfig]:
 # --------------------------------------------------------------------------- #
 
 
-def _resolve_path(path: Path | str | None) -> Path | None:
-    if path:
-        p = Path(path).expanduser()
-        return p if p.exists() else None
-    for candidate in (
-        os.environ.get("TERNO_MCP_CONFIG"),
-        "./.mcp.json",
-        "~/.terno/mcp.json",
-    ):
-        if not candidate:
-            continue
-        p = Path(candidate).expanduser()
-        if p.exists():
-            return p
-    return None
+def _merge_layers(paths: list[Path]) -> list[McpServerConfig]:
+    """Load each path in order; later layers override earlier ones on name."""
+    by_name: dict[str, McpServerConfig] = {}
+    for p in paths:
+        for cfg in _load_one(p):
+            by_name[cfg.name] = cfg
+    return list(by_name.values())
+
+
+def _load_one(path: Path) -> list[McpServerConfig]:
+    if not path.exists():
+        return []
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise ConfigError(f"mcp config {path} is not valid JSON: {exc}") from exc
+    except OSError as exc:
+        raise ConfigError(f"could not read mcp config {path}: {exc}") from exc
+
+    if not isinstance(raw, dict):
+        raise ConfigError(f"mcp config {path}: top-level must be an object")
+    servers = raw.get("mcpServers")
+    if servers is None:
+        return []
+    if not isinstance(servers, dict):
+        raise ConfigError(f"mcp config {path}: 'mcpServers' must be an object")
+
+    out: list[McpServerConfig] = []
+    for name, entry in servers.items():
+        if not isinstance(name, str) or not name:
+            raise ConfigError(f"mcp config {path}: server name must be a non-empty string")
+        if not isinstance(entry, dict):
+            raise ConfigError(f"mcp config {path}: server '{name}' must be an object")
+        out.append(_parse_server(name, entry))
+    return out
 
 
 def _parse_server(name: str, entry: dict[str, Any]) -> McpServerConfig:

@@ -1,6 +1,6 @@
 """Model Context Protocol (MCP) client integration for terno-agent.
 
-`McpManager` is the public entry point. It loads a `.mcp.json` file,
+`McpManager` is the public entry point. It loads a `.terno/mcp.json` file,
 spawns sessions for each declared server (over stdio or HTTP), and
 exposes each remote tool as a sync `Tool` the rest of terno can use.
 

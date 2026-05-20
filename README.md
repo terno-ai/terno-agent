@@ -18,7 +18,7 @@ any [Model Context Protocol (MCP)][mcp] servers you configure.
   (`--network none`, read-only rootfs, mem/CPU caps); a local subprocess
   sandbox is available for dev. The tool is auto-hidden when no sandbox
   is reachable.
-- **MCP support.** Drop a `.mcp.json` in your repo (Claude-Code-compatible
+- **MCP support.** Drop a `.terno/mcp.json` in your repo (Claude-Code-compatible
   format) and every remote tool shows up as `mcp__server__tool`. Servers
   can be launched via `uvx`, `npx`, or Docker, or connected to over
   HTTP/SSE. See [MCP](#mcp).
@@ -56,7 +56,7 @@ any [Model Context Protocol (MCP)][mcp] servers you configure.
        ▼                         ▼                         ▼
   built-in tools           spawn_agent                MCP tools
   read_file                (fresh TernoAgent,         (loaded from
-  write_file                shares manager +           .mcp.json,
+  write_file                shares manager +           .terno/mcp.json,
   edit_file                 task store)                via uvx /
   bash                                                 npx / docker
   run_python (sandbox)                                 / HTTP / SSE)
@@ -141,10 +141,11 @@ TERNO_SANDBOX=docker                   # docker | local | none
 # optional — only needed for `terno deep_research`
 TERNO_DATABASE_URL=sqlite:///./demo.db
 
-# optional — MCP loading is on by default; point at a specific file
-# or disable it entirely
+# optional — MCP loading is on by default. The project default is
+# `.terno/mcp.json`; setting TERNO_MCP_CONFIG points at a specific file
+# (which is loaded *instead* of the default for env-based discovery).
 TERNO_MCP_ENABLED=true
-TERNO_MCP_CONFIG=/path/to/.mcp.json
+TERNO_MCP_CONFIG=/path/to/mcp.json
 
 # optional — Agent Skills are on by default
 TERNO_SKILLS_ENABLED=true
@@ -233,7 +234,7 @@ config = Config(
     llm_provider="anthropic",
     llm_api_key="sk-ant-...",
     sandbox="local",              # "docker" | "local" | "none"
-    mcp_enabled=False,            # skip .mcp.json
+    mcp_enabled=False,            # skip .terno/mcp.json
     memory_enabled=True,          # persistent recall
     memory_top_k=5,
     embedding_provider="openai",
@@ -312,14 +313,14 @@ with Agent(api_key="sk-ant-...", on_event=on_event) as agent:
 
 ### Disabling MCP or memory in code
 
-`.mcp.json` is loaded by default if present. To skip it for a single
+`.terno/mcp.json` is loaded by default if present. To skip it for a single
 run without touching the file:
 
 ```python
 from terno_agent.config import Config
 
 config = Config.from_env()
-config.mcp_enabled = False        # don't load .mcp.json
+config.mcp_enabled = False        # don't load .terno/mcp.json
 config.skills_enabled = False     # don't discover Agent Skills
 config.memory_enabled = False     # no recall, no extraction
 agent = Agent.from_config(config)
@@ -403,7 +404,7 @@ print("ok" if report.ok else "failed")
 
 ## MCP
 
-The agent reads a `.mcp.json` file at startup. The format is the same one
+The agent reads a `.terno/mcp.json` file at startup. The format is the same one
 [Claude Code][cc-mcp] and Cursor use, so existing configs paste in
 unchanged. If the file is missing, MCP loading is a no-op; if a server
 fails to start you get a stderr warning and the rest of the agent keeps
@@ -413,11 +414,14 @@ running.
 
 ### Discovery order
 
-1. `$TERNO_MCP_CONFIG`
-2. `./.mcp.json` (current working directory)
-3. `~/.terno/mcp.json`
+- **Default (no path passed):** `$TERNO_MCP_CONFIG` if set, otherwise
+  `./.terno/mcp.json`.
+- **Explicit path passed** (e.g. `Config(mcp_config_path=...)`): the
+  explicit file is loaded *together with* `./.terno/mcp.json` and the
+  two are merged. Servers in the explicit file override the default
+  on name conflict.
 
-First hit wins. Set `TERNO_MCP_ENABLED=false` to disable MCP entirely.
+Set `TERNO_MCP_ENABLED=false` to disable MCP entirely.
 
 ### Tool naming
 
@@ -425,7 +429,7 @@ Every remote tool is registered as `mcp__{server}__{tool}` so it can't
 collide with built-in tools. Server names with characters outside
 `[A-Za-z0-9_-]` are sanitized.
 
-### `.mcp.json` examples
+### `.terno/mcp.json` examples
 
 **Raw stdio** (Claude-Code-compatible — terno invokes the command verbatim):
 
@@ -563,7 +567,7 @@ src/terno_agent/
                        # run_python, tasks, spawn_agent, activate_skill
   skills/              # SKILL.md discovery + activate_skill adapter
   sandbox/             # Docker + local subprocess runners (for run_python)
-  mcp/                 # .mcp.json parser, runner resolver, async bridge,
+  mcp/                 # .terno/mcp.json parser, runner resolver, async bridge,
                        # session manager, sync Tool adapter
   memory/              # extractor + retriever + on-disk markdown store
                        # + a SearchMemoryTool surfaced to the agent

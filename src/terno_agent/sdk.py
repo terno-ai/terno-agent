@@ -33,7 +33,7 @@ class Agent:
     are read from the environment (and a ``.env`` file in CWD or any
     parent directory).
 
-    If you configure MCP servers (via ``.mcp.json``), use the agent as a
+    If you configure MCP servers (via ``.terno/mcp.json``), use the agent as a
     context manager so MCP subprocesses are shut down cleanly::
 
         with Agent(api_key=...) as agent:
