@@ -37,6 +37,10 @@ any [Model Context Protocol (MCP)][mcp] servers you configure.
   [Memory](#memory).
 - **Streaming + typed events.** Assistant text streams live; tool calls
   and results render with syntax-highlighted panels.
+- **Native attachments.** Attach text files, documents, or images to a
+  turn; Terno stores them locally, sends images through provider vision
+  payloads when available, and keeps large text files bounded with
+  selected chunks instead of dumping whole files into the prompt.
 - **CLI + library.** `terno ask "..."` / `terno chat` from the shell, or
   `from terno import Agent` in Python.
 - **Deep research (database).** A four-phase pipeline (org context,
@@ -166,8 +170,15 @@ Run `terno config` to print the effective settings (API keys masked).
 # one-shot task
 terno ask "refactor utils.py into smaller modules"
 
+# attach files to a one-shot task
+terno ask --attach report.pdf --attach chart.png "summarize these"
+
 # interactive REPL
 terno chat
+
+# in chat, queue files for the next turn
+/attach report.pdf
+/attachments
 
 # suppress streaming/activity, print only the final answer
 terno -q ask "explain how config.py loads .env files"
@@ -207,6 +218,11 @@ from terno import Agent
 agent = Agent(api_key="sk-ant-...")
 result = agent.run("read README.md and summarize what the agent does")
 print(result.answer)
+
+result = agent.run(
+    "compare these files",
+    attachments=["./report.pdf", "./chart.png"],
+)
 ```
 
 `Agent(...)` accepts `api_key`, `provider`, `model`, `database_url`,

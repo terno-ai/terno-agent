@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import StrEnum
+from pathlib import Path
 from typing import Any, Literal
 
 
@@ -32,6 +33,38 @@ class ToolResult:
     is_error: bool = False
 
 
+@dataclass(slots=True, frozen=True)
+class TextPart:
+    text: str
+
+
+@dataclass(slots=True, frozen=True)
+class ImagePart:
+    attachment_id: str
+    filename: str
+    mime_type: str
+    path: Path
+
+
+@dataclass(slots=True, frozen=True)
+class FilePart:
+    attachment_id: str
+    filename: str
+    mime_type: str
+    size_bytes: int
+    sha256: str
+    text: str
+
+
+@dataclass(slots=True, frozen=True)
+class AttachmentManifestPart:
+    text: str
+
+
+ContentPart = TextPart | ImagePart | FilePart | AttachmentManifestPart
+UserContent = str | list[ContentPart]
+
+
 @dataclass(slots=True)
 class SystemMessage:
     content: str
@@ -40,7 +73,7 @@ class SystemMessage:
 
 @dataclass(slots=True)
 class UserMessage:
-    content: str
+    content: UserContent
     role: Literal[Role.USER] = field(default=Role.USER, init=False)
 
 

@@ -79,6 +79,12 @@ class Config:
     compaction_enabled: bool = True
     compaction_threshold_tokens: int = 80_000
     compaction_keep_last_turns: int = 4
+    # ----- attachments ------------------------------------------------------ #
+    attachments_enabled: bool = True
+    attachments_dir: str = ".terno/attachments"
+    max_attachment_bytes: int = 512 * 1024 * 1024
+    max_attachments_per_turn: int = 8
+    attachment_image_mode: str = "auto"
     extra: dict[str, str] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
@@ -87,6 +93,11 @@ class Config:
         if self.sandbox not in {"docker", "local", "none"}:
             raise ConfigError(
                 f"Invalid sandbox {self.sandbox!r}. Must be one of: docker, local, none."
+            )
+        if self.attachment_image_mode not in {"auto", "native", "metadata"}:
+            raise ConfigError(
+                "Invalid attachment_image_mode "
+                f"{self.attachment_image_mode!r}. Must be one of: auto, native, metadata."
             )
 
     @classmethod
@@ -103,6 +114,7 @@ class Config:
         embedding_api_key = os.getenv("TERNO_EMBEDDING_API_KEY") or os.getenv("OPENAI_API_KEY")
         memory_enabled_raw = os.getenv("TERNO_MEMORY_ENABLED", "true").lower()
         skills_enabled_raw = os.getenv("TERNO_SKILLS_ENABLED", "true").lower()
+        attachments_enabled_raw = os.getenv("TERNO_ATTACHMENTS_ENABLED", "true").lower()
         skill_paths_raw = os.getenv("TERNO_SKILL_PATHS", "")
         return cls(
             llm_provider=provider,
@@ -134,6 +146,13 @@ class Config:
             compaction_keep_last_turns=int(
                 os.getenv("TERNO_COMPACTION_KEEP_LAST_TURNS", "4")
             ),
+            attachments_enabled=attachments_enabled_raw not in {"false", "0", "no", "off"},
+            attachments_dir=os.getenv("TERNO_ATTACHMENTS_DIR", ".terno/attachments"),
+            max_attachment_bytes=int(
+                os.getenv("TERNO_MAX_ATTACHMENT_BYTES", str(512 * 1024 * 1024))
+            ),
+            max_attachments_per_turn=int(os.getenv("TERNO_MAX_ATTACHMENTS_PER_TURN", "8")),
+            attachment_image_mode=os.getenv("TERNO_ATTACHMENT_IMAGE_MODE", "auto").lower(),
         )
 
     def display(self) -> str:
@@ -160,4 +179,9 @@ class Config:
             f"compaction_enabled = {self.compaction_enabled}\n"
             f"compaction_threshold_tokens = {self.compaction_threshold_tokens}\n"
             f"compaction_keep_last_turns  = {self.compaction_keep_last_turns}\n"
+            f"attachments_enabled = {self.attachments_enabled}\n"
+            f"attachments_dir     = {self.attachments_dir}\n"
+            f"max_attachment_bytes = {self.max_attachment_bytes}\n"
+            f"max_attachments_per_turn = {self.max_attachments_per_turn}\n"
+            f"attachment_image_mode = {self.attachment_image_mode}\n"
         )

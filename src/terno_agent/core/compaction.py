@@ -25,8 +25,12 @@ from dataclasses import dataclass
 from terno_agent.core.hooks import HookContext
 from terno_agent.core.messages import (
     AssistantMessage,
+    AttachmentManifestPart,
+    FilePart,
+    ImagePart,
     Message,
     SystemMessage,
+    TextPart,
     ToolResultMessage,
     UserMessage,
 )
@@ -130,7 +134,7 @@ def _render_for_summary(messages: list[Message]) -> str:
     parts: list[str] = []
     for m in messages:
         if isinstance(m, UserMessage):
-            parts.append(f"USER:\n{m.content}")
+            parts.append(f"USER:\n{_render_user_content(m.content)}")
         elif isinstance(m, AssistantMessage):
             line = f"ASSISTANT:\n{m.content}" if m.content else "ASSISTANT:"
             if m.tool_calls:
@@ -144,6 +148,31 @@ def _render_for_summary(messages: list[Message]) -> str:
         elif isinstance(m, SystemMessage):
             parts.append(f"SYSTEM_NOTE:\n{m.content}")
     return "\n\n".join(parts)
+
+
+def _render_user_content(content) -> str:
+    if isinstance(content, str):
+        return content
+    rendered: list[str] = []
+    for part in content:
+        if isinstance(part, TextPart):
+            rendered.append(part.text)
+        elif isinstance(part, AttachmentManifestPart):
+            rendered.append(part.text)
+        elif isinstance(part, ImagePart):
+            rendered.append(
+                f"[image attachment id={part.attachment_id} "
+                f"name={part.filename} mime={part.mime_type}]"
+            )
+        elif isinstance(part, FilePart):
+            rendered.append(
+                f"[file attachment id={part.attachment_id} name={part.filename} "
+                f"mime={part.mime_type} size={part.size_bytes} sha256={part.sha256}; "
+                "contents omitted from compaction transcript]"
+            )
+        else:  # pragma: no cover - defensive
+            rendered.append(str(part))
+    return "\n\n".join(rendered)
 
 
 __all__ = ["CompactionHook"]

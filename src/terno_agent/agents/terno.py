@@ -14,11 +14,18 @@ import sys
 from pathlib import Path
 
 from terno_agent.agents.base import AgentRun, BaseAgent
+from terno_agent.attachments import (
+    AttachmentInput,
+    AttachmentManager,
+    AttachmentPolicy,
+    AttachmentStore,
+)
 from terno_agent.config import Config
 from terno_agent.core.cancel import CancelToken
 from terno_agent.core.compaction import CompactionHook
 from terno_agent.core.exceptions import ConfigError, SandboxError
 from terno_agent.core.hooks import HookContext, HookEvent, HookManager
+from terno_agent.core.messages import ContentPart
 from terno_agent.llm.base import LLMClient
 from terno_agent.llm.factory import create_llm_client
 from terno_agent.mcp.manager import McpManager
@@ -64,6 +71,7 @@ class TernoAgent(BaseAgent):
         memory_store: MemoryStore | None = None,
         memory_retriever: MemoryRetriever | None = None,
         memory_extractor: MemoryExtractor | None = None,
+        attachment_manager: AttachmentManager | None = None,
         cancel_token: CancelToken | None = None,
         hook_manager: HookManager | None = None,
         compaction_hook: CompactionHook | None = None,
@@ -76,6 +84,7 @@ class TernoAgent(BaseAgent):
         self.memory_store = memory_store
         self.memory_retriever = memory_retriever
         self.memory_extractor = memory_extractor
+        self.attachment_manager = attachment_manager
 
         token = cancel_token or CancelToken()
 
@@ -160,13 +169,31 @@ class TernoAgent(BaseAgent):
 
     # ----- run with memory recall --------------------------------------- #
 
-    def run(self, task: str, *, extra_context: str | None = None) -> AgentRun:
+    def run(
+        self,
+        task: str,
+        *,
+        extra_context: str | None = None,
+        content_parts: list[ContentPart] | None = None,
+        attachments: list[AttachmentInput] | None = None,
+    ) -> AgentRun:
         if self.memory_retriever is not None:
             recalled = self.memory_retriever.fetch_relevant(task)
             if recalled:
                 extra_context = (
                     recalled if not extra_context else f"{recalled}\n\n---\n{extra_context}"
                 )
+        if content_parts is not None:
+            return super().run(task, extra_context=extra_context, content_parts=content_parts)
+        if attachments:
+            if self.attachment_manager is None:
+                raise ConfigError("Attachments are disabled for this agent.")
+            content_parts = self.attachment_manager.build_parts(task, list(attachments))
+            return super().run(
+                task,
+                extra_context=extra_context,
+                content_parts=content_parts,
+            )
         return super().run(task, extra_context=extra_context)
 
     # ----- Construction helpers ----------------------------------------- #
@@ -225,6 +252,7 @@ class TernoAgent(BaseAgent):
                 threshold_input_tokens=config.compaction_threshold_tokens,
                 keep_last_turns=config.compaction_keep_last_turns,
             )
+        attachment_manager = _build_attachments(config, Path.cwd())
 
         return cls(
             llm,
@@ -235,13 +263,19 @@ class TernoAgent(BaseAgent):
             memory_store=memory_store,
             memory_retriever=memory_retriever,
             memory_extractor=memory_extractor,
+            attachment_manager=attachment_manager,
             compaction_hook=compaction_hook,
         )
 
     # ----- Convenience --------------------------------------------------- #
 
-    def ask(self, task: str) -> AgentRun:
-        return self.run(task)
+    def ask(
+        self,
+        task: str,
+        *,
+        attachments: list[AttachmentInput] | None = None,
+    ) -> AgentRun:
+        return self.run(task, attachments=attachments)
 
 
 def _build_memory(
@@ -284,6 +318,20 @@ def _build_memory(
         on_event=on_event,
     )
     return (store, retriever, extractor)
+
+
+def _build_attachments(config: Config, workdir: Path) -> AttachmentManager | None:
+    if not config.attachments_enabled:
+        return None
+    root = Path(config.attachments_dir).expanduser()
+    if not root.is_absolute():
+        root = workdir / root
+    policy = AttachmentPolicy(
+        max_attachment_bytes=config.max_attachment_bytes,
+        max_attachments_per_turn=config.max_attachments_per_turn,
+        image_mode=config.attachment_image_mode,
+    )
+    return AttachmentManager(AttachmentStore(root), policy)
 
 
 def _with_skill_catalog(system_prompt: str, catalog: SkillCatalog) -> str:

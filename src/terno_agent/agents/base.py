@@ -32,8 +32,10 @@ from terno_agent.core.events import (
 from terno_agent.core.exceptions import AgentCancelled, AgentError, ToolError
 from terno_agent.core.hooks import HookContext, HookEvent, HookManager, UsageMeter
 from terno_agent.core.messages import (
+    ContentPart,
     Message,
     SystemMessage,
+    TextPart,
     ToolCall,
     ToolResult,
     ToolResultMessage,
@@ -89,13 +91,27 @@ class BaseAgent:
 
     # ----- run loop ----------------------------------------------------- #
 
-    def run(self, task: str, *, extra_context: str | None = None) -> AgentRun:
+    def run(
+        self,
+        task: str,
+        *,
+        extra_context: str | None = None,
+        content_parts: list[ContentPart] | None = None,
+    ) -> AgentRun:
         # Per-call context becomes part of the user message rather than the
         # persistent system prompt, so memory recall / per-task hints are
         # scoped to one turn.
-        user_content = task
-        if extra_context:
-            user_content = f"<context>\n{extra_context}\n</context>\n\n{task}"
+        if content_parts is not None:
+            user_content: str | list[ContentPart] = content_parts
+            if extra_context:
+                user_content = [
+                    TextPart(f"<context>\n{extra_context}\n</context>"),
+                    *content_parts,
+                ]
+        else:
+            user_content = task
+            if extra_context:
+                user_content = f"<context>\n{extra_context}\n</context>\n\n{task}"
         self.history.append(UserMessage(user_content))
 
         last_iteration = 0

@@ -2,16 +2,22 @@
 
 from __future__ import annotations
 
+import base64
 from typing import Any
 
 from terno_agent.core.exceptions import ConfigError, LLMError
 from terno_agent.core.messages import (
     AssistantMessage,
+    AttachmentManifestPart,
+    FilePart,
+    ImagePart,
     Message,
     Role,
     SystemMessage,
+    TextPart,
     ToolCall,
     ToolResultMessage,
+    UserMessage,
 )
 from terno_agent.core.tool import ToolSchema
 from terno_agent.llm.base import LLMResponse, TextDeltaCallback
@@ -87,14 +93,13 @@ def _split_system(messages: list[Message]) -> tuple[str, list[Message]]:
 
 
 def _to_anthropic(msg: Message) -> dict[str, Any]:
-    if msg.role is Role.USER:
-        return {"role": "user", "content": msg.content}  # type: ignore[attr-defined]
-    if msg.role is Role.ASSISTANT:
-        assert not isinstance(msg, (SystemMessage, ToolResultMessage))
+    if isinstance(msg, UserMessage):
+        return {"role": "user", "content": _serialize_user_content(msg.content)}
+    if isinstance(msg, AssistantMessage):
         blocks: list[dict[str, Any]] = []
-        if msg.content:  # type: ignore[attr-defined]
-            blocks.append({"type": "text", "text": msg.content})  # type: ignore[attr-defined]
-        for tc in msg.tool_calls:  # type: ignore[attr-defined]
+        if msg.content:
+            blocks.append({"type": "text", "text": msg.content})
+        for tc in msg.tool_calls:
             blocks.append(
                 {"type": "tool_use", "id": tc.id, "name": tc.name, "input": tc.arguments}
             )
@@ -114,6 +119,44 @@ def _to_anthropic(msg: Message) -> dict[str, Any]:
             ],
         }
     raise LLMError(f"Cannot serialize message role: {msg.role}")
+
+
+def _serialize_user_content(content: Any) -> str | list[dict[str, Any]]:
+    if isinstance(content, str):
+        return content
+    blocks: list[dict[str, Any]] = []
+    for part in content:
+        if isinstance(part, TextPart):
+            blocks.append({"type": "text", "text": part.text})
+        elif isinstance(part, AttachmentManifestPart):
+            blocks.append({"type": "text", "text": part.text})
+        elif isinstance(part, FilePart):
+            blocks.append({"type": "text", "text": _file_text(part)})
+        elif isinstance(part, ImagePart):
+            data = base64.b64encode(part.path.read_bytes()).decode("ascii")
+            blocks.append(
+                {
+                    "type": "image",
+                    "source": {
+                        "type": "base64",
+                        "media_type": part.mime_type,
+                        "data": data,
+                    },
+                }
+            )
+        else:  # pragma: no cover - defensive
+            blocks.append({"type": "text", "text": str(part)})
+    return blocks
+
+
+def _file_text(part: FilePart) -> str:
+    return (
+        f"<attachment id={part.attachment_id!r} filename={part.filename!r} "
+        f"mime_type={part.mime_type!r} size_bytes={part.size_bytes} "
+        f"sha256={part.sha256!r}>\n"
+        f"{part.text}\n"
+        "</attachment>"
+    )
 
 
 def _tool_to_anthropic(tool: ToolSchema) -> dict[str, Any]:

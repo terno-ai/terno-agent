@@ -18,8 +18,12 @@ from typing import TYPE_CHECKING
 from terno_agent.core.events import EventHook
 from terno_agent.core.messages import (
     AssistantMessage,
+    AttachmentManifestPart,
+    FilePart,
+    ImagePart,
     Message,
     SystemMessage,
+    TextPart,
     ToolResultMessage,
     UserMessage,
 )
@@ -97,7 +101,7 @@ def _format_trace(trace: Trace) -> str:
         if isinstance(msg, SystemMessage):
             continue
         if isinstance(msg, UserMessage):
-            parts.append(f"USER:\n{msg.content.strip()}")
+            parts.append(f"USER:\n{_format_user_content(msg.content).strip()}")
         elif isinstance(msg, AssistantMessage):
             text = msg.content.strip()
             if text:
@@ -110,6 +114,30 @@ def _format_trace(trace: Trace) -> str:
         else:  # pragma: no cover - exhaustive
             _: Message = msg
     return "\n\n".join(parts)
+
+
+def _format_user_content(content) -> str:
+    if isinstance(content, str):
+        return content
+    rendered: list[str] = []
+    for part in content:
+        if isinstance(part, TextPart):
+            rendered.append(part.text)
+        elif isinstance(part, AttachmentManifestPart):
+            rendered.append(part.text)
+        elif isinstance(part, ImagePart):
+            rendered.append(
+                f"[image attachment id={part.attachment_id} "
+                f"name={part.filename} mime={part.mime_type}]"
+            )
+        elif isinstance(part, FilePart):
+            rendered.append(
+                f"[file attachment id={part.attachment_id} name={part.filename} "
+                f"mime={part.mime_type} size={part.size_bytes} sha256={part.sha256}]"
+            )
+        else:  # pragma: no cover - defensive
+            rendered.append(str(part))
+    return "\n\n".join(rendered)
 
 
 __all__ = ["MemoryExtractor"]

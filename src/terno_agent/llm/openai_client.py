@@ -2,14 +2,19 @@
 
 from __future__ import annotations
 
+import base64
 import json
 from typing import Any
 
 from terno_agent.core.exceptions import ConfigError, LLMError
 from terno_agent.core.messages import (
     AssistantMessage,
+    AttachmentManifestPart,
+    FilePart,
+    ImagePart,
     Message,
     SystemMessage,
+    TextPart,
     ToolCall,
     ToolResultMessage,
     UserMessage,
@@ -77,7 +82,7 @@ def _serialize_messages(messages: list[Message]) -> list[dict[str, Any]]:
         if isinstance(m, SystemMessage):
             out.append({"role": "system", "content": m.content})
         elif isinstance(m, UserMessage):
-            out.append({"role": "user", "content": m.content})
+            out.append({"role": "user", "content": _serialize_user_content(m.content)})
         elif isinstance(m, AssistantMessage):
             payload: dict[str, Any] = {"role": "assistant", "content": m.content or None}
             if m.tool_calls:
@@ -96,6 +101,40 @@ def _serialize_messages(messages: list[Message]) -> list[dict[str, Any]]:
         else:  # pragma: no cover - defensive
             raise LLMError(f"Cannot serialize message of type {type(m).__name__}")
     return out
+
+
+def _serialize_user_content(content: Any) -> str | list[dict[str, Any]]:
+    if isinstance(content, str):
+        return content
+    blocks: list[dict[str, Any]] = []
+    for part in content:
+        if isinstance(part, TextPart):
+            blocks.append({"type": "text", "text": part.text})
+        elif isinstance(part, AttachmentManifestPart):
+            blocks.append({"type": "text", "text": part.text})
+        elif isinstance(part, FilePart):
+            blocks.append({"type": "text", "text": _file_text(part)})
+        elif isinstance(part, ImagePart):
+            data = base64.b64encode(part.path.read_bytes()).decode("ascii")
+            blocks.append(
+                {
+                    "type": "image_url",
+                    "image_url": {"url": f"data:{part.mime_type};base64,{data}"},
+                }
+            )
+        else:  # pragma: no cover - defensive
+            blocks.append({"type": "text", "text": str(part)})
+    return blocks
+
+
+def _file_text(part: FilePart) -> str:
+    return (
+        f"<attachment id={part.attachment_id!r} filename={part.filename!r} "
+        f"mime_type={part.mime_type!r} size_bytes={part.size_bytes} "
+        f"sha256={part.sha256!r}>\n"
+        f"{part.text}\n"
+        "</attachment>"
+    )
 
 
 def _tool_to_openai(tool: ToolSchema) -> dict[str, Any]:

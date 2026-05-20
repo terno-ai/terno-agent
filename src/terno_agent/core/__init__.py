@@ -18,12 +18,18 @@ from terno_agent.core.exceptions import (
 )
 from terno_agent.core.messages import (
     AssistantMessage,
+    AttachmentManifestPart,
+    ContentPart,
+    FilePart,
+    ImagePart,
     Message,
     Role,
     SystemMessage,
+    TextPart,
     ToolCall,
     ToolResult,
     ToolResultMessage,
+    UserContent,
     UserMessage,
 )
 from terno_agent.core.tool import Tool, ToolSchema
@@ -32,10 +38,14 @@ __all__ = [
     "AgentCancelled",
     "AgentError",
     "AgentEvent",
+    "AttachmentManifestPart",
     "AssistantMessage",
     "CancelToken",
     "ConfigError",
+    "ContentPart",
     "EventHook",
+    "FilePart",
+    "ImagePart",
     "IterationStart",
     "LLMError",
     "Message",
@@ -43,6 +53,7 @@ __all__ = [
     "SandboxError",
     "SystemMessage",
     "TextDelta",
+    "TextPart",
     "Tool",
     "ToolCall",
     "ToolCallEvent",
@@ -52,5 +63,6 @@ __all__ = [
     "ToolResultMessage",
     "ToolSchema",
     "TurnEnd",
+    "UserContent",
     "UserMessage",
 ]
