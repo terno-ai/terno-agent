@@ -1,4 +1,5 @@
-"""terno-agent: a multi-agent CLI + SDK for asking questions about your database."""
+"""terno-agent: a coding agent CLI + SDK with file ops, shell, sandboxed
+Python, task tracking, subagents, and pluggable MCP servers."""
 
 from terno_agent.config import Config
 from terno_agent.sdk import Agent
