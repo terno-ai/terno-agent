@@ -29,8 +29,9 @@ from terno_agent.core.events import (
     ToolResultEvent,
     TurnEnd,
 )
-from terno_agent.core.exceptions import TernoError
+from terno_agent.core.exceptions import TernoError, ToolError
 from terno_agent.knowledge.cli import run_knowledge_extraction
+from terno_agent.tools.ask_user import Answer, Question
 
 _DOUBLE_CTRLC_WINDOW_S = 2.0
 
@@ -311,9 +312,15 @@ def _build_agent(args: argparse.Namespace, *, on_event=None) -> TernoAgent:
         config.sandbox_options = merged
         overridden = True
 
+    renderer = on_event if isinstance(on_event, AgentRenderer) else None
+    console = renderer.console if renderer is not None else Console()
+    ask_callback = CliPrompter(console, renderer=renderer)
+
     if overridden:
-        return TernoAgent.from_config(config, on_event=on_event)
-    return TernoAgent.from_env(on_event=on_event)
+        return TernoAgent.from_config(
+            config, on_event=on_event, ask_callback=ask_callback
+        )
+    return TernoAgent.from_env(on_event=on_event, ask_callback=ask_callback)
 
 
 def _parse_cli_kv(entries: list[str]) -> dict[str, str]:
@@ -435,6 +442,14 @@ class AgentRenderer:
 
     def _render_tool_call(self, event: ToolCallEvent) -> None:
         call = event.call
+        # The CliPrompter prints questions itself; skip the JSON args panel
+        # so the user sees a clean question-by-question flow.
+        if call.name == "ask_user":
+            count = len(call.arguments.get("questions") or [])
+            self.console.print(
+                Text(f"[{event.agent}] asking the user {count} question(s)…", style=_AGENT_STYLE)
+            )
+            return
         body = _format_call_body(call.name, call.arguments)
         title = f"[{event.agent}] → {call.name}"
         self.console.print(
@@ -529,6 +544,123 @@ def _truncate(text: str, limit: int) -> str:
     if len(text) <= limit:
         return text
     return text[:limit] + f"\n... [truncated {len(text) - limit} chars]"
+
+
+# --------------------------------------------------------------------------- #
+# Human-in-the-loop prompter (ask_user tool callback)
+# --------------------------------------------------------------------------- #
+
+
+class CliPrompter:
+    """Renders ``ask_user`` questions one at a time and reads stdin replies.
+
+    Wired into ``TernoAgent`` via ``ask_callback``. Invoked from the agent's
+    worker thread; stdin reads block that thread until the user answers,
+    while the main thread keeps handling Ctrl-C → cancel signals.
+    """
+
+    def __init__(self, console: Console, *, renderer: AgentRenderer | None = None) -> None:
+        self.console = console
+        self.renderer = renderer
+
+    def __call__(self, questions: list[Question]) -> list[Answer]:
+        if not sys.stdin.isatty():
+            raise ToolError(
+                "ask_user is unavailable: stdin is not a TTY. "
+                "Make a reasonable assumption and state it in your response."
+            )
+        # Close any streaming text panel so prompts don't collide with output.
+        if self.renderer is not None:
+            self.renderer.finalize()
+
+        total = len(questions)
+        answers: list[Answer] = []
+        for idx, question in enumerate(questions, start=1):
+            answers.append(self._ask_one(idx, total, question))
+        return answers
+
+    # ----- internals ---------------------------------------------------- #
+
+    def _ask_one(self, idx: int, total: int, q: Question) -> Answer:
+        header = f"Question {idx}/{total}"
+        body = Text()
+        body.append(q.question, style="bold")
+        if q.multi_select:
+            body.append("\n(multi-select — comma-separated, e.g. 1,3)", style="dim")
+        self.console.print(
+            Panel(body, title=header, title_align="left", border_style="cyan", padding=(0, 1))
+        )
+
+        other_idx = len(q.options) + 1
+        for i, opt in enumerate(q.options, start=1):
+            line = Text(f"  [{i}] ", style="cyan")
+            line.append(opt.label, style="bold")
+            if opt.description:
+                line.append(f" — {opt.description}", style="dim")
+            self.console.print(line)
+        self.console.print(
+            Text(f"  [{other_idx}] ", style="cyan").append("Other (custom text)", style="bold")
+        )
+
+        prompt = "select> "
+        while True:
+            try:
+                raw = input(prompt).strip()
+            except EOFError as exc:
+                raise ToolError("ask_user cancelled: stdin closed.") from exc
+            tokens = _parse_selection(raw, other_idx, q.multi_select, self.console)
+            if tokens is None:
+                continue
+
+            labels: list[str] = []
+            other_text: str | None = None
+            need_reprompt = False
+            for t in tokens:
+                if t == other_idx:
+                    try:
+                        custom = input("  other> ").strip()
+                    except EOFError as exc:
+                        raise ToolError("ask_user cancelled: stdin closed.") from exc
+                    if not custom:
+                        self.console.print("[dim](other requires text — try again)[/]")
+                        need_reprompt = True
+                        break
+                    other_text = custom
+                else:
+                    labels.append(q.options[t - 1].label)
+            if need_reprompt:
+                continue
+            return Answer(question=q.question, selected=labels, other_text=other_text)
+
+
+def _parse_selection(
+    raw: str, max_idx: int, multi_select: bool, console: Console
+) -> list[int] | None:
+    if not raw:
+        console.print("[dim](please enter a selection)[/]")
+        return None
+    try:
+        tokens = [int(t.strip()) for t in raw.split(",") if t.strip()]
+    except ValueError:
+        console.print("[dim](enter numbers separated by commas)[/]")
+        return None
+    if not tokens:
+        console.print("[dim](please enter a selection)[/]")
+        return None
+    if any(t < 1 or t > max_idx for t in tokens):
+        console.print(f"[dim](numbers must be between 1 and {max_idx})[/]")
+        return None
+    if not multi_select and len(tokens) != 1:
+        console.print("[dim](single-select — pick exactly one)[/]")
+        return None
+    # De-dupe while preserving order
+    seen: set[int] = set()
+    deduped: list[int] = []
+    for t in tokens:
+        if t not in seen:
+            seen.add(t)
+            deduped.append(t)
+    return deduped
 
 
 if __name__ == "__main__":

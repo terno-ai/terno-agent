@@ -21,6 +21,7 @@ from terno_agent.sandbox.base import Sandbox
 
 if TYPE_CHECKING:
     from terno_agent.mcp.manager import McpManager
+    from terno_agent.tools.ask_user import AskCallback
     from terno_agent.tools.tasks import TaskStore
 
 
@@ -35,6 +36,7 @@ class SpawnAgentTool:
     run_python_timeout_s: int = 30
     on_event: EventHook | None = None
     cancel_token: CancelToken | None = None
+    ask_callback: AskCallback | None = None
 
     @property
     def schema(self) -> ToolSchema:
@@ -90,6 +92,7 @@ class SpawnAgentTool:
             run_python_timeout_s=self.run_python_timeout_s,
             on_event=self.on_event,
             cancel_token=self.cancel_token,
+            ask_callback=self.ask_callback,
         )
         result = subagent.run(task)
         return result.answer

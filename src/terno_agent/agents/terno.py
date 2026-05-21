@@ -38,6 +38,7 @@ from terno_agent.rag.embeddings import create_embedding_client
 from terno_agent.sandbox.base import Sandbox
 from terno_agent.sandbox.factory import create_sandbox
 from terno_agent.skills import ActivateSkillTool, SkillCatalog, discover_skills
+from terno_agent.tools.ask_user import AskCallback, AskUserTool
 from terno_agent.tools.code_exec import RunPythonTool
 from terno_agent.tools.files import EditFileTool, ReadFileTool, WriteFileTool
 from terno_agent.tools.shell import BashTool
@@ -72,6 +73,7 @@ class TernoAgent(BaseAgent):
         memory_retriever: MemoryRetriever | None = None,
         memory_extractor: MemoryExtractor | None = None,
         attachment_manager: AttachmentManager | None = None,
+        ask_callback: AskCallback | None = None,
         cancel_token: CancelToken | None = None,
         hook_manager: HookManager | None = None,
         compaction_hook: CompactionHook | None = None,
@@ -85,6 +87,7 @@ class TernoAgent(BaseAgent):
         self.memory_retriever = memory_retriever
         self.memory_extractor = memory_extractor
         self.attachment_manager = attachment_manager
+        self.ask_callback = ask_callback
 
         token = cancel_token or CancelToken()
 
@@ -111,8 +114,11 @@ class TernoAgent(BaseAgent):
                 run_python_timeout_s=run_python_timeout_s,
                 on_event=on_event,
                 cancel_token=token,
+                ask_callback=ask_callback,
             ),
         ]
+        if ask_callback is not None:
+            tools.append(AskUserTool(ask_callback=ask_callback))
         if sandbox is not None:
             tools.append(
                 RunPythonTool(
@@ -199,11 +205,24 @@ class TernoAgent(BaseAgent):
     # ----- Construction helpers ----------------------------------------- #
 
     @classmethod
-    def from_env(cls, *, on_event=None) -> TernoAgent:
-        return cls.from_config(Config.from_env(), on_event=on_event)
+    def from_env(
+        cls,
+        *,
+        on_event=None,
+        ask_callback: AskCallback | None = None,
+    ) -> TernoAgent:
+        return cls.from_config(
+            Config.from_env(), on_event=on_event, ask_callback=ask_callback
+        )
 
     @classmethod
-    def from_config(cls, config: Config, *, on_event=None) -> TernoAgent:
+    def from_config(
+        cls,
+        config: Config,
+        *,
+        on_event=None,
+        ask_callback: AskCallback | None = None,
+    ) -> TernoAgent:
         if not config.llm_api_key:
             raise ConfigError(
                 "No LLM API key configured. Set ANTHROPIC_API_KEY or "
@@ -253,6 +272,7 @@ class TernoAgent(BaseAgent):
             memory_retriever=memory_retriever,
             memory_extractor=memory_extractor,
             attachment_manager=attachment_manager,
+            ask_callback=ask_callback,
             compaction_hook=compaction_hook,
         )
 
