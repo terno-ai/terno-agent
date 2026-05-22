@@ -13,7 +13,25 @@ any [Model Context Protocol (MCP)][mcp] servers you configure.
   `TernoAgent` powered by Anthropic Claude or OpenAI.
 - **Built-in tools:**
   `read_file`, `write_file`, `edit_file`, `bash`, `run_python`,
-  `task_create` / `task_list` / `task_get` / `task_update`, `spawn_agent`.
+  `task_create` / `task_list` / `task_get` / `task_update`, `spawn_agent`,
+  `ask_user`, `search_memory`.
+- **Edits show coloured diffs.** Every `edit_file` call renders as a
+  unified diff in the CLI (red removals, green additions, cyan hunk
+  headers). `write_file` refuses to clobber existing files unless you
+  pass `overwrite=true` — and when you do, the panel shows the diff
+  between the on-disk content and the proposed rewrite. Edits become
+  hard to miss; surprise overwrites become impossible.
+- **Permission prompts for tool use.** A `pre_tool_use` hook gates
+  every tool call. The CLI prompts with three Claude-style options:
+  *allow once*, *allow this tool for the rest of the session*, or
+  *deny and tell the agent what to do instead* (your reason goes
+  straight back to the LLM as a tool-result error). Read-only helpers
+  (`read_file`, `task_*`, `search_memory`, `ask_user`) skip the prompt.
+- **Human-in-the-loop questions.** `ask_user` lets the agent pause and
+  pose 1–4 multiple-choice questions when the request is genuinely
+  ambiguous. Each question gets 2–4 options plus an automatic
+  *"Other (custom text)"* choice, single- or multi-select. The CLI
+  walks the user through them one at a time.
 - **Sandboxed Python.** `run_python` runs inside Docker by default
   (`--network none`, read-only rootfs, mem/CPU caps); a local subprocess
   sandbox is available for dev. The tool is auto-hidden when no sandbox
@@ -32,11 +50,14 @@ any [Model Context Protocol (MCP)][mcp] servers you configure.
 - **Subagent spawner.** `spawn_agent` recursively launches a fresh
   `TernoAgent` with a caller-supplied system prompt — useful for isolating
   focused subtasks from your main context.
-- **Persistent memory.** The agent extracts long-lived facts (user
-  preferences, project context, feedback, external references) after
-  each task into markdown files indexed by vector embeddings, and
-  recalls the most relevant ones at the start of the next turn. See
-  [Memory](#memory).
+- **Persistent memory.** After each turn a background extractor mines
+  the user's question and the assistant's answer for facts worth
+  keeping — user preferences, project context, feedback, references,
+  and short Q&A insights stored as key→value pairs. Everything lands
+  in `<workdir>/.terno/memory` as markdown + vectors. On the next
+  turn, the most relevant entries are recalled into context. The CLI
+  prints a single dim `memory updated` line when something changed;
+  the extractor itself runs silently. See [Memory](#memory).
 - **Streaming + typed events.** Assistant text streams live; tool calls
   and results render with syntax-highlighted panels.
 - **Native attachments.** Attach text files, documents, or images to a
@@ -62,12 +83,17 @@ any [Model Context Protocol (MCP)][mcp] servers you configure.
        ▼                         ▼                         ▼
   built-in tools           spawn_agent                MCP tools
   read_file                (fresh TernoAgent,         (loaded from
-  write_file                shares manager +           .terno/mcp.json,
-  edit_file                 task store)                via uvx /
+  write_file (gated)        shares manager +           .terno/mcp.json,
+  edit_file (diff'd)        task store)                via uvx /
   bash                                                 npx / docker
   run_python (sandbox)                                 / HTTP / SSE)
+  ask_user (HITL)
+  search_memory
   activate_skill
   task_* (in-memory)
+
+  every tool call passes through a pre_tool_use hook
+  → permission prompt in CLI / SDK hook in code
 ```
 
 All cross-cutting boundaries are protocols, so each layer is swappable:
@@ -212,6 +238,66 @@ If you installed with plain `pip` into a project venv and didn't activate it:
 .venv/bin/terno ask "..."
 # or
 python -m terno_agent ask "..."
+```
+
+### What you'll see in chat
+
+The first time the agent reaches for any side-effecting tool (`bash`,
+`edit_file`, `write_file`, `run_python`, `spawn_agent`, MCP tools…)
+you'll get a permission prompt:
+
+```
+╭─ permission required ──────────────────────────╮
+│ Tool: bash                                     │
+│                                                │
+│ Arguments:                                     │
+│ { "command": "uv run pytest -q" }              │
+╰────────────────────────────────────────────────╯
+  [1] Allow once
+  [2] Allow 'bash' for the rest of this session
+  [3] Deny and tell the agent what to do instead
+permission> 2
+```
+
+Picking *(2)* skips future prompts for that tool name in this session.
+*(3)* asks for a free-text reason that's sent back to the agent as a
+tool-result error — the model adapts instead of being silently blocked.
+Read-only tools (`read_file`, `task_*`, `search_memory`, `ask_user`)
+skip the prompt entirely.
+
+When the agent edits a file you get a coloured unified diff in place
+of the raw arguments:
+
+```
+╭─ [terno] → edit_file ──────────────────────────╮
+│ path: src/utils.py                             │
+│ --- a/src/utils.py                             │
+│ +++ b/src/utils.py                             │
+│ @@ -10,3 +10,3 @@                              │
+│  def add(a, b):                                │
+│ -    return a+b                                │
+│ +    return a + b                              │
+╰────────────────────────────────────────────────╯
+```
+
+If the agent needs a decision from you it can call `ask_user`, which
+walks through one or more multiple-choice questions:
+
+```
+╭─ Question 1/2 ─────────────────────────────────╮
+│ Which database driver should I use?            │
+╰────────────────────────────────────────────────╯
+  [1] psycopg (sync) — default for scripts
+  [2] asyncpg     — for the async data loader
+  [3] Other (custom text)
+select> 1
+```
+
+And whenever the background memory extractor commits something new
+you'll see a single dim line:
+
+```
+memory updated
 ```
 
 ## Use as a library
@@ -669,36 +755,82 @@ way the built-in Docker check behaves today.
 
 ## Memory
 
-After every task, an extraction subagent reviews the conversation and
-decides whether anything is worth keeping. If so, it writes one
-markdown file per memory and embeds it with OpenAI's
-`text-embedding-3-small`. On the next turn, the user's task is
-embedded too, and the top-K most similar memories are prepended to the
-system prompt as extra context.
+Memory has three jobs: **learn** something across turns, **store** it
+durably, and **recall** it cheaply on the next turn.
 
-There are four memory types, each with a different scope:
+### How it runs
 
-| Type        | Scope    | Use                                          |
-|-------------|----------|----------------------------------------------|
-| `user`      | global   | Facts about the human (role, expertise…)     |
-| `feedback`  | global   | "Do this", "don't do that" + the reason      |
-| `project`   | workdir  | Goals, deadlines, decisions for this repo    |
-| `reference` | workdir  | Pointers to Linear, Slack, dashboards…       |
+After every turn the agent fires a background extractor (daemon
+thread — the user is never blocked). The extractor is a fresh
+`TernoAgent` with the memory CRUD toolset; it reads the just-completed
+transcript, decides what (if anything) is worth keeping, then calls
+`save_memory` / `delete_memory`. Its tool activity is **not** mirrored
+to the CLI — you just see one dim `memory updated` line when the
+extractor actually saved or deleted something. Failures are swallowed
+so extraction can never break the user-facing flow.
 
-Storage paths (markdown + a single-vector-store JSON):
+On the next turn, the user's incoming message is embedded and the
+top-K most similar memories are recalled into the agent's context as
+background hints.
+
+### Five memory types, one location
+
+| Type        | What it stores                                                        |
+|-------------|-----------------------------------------------------------------------|
+| `user`      | Facts about the human (role, expertise, preferences).                 |
+| `feedback`  | Style / approach rules from the user, with a **Why:** line.           |
+| `project`   | Non-obvious state of this repo (initiative, decisions, deadlines).    |
+| `reference` | Pointers to external systems — Linear, Slack, Grafana, Confluence.    |
+| `insight`   | Short Q&A fact distilled from a turn, stored as a key→value pair.     |
+
+Everything is one markdown file per memory plus a vector sidecar:
 
 ```
-~/.terno_agent/memory/        # global memories (user, feedback)
-<your-project>/.terno/memory/ # workdir memories (project, reference)
+<your-project>/.terno/memory/
+  MEMORY.md              # human-readable index
+  user-role.md
+  feedback-testing.md
+  project-auth-rewrite.md
+  reference-grafana.md
+  prod-database-host.md  # an insight; name = key, body = value
+  .vectors.jsonl
 ```
 
-The agent has a `search_memory` tool for ad-hoc lookups when it
-suspects relevant context wasn't recalled automatically.
+Override the location with `TERNO_MEMORY_HOME=/some/path` (useful in
+tests).
 
-Disable for a single session with `terno --no-memory chat`, or
-permanently with `TERNO_MEMORY_ENABLED=false`. Embedding the contents
-requires the `openai` extra and an `OPENAI_API_KEY` (or an explicit
-`TERNO_EMBEDDING_API_KEY`); if that's missing the agent prints one
+### Insights — the new bit
+
+`insight` is the memory type the extractor uses to turn ordinary Q&A
+into a cache. If the user asks *"where does prod live?"* and the
+assistant answers *"`db.terno-prod.us-east-1.rds.amazonaws.com`"*,
+the extractor saves an insight named `prod-database-host` whose body
+is the bare hostname. Next time anyone (you or the agent) asks
+something similar, `search_memory` surfaces it without re-derivation.
+Insights are intentionally short and factual — never speculation,
+never the agent's own opinions.
+
+### Tools the agent sees
+
+| Tool            | Available to       | Notes                                        |
+|-----------------|--------------------|----------------------------------------------|
+| `search_memory` | main agent         | RAG lookup over the store.                   |
+| `list_memories` | extractor only     | Enumerate before saving (prefer UPDATE).     |
+| `read_memory`   | extractor only     | Inspect an existing entry by name.           |
+| `save_memory`   | extractor only     | Create or overwrite by name.                 |
+| `delete_memory` | extractor only     | Remove stale or contradicted entries.        |
+
+### Configuration
+
+| Env var                       | Default                       | Meaning                       |
+|-------------------------------|-------------------------------|-------------------------------|
+| `TERNO_MEMORY_ENABLED`        | `true`                        | Master kill-switch.           |
+| `TERNO_MEMORY_HOME`           | `<workdir>/.terno/memory`     | Storage location override.    |
+| `TERNO_MEMORY_TOP_K`          | `5`                           | Recall budget per turn.       |
+| `TERNO_EMBEDDING_API_KEY`     | falls back to `OPENAI_API_KEY`| Embedding provider key.       |
+
+Per-session opt-out: `terno --no-memory chat`. Embedding requires the
+`openai` extra and an API key; if it's missing the agent prints one
 warning and keeps running without memory.
 
 ## Project layout
@@ -706,20 +838,25 @@ warning and keeps running without memory.
 ```
 src/terno_agent/
   __init__.py          # public re-exports
-  cli.py               # argparse entry point + rich renderer
+  cli.py               # argparse entry, rich renderer, CliPrompter
+                       # (ask_user), CliPermissionPrompter (pre_tool_use),
+                       # coloured unified-diff renderer for edits
   config.py            # env + .env-driven Config
-  core/                # message / tool / event / exception types
+  core/                # message / tool / event / hook / exception types
+                       # (HookEvent.PRE_TOOL_USE + PreToolUseContext live here)
   llm/                 # LLMClient protocol + Anthropic + OpenAI (streaming)
   agents/              # BaseAgent + the single TernoAgent
   prompts/             # the single SYSTEM_PROMPT
-  tools/               # read_file, write_file, edit_file, bash,
-                       # run_python, tasks, spawn_agent, activate_skill
+  tools/               # read_file, write_file (overwrite-gated),
+                       # edit_file, bash, run_python, tasks,
+                       # spawn_agent, ask_user, activate_skill
   skills/              # SKILL.md discovery + activate_skill adapter
   sandbox/             # Docker + local subprocess runners (for run_python)
   mcp/                 # .terno/mcp.json parser, runner resolver, async bridge,
                        # session manager, sync Tool adapter
-  memory/              # extractor + retriever + on-disk markdown store
-                       # + a SearchMemoryTool surfaced to the agent
+  memory/              # background extractor (silent subagent) + retriever
+                       # + single-dir markdown store at .terno/memory
+                       # + SearchMemoryTool surfaced to the main agent
   rag/                 # embedding client + file-backed vector store
                        # (shared infrastructure for memory)
   knowledge/           # deep_research pipeline (uses db/ + an LLM)
