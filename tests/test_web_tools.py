@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import gzip
 import io
 from typing import Any
 
@@ -10,9 +11,16 @@ from terno_agent.tools import web
 
 
 class _FakeResponse:
-    def __init__(self, body: bytes, content_type: str = "text/html; charset=utf-8") -> None:
+    def __init__(
+        self,
+        body: bytes,
+        content_type: str = "text/html; charset=utf-8",
+        content_encoding: str = "",
+    ) -> None:
         self._body = body
         self.headers = {"Content-Type": content_type}
+        if content_encoding:
+            self.headers["Content-Encoding"] = content_encoding
         self._buf = io.BytesIO(body)
 
     def read(self, size: int | None = None) -> bytes:
@@ -31,11 +39,15 @@ class _FakeResponse:
 def stub_urlopen(monkeypatch):
     captured: dict[str, Any] = {}
 
-    def make(body: bytes, content_type: str = "text/html; charset=utf-8"):
+    def make(
+        body: bytes,
+        content_type: str = "text/html; charset=utf-8",
+        content_encoding: str = "",
+    ):
         def fake_urlopen(req, timeout=None):
             captured["url"] = req.full_url
             captured["headers"] = dict(req.headers)
-            return _FakeResponse(body, content_type)
+            return _FakeResponse(body, content_type, content_encoding)
 
         monkeypatch.setattr(web, "urlopen", fake_urlopen)
         return captured
@@ -103,3 +115,43 @@ def test_web_search_requires_query(stub_urlopen):
     stub_urlopen(b"")
     with pytest.raises(ToolError):
         web.WebSearchTool().run(query="")
+
+
+def test_web_fetch_sends_browser_headers(stub_urlopen):
+    captured = stub_urlopen(b"<html><body>ok</body></html>")
+    web.WebFetchTool().run(url="https://example.com")
+    sent = captured["headers"]
+    # urllib lowercases header keys in Request.headers
+    expected = {
+        "User-agent",
+        "Accept",
+        "Accept-language",
+        "Accept-encoding",
+        "Upgrade-insecure-requests",
+        "Sec-fetch-dest",
+        "Sec-fetch-mode",
+        "Sec-fetch-site",
+        "Sec-fetch-user",
+        "Sec-ch-ua",
+        "Sec-ch-ua-mobile",
+        "Sec-ch-ua-platform",
+    }
+    missing = expected - set(sent)
+    assert not missing, f"missing browser headers: {missing}"
+    assert "Chrome" in sent["User-agent"]
+    assert sent["Accept-encoding"] == "gzip, deflate"
+
+
+def test_web_fetch_decompresses_gzip(stub_urlopen):
+    payload = b"<html><body><p>compressed body</p></body></html>"
+    stub_urlopen(gzip.compress(payload), content_encoding="gzip")
+    out = web.WebFetchTool().run(url="https://example.com")
+    assert "compressed body" in out
+
+
+def test_web_fetch_unknown_encoding_falls_through(stub_urlopen):
+    # If a server ignores Accept-Encoding and sends br anyway, we don't
+    # crash — we just hand the raw bytes through UTF-8-with-replacement.
+    stub_urlopen(b"plain text body", content_encoding="br", content_type="text/plain")
+    out = web.WebFetchTool().run(url="https://example.com")
+    assert "plain text body" in out

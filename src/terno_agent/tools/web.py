@@ -7,8 +7,10 @@ results come from DuckDuckGo's HTML endpoint (no API key required).
 
 from __future__ import annotations
 
+import gzip
 import html.parser
 import re
+import zlib
 from dataclasses import dataclass
 from typing import Any
 from urllib.error import HTTPError, URLError
@@ -21,11 +23,53 @@ from terno_agent.core.tool import ToolSchema
 _USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36"
 )
+
+# Browser-like headers reduce false-positive bot blocks on
+# Cloudflare / Akamai / DataDome stacks. We only advertise compression
+# schemes we can actually decode (no brotli without an extra dep).
+_BROWSER_HEADERS: dict[str, str] = {
+    "User-Agent": _USER_AGENT,
+    "Accept": (
+        "text/html,application/xhtml+xml,application/xml;q=0.9,"
+        "image/avif,image/webp,image/apng,*/*;q=0.8"
+    ),
+    "Accept-Language": "en-US,en;q=0.9",
+    "Accept-Encoding": "gzip, deflate",
+    "Upgrade-Insecure-Requests": "1",
+    "Sec-Fetch-Dest": "document",
+    "Sec-Fetch-Mode": "navigate",
+    "Sec-Fetch-Site": "none",
+    "Sec-Fetch-User": "?1",
+    "Sec-CH-UA": (
+        '"Chromium";v="134", "Google Chrome";v="134", "Not.A/Brand";v="24"'
+    ),
+    "Sec-CH-UA-Mobile": "?0",
+    "Sec-CH-UA-Platform": '"Windows"',
+}
+
 _MAX_RESPONSE_BYTES = 2_000_000
 _REQUEST_TIMEOUT_S = 30
 _FETCH_DEFAULT_MAX_CHARS = 20_000
 _SEARCH_DEFAULT_LIMIT = 5
 _SEARCH_MAX_LIMIT = 20
+
+
+def _decompress(raw: bytes, encoding: str) -> bytes:
+    enc = encoding.lower().strip()
+    if not enc or enc == "identity":
+        return raw
+    if enc == "gzip":
+        return gzip.decompress(raw)
+    if enc == "deflate":
+        # Servers send either zlib-wrapped or raw deflate; try both.
+        try:
+            return zlib.decompress(raw)
+        except zlib.error:
+            return zlib.decompress(raw, -zlib.MAX_WBITS)
+    # Unknown encoding (e.g. br) — leave bytes untouched and let the
+    # caller's UTF-8 replacement decode produce something readable
+    # rather than failing the whole fetch.
+    return raw
 
 
 def _fetch(url: str) -> tuple[str, str]:
@@ -38,16 +82,11 @@ def _fetch(url: str) -> tuple[str, str]:
     if parsed.scheme not in {"http", "https"} or not parsed.netloc:
         raise ToolError(f"only absolute http(s) URLs are supported: {url!r}")
 
-    req = Request(
-        url,
-        headers={
-            "User-Agent": _USER_AGENT,
-            "Accept": "text/html, text/plain, */*;q=0.1",
-        },
-    )
+    req = Request(url, headers=dict(_BROWSER_HEADERS))
     try:
         with urlopen(req, timeout=_REQUEST_TIMEOUT_S) as resp:
             ctype = resp.headers.get("Content-Type", "") or ""
+            encoding = resp.headers.get("Content-Encoding", "") or ""
             raw = resp.read(_MAX_RESPONSE_BYTES + 1)
     except HTTPError as exc:
         raise ToolError(f"HTTP {exc.code} for {url}: {exc.reason}") from exc
@@ -60,7 +99,15 @@ def _fetch(url: str) -> tuple[str, str]:
         raise ToolError(f"network error fetching {url}: {exc}") from exc
 
     truncated = len(raw) > _MAX_RESPONSE_BYTES
-    text = raw[:_MAX_RESPONSE_BYTES].decode("utf-8", errors="replace")
+    payload = raw[:_MAX_RESPONSE_BYTES]
+    if encoding:
+        try:
+            payload = _decompress(payload, encoding)
+        except (OSError, zlib.error, EOFError) as exc:
+            raise ToolError(
+                f"failed to decode {encoding!r} response from {url}: {exc}"
+            ) from exc
+    text = payload.decode("utf-8", errors="replace")
     if truncated:
         text += "\n... [response body truncated at 2 MB]"
     return text, ctype
