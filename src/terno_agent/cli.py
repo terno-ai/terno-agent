@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import difflib
 import json
 import signal
 import sys
@@ -505,21 +506,18 @@ def _format_call_body(name: str, args: dict) -> object:
     if name == "bash" and isinstance(args.get("command"), str):
         return Syntax(args["command"], "bash", theme="ansi_dark", word_wrap=True)
     if name == "write_file" and isinstance(args.get("content"), str):
-        return Syntax(
-            _truncate(args["content"], 2000),
-            _lang_for_path(args.get("path", "")),
-            theme="ansi_dark",
-            word_wrap=True,
+        return _format_write_body(
+            path=str(args.get("path", "")),
+            content=args["content"],
+            overwrite=bool(args.get("overwrite", False)),
         )
     if name == "edit_file":
-        parts = [
-            f"path: {args.get('path', '')}",
-            "--- old",
-            _truncate(str(args.get("old_string", "")), 800),
-            "+++ new",
-            _truncate(str(args.get("new_string", "")), 800),
-        ]
-        return Text("\n".join(parts))
+        return _format_edit_diff(
+            path=str(args.get("path", "")),
+            old=str(args.get("old_string", "")),
+            new=str(args.get("new_string", "")),
+            replace_all=bool(args.get("replace_all", False)),
+        )
     if name == "spawn_agent":
         body = Text("prompt:\n", style="bold")
         body.append(_truncate(str(args.get("prompt", "")), 800))
@@ -568,6 +566,94 @@ def _truncate(text: str, limit: int) -> str:
     if len(text) <= limit:
         return text
     return text[:limit] + f"\n... [truncated {len(text) - limit} chars]"
+
+
+_DIFF_MAX_LINES = 200
+
+
+def _format_write_body(*, path: str, content: str, overwrite: bool) -> object:
+    """For new files render the content; for overwrites show a real diff."""
+    existing = _read_existing(path) if path else None
+    if existing is not None:
+        return _format_edit_diff(
+            path=path,
+            old=existing,
+            new=content,
+            replace_all=overwrite,
+        )
+    return Syntax(
+        _truncate(content, 2000),
+        _lang_for_path(path),
+        theme="ansi_dark",
+        word_wrap=True,
+    )
+
+
+def _read_existing(path: str) -> str | None:
+    from pathlib import Path
+
+    try:
+        p = Path(path).expanduser()
+        if not p.is_file():
+            return None
+        return p.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+
+
+def _format_edit_diff(*, path: str, old: str, new: str, replace_all: bool) -> Text:
+    """Colour a unified diff of an ``edit_file`` call's old → new strings."""
+    label = path or "(unspecified)"
+    diff_lines = list(
+        difflib.unified_diff(
+            old.splitlines(),
+            new.splitlines(),
+            fromfile=f"a/{label}",
+            tofile=f"b/{label}",
+            lineterm="",
+            n=3,
+        )
+    )
+
+    body = Text()
+    body.append(f"path: {label}", style="bold")
+    if replace_all:
+        body.append("  (replace_all)", style="dim")
+    body.append("\n")
+
+    if not diff_lines:
+        body.append("(no textual difference)", style="dim italic")
+        return body
+
+    truncated = False
+    if len(diff_lines) > _DIFF_MAX_LINES:
+        diff_lines = diff_lines[:_DIFF_MAX_LINES]
+        truncated = True
+
+    for line in diff_lines:
+        style = _diff_line_style(line)
+        body.append(line, style=style)
+        body.append("\n")
+
+    if truncated:
+        body.append(
+            f"... [diff truncated at {_DIFF_MAX_LINES} lines]",
+            style="dim italic",
+        )
+
+    return body
+
+
+def _diff_line_style(line: str) -> str:
+    if line.startswith(("+++", "---")):
+        return "bold"
+    if line.startswith("@@"):
+        return "cyan"
+    if line.startswith("+"):
+        return "green"
+    if line.startswith("-"):
+        return "red"
+    return ""
 
 
 # --------------------------------------------------------------------------- #

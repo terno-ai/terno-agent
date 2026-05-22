@@ -80,15 +80,26 @@ class WriteFileTool:
         return ToolSchema(
             name="write_file",
             description=(
-                "Create or overwrite a file with the given content. Parent "
-                "directories are created if they don't exist. Use edit_file "
-                "for targeted changes to existing files."
+                "Create a NEW file with the given content. Parent directories "
+                "are created if they don't exist. For ANY change to an "
+                "existing file use `edit_file` — it's almost always what you "
+                "want. If you truly need to replace a file end-to-end (e.g. "
+                "a generated artefact), pass `overwrite=true` explicitly."
             ),
             parameters={
                 "type": "object",
                 "properties": {
                     "path": {"type": "string", "description": "Path to write."},
                     "content": {"type": "string", "description": "File contents."},
+                    "overwrite": {
+                        "type": "boolean",
+                        "description": (
+                            "Required (true) when the file already exists. "
+                            "Defaults to false; calling on an existing file "
+                            "without this flag errors and directs you to "
+                            "edit_file."
+                        ),
+                    },
                 },
                 "required": ["path", "content"],
             },
@@ -99,6 +110,16 @@ class WriteFileTool:
         content = kwargs.get("content")
         if content is None:
             raise ToolError("write_file requires a 'content' argument.")
+        overwrite = bool(kwargs.get("overwrite", False))
+        if path.exists():
+            if path.is_dir():
+                raise ToolError(f"Path is a directory, not a file: {path}")
+            if not overwrite:
+                raise ToolError(
+                    f"{path} already exists. For targeted changes use "
+                    "edit_file. If you genuinely need to replace the whole "
+                    "file, retry with overwrite=true."
+                )
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(content, encoding="utf-8")

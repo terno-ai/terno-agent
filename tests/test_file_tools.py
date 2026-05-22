@@ -56,3 +56,24 @@ def test_edit_missing_string(tmp_path):
     target.write_text("hello")
     with pytest.raises(ToolError):
         EditFileTool().run(path=str(target), old_string="missing", new_string="x")
+
+
+def test_write_refuses_to_clobber_existing_file(tmp_path):
+    target = tmp_path / "existing.txt"
+    target.write_text("original\n")
+    with pytest.raises(ToolError, match="edit_file"):
+        WriteFileTool().run(path=str(target), content="replaced\n")
+    # File is untouched.
+    assert target.read_text() == "original\n"
+
+
+def test_write_overwrite_flag_replaces_existing_file(tmp_path):
+    target = tmp_path / "regen.txt"
+    target.write_text("v1\n")
+    WriteFileTool().run(path=str(target), content="v2\n", overwrite=True)
+    assert target.read_text() == "v2\n"
+
+
+def test_write_rejects_directory_target(tmp_path):
+    with pytest.raises(ToolError, match="directory"):
+        WriteFileTool().run(path=str(tmp_path), content="x")
