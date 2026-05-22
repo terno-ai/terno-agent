@@ -1,12 +1,13 @@
 """Persistent memory for terno-agent.
 
-* `MemoryStore` — file-backed markdown + vector store.
+* `MemoryStore` — file-backed markdown + vector store at
+  ``<workdir>/.terno/memory``.
 * `MemoryRetriever` — pre-turn RAG lookup.
-* `MemoryExtractor` — post-turn extraction subagent.
+* `MemoryExtractor` — post-turn extraction subagent (runs in background).
 * `SearchMemoryTool` — exposed to the main agent for ad-hoc lookups.
 """
 
-from terno_agent.memory.extractor import MemoryExtractor
+from terno_agent.memory.extractor import ExtractionResult, MemoryExtractor
 from terno_agent.memory.retriever import MemoryRetriever
 from terno_agent.memory.store import MemoryStore
 from terno_agent.memory.tools import (
@@ -19,23 +20,20 @@ from terno_agent.memory.tools import (
 )
 from terno_agent.memory.types import (
     MemoryEntry,
-    MemoryScope,
     MemoryType,
-    scope_for_type,
 )
 
 __all__ = [
     "DeleteMemoryTool",
+    "ExtractionResult",
     "ListMemoriesTool",
     "MemoryEntry",
     "MemoryExtractor",
     "MemoryRetriever",
-    "MemoryScope",
     "MemoryStore",
     "MemoryType",
     "ReadMemoryTool",
     "SaveMemoryTool",
     "SearchMemoryTool",
     "extractor_tools",
-    "scope_for_type",
 ]

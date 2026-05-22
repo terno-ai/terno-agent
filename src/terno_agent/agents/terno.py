@@ -29,7 +29,7 @@ from terno_agent.core.messages import ContentPart
 from terno_agent.llm.base import LLMClient
 from terno_agent.llm.factory import create_llm_client
 from terno_agent.mcp.manager import McpManager
-from terno_agent.memory.extractor import MemoryExtractor
+from terno_agent.memory.extractor import ExtractionCallback, MemoryExtractor
 from terno_agent.memory.retriever import MemoryRetriever
 from terno_agent.memory.store import MemoryStore
 from terno_agent.memory.tools import SearchMemoryTool
@@ -210,9 +210,13 @@ class TernoAgent(BaseAgent):
         *,
         on_event=None,
         ask_callback: AskCallback | None = None,
+        on_memory_event: ExtractionCallback | None = None,
     ) -> TernoAgent:
         return cls.from_config(
-            Config.from_env(), on_event=on_event, ask_callback=ask_callback
+            Config.from_env(),
+            on_event=on_event,
+            ask_callback=ask_callback,
+            on_memory_event=on_memory_event,
         )
 
     @classmethod
@@ -222,6 +226,7 @@ class TernoAgent(BaseAgent):
         *,
         on_event=None,
         ask_callback: AskCallback | None = None,
+        on_memory_event: ExtractionCallback | None = None,
     ) -> TernoAgent:
         if not config.llm_api_key:
             raise ConfigError(
@@ -242,7 +247,10 @@ class TernoAgent(BaseAgent):
                 atexit.register(mcp_manager.shutdown)
 
         memory_store, memory_retriever, memory_extractor = _build_memory(
-            config, llm, workdir=Path.cwd(), on_event=on_event
+            config,
+            llm,
+            workdir=Path.cwd(),
+            on_memory_event=on_memory_event,
         )
         skill_catalog = (
             discover_skills(
@@ -292,7 +300,7 @@ def _build_memory(
     llm: LLMClient,
     *,
     workdir: Path,
-    on_event=None,
+    on_memory_event: ExtractionCallback | None = None,
 ) -> tuple[MemoryStore | None, MemoryRetriever | None, MemoryExtractor | None]:
     """Construct the memory pipeline if enabled in config.
 
@@ -324,7 +332,7 @@ def _build_memory(
         llm=llm,
         store=store,
         workdir=workdir,
-        on_event=on_event,
+        on_complete=on_memory_event,
     )
     return (store, retriever, extractor)
 

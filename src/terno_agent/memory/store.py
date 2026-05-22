@@ -2,11 +2,8 @@
 
 Each memory is a markdown file with YAML-ish frontmatter (matching the
 Claude Code auto-memory format) plus a ``.vectors.jsonl`` sidecar that
-holds embeddings. Two physical scopes:
-
-* **global** — ``~/.terno_agent/memory/`` (``user``, ``feedback``)
-* **workdir** — ``<workdir>/.terno/memory/`` (``project``, ``reference``)
-
+holds embeddings. Everything lives under
+``<workdir>/.terno/memory`` (overridable with ``TERNO_MEMORY_HOME``).
 The store synchronizes the markdown file, the ``MEMORY.md`` index, and
 the vector record on every write.
 """
@@ -18,12 +15,8 @@ from pathlib import Path
 from threading import Lock
 from typing import Any
 
-from terno_agent.memory.paths import (
-    global_memory_dir,
-    resolve_dir_for_type,
-    workdir_memory_dir,
-)
-from terno_agent.memory.types import MemoryEntry, MemoryScope, MemoryType
+from terno_agent.memory.paths import memory_dir
+from terno_agent.memory.types import MemoryEntry, MemoryType
 from terno_agent.rag.embeddings import EmbeddingClient, EmbeddingError
 from terno_agent.rag.vector_store import FileVectorStore, Hit
 
@@ -39,7 +32,7 @@ def _slugify(name: str) -> str:
 
 
 class MemoryStore:
-    """File-backed memory store with two scopes and per-scope vector indexes."""
+    """File-backed memory store with a single ``.terno/memory`` directory."""
 
     def __init__(
         self,
@@ -48,39 +41,16 @@ class MemoryStore:
     ) -> None:
         self.workdir = Path(workdir).resolve()
         self.embedder = embedder
-        self._global_dir = global_memory_dir()
-        self._workdir_dir = workdir_memory_dir(self.workdir)
-        for d in (self._global_dir, self._workdir_dir):
-            d.mkdir(parents=True, exist_ok=True)
-        self._vectors: dict[MemoryScope, FileVectorStore] = {
-            MemoryScope.GLOBAL: FileVectorStore(self._global_dir / VECTOR_FILENAME),
-            MemoryScope.WORKDIR: FileVectorStore(self._workdir_dir / VECTOR_FILENAME),
-        }
+        self._dir = memory_dir(self.workdir)
+        self._dir.mkdir(parents=True, exist_ok=True)
+        self._vectors = FileVectorStore(self._dir / VECTOR_FILENAME)
         self._lock = Lock()
-
-    # ----- scope helpers ----------------------------------------------- #
-
-    def dir_for(self, type_: MemoryType) -> Path:
-        return resolve_dir_for_type(type_, self.workdir)
-
-    def vector_store_for(self, scope: MemoryScope) -> FileVectorStore:
-        return self._vectors[scope]
-
-    @property
-    def vector_stores(self) -> list[FileVectorStore]:
-        return [self._vectors[MemoryScope.GLOBAL], self._vectors[MemoryScope.WORKDIR]]
 
     # ----- I/O on markdown files --------------------------------------- #
 
     def _file_for(self, name: str) -> Path | None:
-        """Find which scope dir holds the memory file for ``name``."""
-        candidate_global = self._global_dir / f"{name}.md"
-        if candidate_global.exists():
-            return candidate_global
-        candidate_workdir = self._workdir_dir / f"{name}.md"
-        if candidate_workdir.exists():
-            return candidate_workdir
-        return None
+        candidate = self._dir / f"{name}.md"
+        return candidate if candidate.exists() else None
 
     @staticmethod
     def _render_markdown(entry: MemoryEntry) -> str:
@@ -151,20 +121,11 @@ class MemoryStore:
                 type=entry.type,
                 body=entry.body,
             )
-        target_dir = self.dir_for(entry.type)
-        target_dir.mkdir(parents=True, exist_ok=True)
-        path = target_dir / f"{entry.name}.md"
+        self._dir.mkdir(parents=True, exist_ok=True)
+        path = self._dir / f"{entry.name}.md"
         with self._lock:
-            # If a memory with this name exists in the *other* scope (e.g.
-            # type changed), remove the old file so we don't end up with two.
-            other = self._file_for(entry.name)
-            if other is not None and other != path:
-                other.unlink(missing_ok=True)
-                for vs in self._vectors.values():
-                    vs.delete(entry.name)
-
             path.write_text(self._render_markdown(entry), encoding="utf-8")
-            self._rewrite_index(entry.scope)
+            self._rewrite_index()
 
             if self.embedder is not None:
                 try:
@@ -172,14 +133,13 @@ class MemoryStore:
                 except EmbeddingError:
                     vector = []
                 if vector:
-                    self._vectors[entry.scope].upsert(
+                    self._vectors.upsert(
                         key=entry.name,
                         text=entry.embedding_text(),
                         vector=vector,
                         metadata={
                             "type": entry.type.value,
                             "description": entry.description,
-                            "scope": entry.scope.value,
                             "path": str(path),
                         },
                     )
@@ -191,11 +151,8 @@ class MemoryStore:
             if path is None:
                 return False
             path.unlink(missing_ok=True)
-            for vs in self._vectors.values():
-                vs.delete(name)
-            # Rewrite both indexes — we don't know which scope it lived in.
-            for scope in MemoryScope:
-                self._rewrite_index(scope)
+            self._vectors.delete(name)
+            self._rewrite_index()
             return True
 
     def read(self, name: str) -> MemoryEntry | None:
@@ -210,21 +167,20 @@ class MemoryStore:
 
     def list_all(self, type_: MemoryType | None = None) -> list[MemoryEntry]:
         entries: list[MemoryEntry] = []
-        for d in (self._global_dir, self._workdir_dir):
-            if not d.exists():
+        if not self._dir.exists():
+            return entries
+        for md in sorted(self._dir.glob("*.md")):
+            if md.name == INDEX_FILENAME:
                 continue
-            for md in sorted(d.glob("*.md")):
-                if md.name == INDEX_FILENAME:
-                    continue
-                try:
-                    entry = self._parse_markdown(md.read_text(encoding="utf-8"))
-                except OSError:
-                    continue
-                if entry is None:
-                    continue
-                if type_ is not None and entry.type is not type_:
-                    continue
-                entries.append(entry)
+            try:
+                entry = self._parse_markdown(md.read_text(encoding="utf-8"))
+            except OSError:
+                continue
+            if entry is None:
+                continue
+            if type_ is not None and entry.type is not type_:
+                continue
+            entries.append(entry)
         return entries
 
     # ----- retrieval --------------------------------------------------- #
@@ -239,18 +195,15 @@ class MemoryStore:
         if not vectors:
             return []
         qv = vectors[0]
-        merged: list[Hit] = []
-        for vs in self._vectors.values():
-            merged.extend(vs.query(qv, k=k))
-        merged.sort(key=lambda h: h.score, reverse=True)
-        return merged[:k]
+        hits = self._vectors.query(qv, k=k)
+        hits.sort(key=lambda h: h.score, reverse=True)
+        return hits[:k]
 
     # ----- index ------------------------------------------------------- #
 
-    def _rewrite_index(self, scope: MemoryScope) -> None:
-        scope_dir = self._global_dir if scope is MemoryScope.GLOBAL else self._workdir_dir
+    def _rewrite_index(self) -> None:
         lines: list[str] = []
-        for md in sorted(scope_dir.glob("*.md")):
+        for md in sorted(self._dir.glob("*.md")):
             if md.name == INDEX_FILENAME:
                 continue
             try:
@@ -261,7 +214,7 @@ class MemoryStore:
                 continue
             desc = entry.description or "(no description)"
             lines.append(f"- [{entry.name}]({md.name}) — {desc}")
-        index_path = scope_dir / INDEX_FILENAME
+        index_path = self._dir / INDEX_FILENAME
         if lines:
             index_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
         else:
@@ -270,19 +223,17 @@ class MemoryStore:
     # ----- introspection ---------------------------------------------- #
 
     @property
-    def global_dir(self) -> Path:
-        return self._global_dir
+    def dir(self) -> Path:
+        return self._dir
 
     @property
-    def workdir_dir(self) -> Path:
-        return self._workdir_dir
+    def vector_store(self) -> FileVectorStore:
+        return self._vectors
 
     def describe(self) -> dict[str, Any]:
         return {
-            "global_dir": str(self._global_dir),
-            "workdir_dir": str(self._workdir_dir),
-            "count_global": len(self._vectors[MemoryScope.GLOBAL]),
-            "count_workdir": len(self._vectors[MemoryScope.WORKDIR]),
+            "dir": str(self._dir),
+            "count": len(self._vectors),
         }
 
 

@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from terno_agent.memory.paths import GLOBAL_ENV_VAR
+from terno_agent.memory.paths import HOME_ENV_VAR
 from terno_agent.rag.embeddings import EmbeddingClient
 
 
@@ -39,7 +39,7 @@ def stub_embedder() -> StubEmbedder:
 
 @pytest.fixture
 def isolated_memory_dirs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
-    """Redirect the global memory dir into ``tmp_path`` so tests never touch ``~``."""
-    global_dir = tmp_path / "global_memory"
-    monkeypatch.setenv(GLOBAL_ENV_VAR, str(global_dir))
+    """Redirect the memory dir into ``tmp_path`` so tests never touch the user's home."""
+    target = tmp_path / "memory"
+    monkeypatch.setenv(HOME_ENV_VAR, str(target))
     yield tmp_path

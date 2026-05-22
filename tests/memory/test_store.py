@@ -1,10 +1,10 @@
-"""MemoryStore: save/read/list/delete + frontmatter format + scope routing."""
+"""MemoryStore: save/read/list/delete + frontmatter format."""
 
 from __future__ import annotations
 
 from pathlib import Path
 
-from terno_agent.memory.paths import global_memory_dir, workdir_memory_dir
+from terno_agent.memory.paths import memory_dir
 from terno_agent.memory.store import INDEX_FILENAME, MemoryStore
 from terno_agent.memory.types import MemoryEntry, MemoryType
 
@@ -13,7 +13,7 @@ def _make_store(workdir: Path, embedder) -> MemoryStore:
     return MemoryStore(workdir=workdir, embedder=embedder)
 
 
-def test_save_roundtrip_user_scope(isolated_memory_dirs: Path, stub_embedder) -> None:
+def test_save_roundtrip_user_type(isolated_memory_dirs: Path, stub_embedder) -> None:
     workdir = isolated_memory_dirs / "proj"
     workdir.mkdir()
     store = _make_store(workdir, stub_embedder)
@@ -26,8 +26,7 @@ def test_save_roundtrip_user_scope(isolated_memory_dirs: Path, stub_embedder) ->
     )
     path = store.save(entry)
 
-    # Lands in the global dir (user-type).
-    assert path == global_memory_dir() / "user-role.md"
+    assert path == memory_dir(workdir) / "user-role.md"
     text = path.read_text(encoding="utf-8")
     assert "name: user-role" in text
     assert "type: user" in text
@@ -40,7 +39,7 @@ def test_save_roundtrip_user_scope(isolated_memory_dirs: Path, stub_embedder) ->
     assert "Python 3.12" in fetched.body
 
 
-def test_save_roundtrip_project_scope(
+def test_save_roundtrip_project_type(
     isolated_memory_dirs: Path, stub_embedder
 ) -> None:
     workdir = isolated_memory_dirs / "proj"
@@ -59,9 +58,27 @@ def test_save_roundtrip_project_scope(
     )
     path = store.save(entry)
 
-    # Lands in the workdir scope, NOT global.
-    assert path == workdir_memory_dir(workdir) / "project-auth-rewrite.md"
+    # Same single dir as user-type memories.
+    assert path == memory_dir(workdir) / "project-auth-rewrite.md"
     assert path.exists()
+
+
+def test_save_insight_type(isolated_memory_dirs: Path, stub_embedder) -> None:
+    workdir = isolated_memory_dirs / "proj"
+    workdir.mkdir()
+    store = _make_store(workdir, stub_embedder)
+
+    entry = MemoryEntry(
+        name="prod-database-host",
+        description="Prod DB hostname",
+        type=MemoryType.INSIGHT,
+        body="db.terno-prod.us-east-1.rds.amazonaws.com",
+    )
+    path = store.save(entry)
+    assert path == memory_dir(workdir) / "prod-database-host.md"
+    fetched = store.read("prod-database-host")
+    assert fetched is not None
+    assert fetched.type is MemoryType.INSIGHT
 
 
 def test_index_file_is_rewritten(isolated_memory_dirs: Path, stub_embedder) -> None:
@@ -86,7 +103,7 @@ def test_index_file_is_rewritten(isolated_memory_dirs: Path, stub_embedder) -> N
         )
     )
 
-    index = (global_memory_dir() / INDEX_FILENAME).read_text(encoding="utf-8")
+    index = (memory_dir(workdir) / INDEX_FILENAME).read_text(encoding="utf-8")
     assert "user-role" in index
     assert "feedback-testing" in index
 
@@ -127,10 +144,19 @@ def test_list_all_filters_by_type(isolated_memory_dirs: Path, stub_embedder) -> 
     store.save(
         MemoryEntry(name="project-a", description="d", type=MemoryType.PROJECT, body="b")
     )
+    store.save(
+        MemoryEntry(name="insight-a", description="d", type=MemoryType.INSIGHT, body="b")
+    )
 
-    assert {e.name for e in store.list_all()} == {"user-a", "feedback-a", "project-a"}
+    assert {e.name for e in store.list_all()} == {
+        "user-a",
+        "feedback-a",
+        "project-a",
+        "insight-a",
+    }
     assert [e.name for e in store.list_all(MemoryType.USER)] == ["user-a"]
     assert [e.name for e in store.list_all(MemoryType.PROJECT)] == ["project-a"]
+    assert [e.name for e in store.list_all(MemoryType.INSIGHT)] == ["insight-a"]
 
 
 def test_save_slugifies_invalid_names(

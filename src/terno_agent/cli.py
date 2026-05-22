@@ -31,6 +31,7 @@ from terno_agent.core.events import (
 )
 from terno_agent.core.exceptions import TernoError, ToolError
 from terno_agent.knowledge.cli import run_knowledge_extraction
+from terno_agent.memory.extractor import ExtractionResult
 from terno_agent.tools.ask_user import Answer, Question
 
 _DOUBLE_CTRLC_WINDOW_S = 2.0
@@ -315,12 +316,31 @@ def _build_agent(args: argparse.Namespace, *, on_event=None) -> TernoAgent:
     renderer = on_event if isinstance(on_event, AgentRenderer) else None
     console = renderer.console if renderer is not None else Console()
     ask_callback = CliPrompter(console, renderer=renderer)
+    on_memory_event = _make_memory_notifier(console)
 
     if overridden:
         return TernoAgent.from_config(
-            config, on_event=on_event, ask_callback=ask_callback
+            config,
+            on_event=on_event,
+            ask_callback=ask_callback,
+            on_memory_event=on_memory_event,
         )
-    return TernoAgent.from_env(on_event=on_event, ask_callback=ask_callback)
+    return TernoAgent.from_env(
+        on_event=on_event,
+        ask_callback=ask_callback,
+        on_memory_event=on_memory_event,
+    )
+
+
+def _make_memory_notifier(console: Console):
+    """Print a single ``memory updated`` line when the extractor finishes."""
+
+    def notify(result: ExtractionResult) -> None:
+        if not result.changed:
+            return
+        console.print("[dim]memory updated[/]")
+
+    return notify
 
 
 def _parse_cli_kv(entries: list[str]) -> dict[str, str]:

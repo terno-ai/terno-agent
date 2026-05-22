@@ -1,41 +1,34 @@
-"""Resolve global vs. workdir memory directories."""
+"""Resolve the per-project memory directory.
+
+All memory lives in ``<workdir>/.terno/memory``. The legacy global
+``~/.terno_agent/memory`` location is no longer used; tests still set
+``TERNO_MEMORY_HOME`` to redirect the dir into a tmp path.
+"""
 
 from __future__ import annotations
 
 import os
 from pathlib import Path
 
-from terno_agent.memory.types import MemoryScope, MemoryType, scope_for_type
+HOME_ENV_VAR = "TERNO_MEMORY_HOME"
+# Backwards-compatible alias used by older tests.
+GLOBAL_ENV_VAR = HOME_ENV_VAR
 
-GLOBAL_ENV_VAR = "TERNO_MEMORY_HOME"
 
+def memory_dir(workdir: Path) -> Path:
+    """Return the memory dir for ``workdir``.
 
-def global_memory_dir() -> Path:
-    """Per-user memory dir.
-
-    Overridable via ``TERNO_MEMORY_HOME`` (useful in tests). Defaults to
-    ``~/.terno_agent/memory``.
+    Overridable via ``TERNO_MEMORY_HOME`` (used by tests). Defaults to
+    ``<workdir>/.terno/memory``.
     """
-    override = os.getenv(GLOBAL_ENV_VAR)
+    override = os.getenv(HOME_ENV_VAR)
     if override:
         return Path(override).expanduser().resolve()
-    return (Path.home() / ".terno_agent" / "memory").resolve()
-
-
-def workdir_memory_dir(workdir: Path) -> Path:
-    """Per-project memory dir: ``<workdir>/.terno/memory``."""
     return (Path(workdir).resolve() / ".terno" / "memory").resolve()
-
-
-def resolve_dir_for_type(type_: MemoryType, workdir: Path) -> Path:
-    if scope_for_type(type_) is MemoryScope.GLOBAL:
-        return global_memory_dir()
-    return workdir_memory_dir(workdir)
 
 
 __all__ = [
     "GLOBAL_ENV_VAR",
-    "global_memory_dir",
-    "resolve_dir_for_type",
-    "workdir_memory_dir",
+    "HOME_ENV_VAR",
+    "memory_dir",
 ]
