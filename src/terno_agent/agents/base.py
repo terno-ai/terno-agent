@@ -30,7 +30,13 @@ from terno_agent.core.events import (
     TurnEnd,
 )
 from terno_agent.core.exceptions import AgentCancelled, AgentError, ToolError
-from terno_agent.core.hooks import HookContext, HookEvent, HookManager, UsageMeter
+from terno_agent.core.hooks import (
+    HookContext,
+    HookEvent,
+    HookManager,
+    PreToolUseContext,
+    UsageMeter,
+)
 from terno_agent.core.messages import (
     ContentPart,
     Message,
@@ -146,7 +152,7 @@ class BaseAgent:
                 for tc in assistant.tool_calls:
                     self.cancel_token.check()
                     self._emit(ToolCallEvent(agent=self.name, call=tc))
-                    result = self._run_tool_call(tc)
+                    result = self._guarded_tool_call(tc)
                     self._emit(ToolResultEvent(agent=self.name, result=result))
                     results.append(result)
 
@@ -167,8 +173,20 @@ class BaseAgent:
 
     # ----- internals ---------------------------------------------------- #
 
-    def _run_tool_call(self, tc: ToolCall) -> ToolResult:
+    def _guarded_tool_call(self, tc: ToolCall) -> ToolResult:
+        """Dispatch ``pre_tool_use`` hooks; deny short-circuits the tool."""
         tool = self.tools.get(tc.name)
+        if tool is None:
+            return ToolResult(call_id=tc.id, content=f"Unknown tool: {tc.name}", is_error=True)
+        if self.hooks.has(HookEvent.PRE_TOOL_USE):
+            ctx = PreToolUseContext(agent=self, tool_call=tc, tool=tool)
+            self.hooks.dispatch(HookEvent.PRE_TOOL_USE, ctx)
+            if ctx.decision == "deny":
+                return ToolResult(call_id=tc.id, content=ctx.feedback, is_error=True)
+        return self._run_tool_call(tc, tool)
+
+    def _run_tool_call(self, tc: ToolCall, tool: Tool | None = None) -> ToolResult:
+        tool = tool or self.tools.get(tc.name)
         if tool is None:
             return ToolResult(call_id=tc.id, content=f"Unknown tool: {tc.name}", is_error=True)
         try:

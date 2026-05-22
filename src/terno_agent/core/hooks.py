@@ -19,7 +19,8 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from terno_agent.agents.base import AgentRun, BaseAgent
-    from terno_agent.core.messages import Message
+    from terno_agent.core.messages import Message, ToolCall
+    from terno_agent.core.tool import Tool
     from terno_agent.llm.base import LLMResponse
 
 
@@ -36,10 +37,7 @@ class HookEvent:
     """
 
     CHAT_END = "chat_end"  # after agent.run() returns (success or cancelled)
-    # Reserved for future use:
-    # TURN_END = "turn_end"     # after each LLM iteration within a run
-    # RUN_START = "run_start"   # before the first LLM call of a run
-    # TOOL_CALL = "tool_call"   # before/after each tool invocation
+    PRE_TOOL_USE = "pre_tool_use"  # before each tool invocation; may deny
 
 
 # --------------------------------------------------------------------------- #
@@ -85,7 +83,7 @@ class UsageMeter:
 
 @dataclass(slots=True)
 class HookContext:
-    """Payload passed to every hook.
+    """Payload passed to ``chat_end`` hooks.
 
     Hooks may *mutate* `history` in place (the canonical example is
     compaction). All other fields are informational. `run` is set for
@@ -93,13 +91,40 @@ class HookContext:
     """
 
     event: str
-    agent: "BaseAgent"
-    history: list["Message"]
+    agent: BaseAgent
+    history: list[Message]
     usage: UsageMeter
-    run: "AgentRun | None" = None
+    run: AgentRun | None = None
+
+
+@dataclass(slots=True)
+class PreToolUseContext:
+    """Payload passed to ``pre_tool_use`` hooks.
+
+    Hooks decide whether the tool may run. Call ``allow()`` (the default)
+    or ``deny(reason)``. When denied, the agent receives a
+    ``ToolResult`` whose content is ``feedback`` and ``is_error`` is
+    True, so the LLM sees the refusal and adapts.
+    """
+
+    agent: BaseAgent
+    tool_call: ToolCall
+    tool: Tool
+    event: str = "pre_tool_use"
+    decision: str = "allow"  # "allow" | "deny"
+    feedback: str = ""
+
+    def allow(self) -> None:
+        self.decision = "allow"
+        self.feedback = ""
+
+    def deny(self, reason: str) -> None:
+        self.decision = "deny"
+        self.feedback = reason.strip() or "Tool call denied by the user."
 
 
 Hook = Callable[[HookContext], None]
+PreToolUseHook = Callable[[PreToolUseContext], None]
 
 
 # --------------------------------------------------------------------------- #
@@ -134,7 +159,14 @@ class HookManager:
     def has(self, event: str) -> bool:
         return bool(self._hooks.get(event))
 
-    def dispatch(self, event: str, ctx: HookContext) -> None:
+    def dispatch(self, event: str, ctx: object) -> None:
+        """Dispatch ``ctx`` to every hook registered for ``event``.
+
+        ``ctx`` is typed as ``object`` because different events use
+        different context dataclasses (`HookContext` for ``chat_end``,
+        `PreToolUseContext` for ``pre_tool_use``). Each hook is
+        responsible for accepting the right shape.
+        """
         for hook in list(self._hooks.get(event, ())):
             try:
                 hook(ctx)
@@ -148,5 +180,7 @@ __all__ = [
     "HookContext",
     "HookEvent",
     "HookManager",
+    "PreToolUseContext",
+    "PreToolUseHook",
     "UsageMeter",
 ]

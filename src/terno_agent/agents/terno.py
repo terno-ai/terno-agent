@@ -24,7 +24,12 @@ from terno_agent.config import Config
 from terno_agent.core.cancel import CancelToken
 from terno_agent.core.compaction import CompactionHook
 from terno_agent.core.exceptions import ConfigError, SandboxError
-from terno_agent.core.hooks import HookContext, HookEvent, HookManager
+from terno_agent.core.hooks import (
+    HookContext,
+    HookEvent,
+    HookManager,
+    PreToolUseHook,
+)
 from terno_agent.core.messages import ContentPart
 from terno_agent.llm.base import LLMClient
 from terno_agent.llm.factory import create_llm_client
@@ -74,6 +79,7 @@ class TernoAgent(BaseAgent):
         memory_extractor: MemoryExtractor | None = None,
         attachment_manager: AttachmentManager | None = None,
         ask_callback: AskCallback | None = None,
+        permission_hook: PreToolUseHook | None = None,
         cancel_token: CancelToken | None = None,
         hook_manager: HookManager | None = None,
         compaction_hook: CompactionHook | None = None,
@@ -88,6 +94,7 @@ class TernoAgent(BaseAgent):
         self.memory_extractor = memory_extractor
         self.attachment_manager = attachment_manager
         self.ask_callback = ask_callback
+        self.permission_hook = permission_hook
 
         token = cancel_token or CancelToken()
 
@@ -115,6 +122,7 @@ class TernoAgent(BaseAgent):
                 on_event=on_event,
                 cancel_token=token,
                 ask_callback=ask_callback,
+                permission_hook=permission_hook,
             ),
         ]
         if ask_callback is not None:
@@ -142,6 +150,8 @@ class TernoAgent(BaseAgent):
             )
         if compaction_hook is not None:
             hooks.register(HookEvent.CHAT_END, compaction_hook)
+        if permission_hook is not None:
+            hooks.register(HookEvent.PRE_TOOL_USE, permission_hook)
 
         super().__init__(
             llm,
@@ -211,12 +221,14 @@ class TernoAgent(BaseAgent):
         on_event=None,
         ask_callback: AskCallback | None = None,
         on_memory_event: ExtractionCallback | None = None,
+        permission_hook: PreToolUseHook | None = None,
     ) -> TernoAgent:
         return cls.from_config(
             Config.from_env(),
             on_event=on_event,
             ask_callback=ask_callback,
             on_memory_event=on_memory_event,
+            permission_hook=permission_hook,
         )
 
     @classmethod
@@ -227,6 +239,7 @@ class TernoAgent(BaseAgent):
         on_event=None,
         ask_callback: AskCallback | None = None,
         on_memory_event: ExtractionCallback | None = None,
+        permission_hook: PreToolUseHook | None = None,
     ) -> TernoAgent:
         if not config.llm_api_key:
             raise ConfigError(
@@ -281,6 +294,7 @@ class TernoAgent(BaseAgent):
             memory_extractor=memory_extractor,
             attachment_manager=attachment_manager,
             ask_callback=ask_callback,
+            permission_hook=permission_hook,
             compaction_hook=compaction_hook,
         )
 
