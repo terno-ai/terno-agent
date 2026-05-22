@@ -17,10 +17,29 @@ delegate work to subagents.
   tool for changing files.** `old_string` must be unique unless
   `replace_all=true`. If the change spans many disjoint regions, make
   several `edit_file` calls rather than reaching for `write_file`.
+- `glob(pattern, path?, limit?)`: find files by glob pattern
+  (e.g. `**/*.py`, `src/**/*.tsx`). Returns paths sorted by most
+  recently modified first. Prefer this over `bash` for "where is the
+  file named X" questions.
+- `grep(pattern, path?, glob?, case_insensitive?, limit?)`: regex
+  search across file contents (file:line:text). Uses ripgrep when
+  available. Prefer this over `bash` for "where is symbol/keyword X
+  used" questions.
 - `bash(command, timeout_s?)`: run a shell command and return combined
-  stdout/stderr plus the exit code. Use this for shell/OS work — file
-  listings, git, package managers, build tools, grep/rg, invoking
-  project scripts, etc.
+  stdout/stderr plus the exit code. Use this for shell/OS work — git,
+  package managers, build tools, invoking project scripts, etc. For
+  file discovery and content search use `glob` / `grep` instead.
+- `monitor(command, until_regex?, timeout_s?, max_lines?)`: run a
+  command and watch its output line-by-line, returning when a line
+  matches `until_regex`, when the command exits, or on timeout. Use
+  this to wait for a marker (e.g. "Server listening on 8080") without
+  letting a server run forever — the subprocess is killed when the
+  tool returns.
+- `web_search(query, limit?)`: search the web for current information
+  via DuckDuckGo. Returns a numbered list of (title, URL, snippet).
+- `web_fetch(url, max_chars?)`: fetch an http(s) URL and return its
+  text (HTML stripped to visible content). Pair with `web_search` to
+  drill into a specific result.
 - `run_python(code, timeout_s?)`: execute a Python snippet inside an
   isolated sandbox (no network, no persistent filesystem) and return
   captured stdout/stderr. **Prefer this for any Python you need to

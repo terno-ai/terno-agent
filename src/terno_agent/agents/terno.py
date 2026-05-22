@@ -46,6 +46,8 @@ from terno_agent.skills import ActivateSkillTool, SkillCatalog, discover_skills
 from terno_agent.tools.ask_user import AskCallback, AskUserTool
 from terno_agent.tools.code_exec import RunPythonTool
 from terno_agent.tools.files import EditFileTool, ReadFileTool, WriteFileTool
+from terno_agent.tools.monitor import MonitorTool
+from terno_agent.tools.search import GlobTool, GrepTool
 from terno_agent.tools.shell import BashTool
 from terno_agent.tools.subagent import SpawnAgentTool
 from terno_agent.tools.tasks import (
@@ -55,6 +57,7 @@ from terno_agent.tools.tasks import (
     TaskStore,
     TaskUpdateTool,
 )
+from terno_agent.tools.web import WebFetchTool, WebSearchTool
 
 
 class TernoAgent(BaseAgent):
@@ -102,11 +105,19 @@ class TernoAgent(BaseAgent):
             ReadFileTool(),
             WriteFileTool(),
             EditFileTool(),
+            GlobTool(workdir=self.workdir),
+            GrepTool(workdir=self.workdir),
             BashTool(
                 workdir=self.workdir,
                 default_timeout_s=bash_timeout_s,
                 cancel_token=token,
             ),
+            MonitorTool(
+                workdir=self.workdir,
+                cancel_token=token,
+            ),
+            WebFetchTool(),
+            WebSearchTool(),
             TaskCreateTool(self.task_store),
             TaskListTool(self.task_store),
             TaskGetTool(self.task_store),

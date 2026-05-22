@@ -782,11 +782,16 @@ _ALWAYS_ALLOWED_TOOLS = frozenset(
     {
         # Read-only tools that ship with terno — prompting on every call is noise.
         "read_file",
+        "glob",
+        "grep",
         "task_list",
         "task_get",
         "task_create",
         "task_update",
         "search_memory",
+        # Network reads; treated as read-only on the local system.
+        "web_fetch",
+        "web_search",
         # Interactive prompts are user-driven by definition.
         "ask_user",
         # Skill activation just loads docs; no side effect on the system.
