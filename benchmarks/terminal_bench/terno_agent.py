@@ -5,12 +5,19 @@ from __future__ import annotations
 import json
 import os
 import shlex
+import shutil
+import tempfile
 from pathlib import Path
 
+from terminal_bench.agents.base_agent import AgentResult
 from terminal_bench.agents.installed_agents.abstract_installed_agent import (
     AbstractInstalledAgent,
 )
 from terminal_bench.terminal.models import TerminalCommand
+from terminal_bench.terminal.tmux_session import TmuxSession
+
+_CONTAINER_SDK_PATH = "/installed-agent/terno-agent-sdk"
+_DEFAULT_LOCAL_SDK_PATH = Path(__file__).resolve().parents[2] / "sdk"
 
 
 class TernoTerminalBenchAgent(AbstractInstalledAgent):
@@ -21,6 +28,7 @@ class TernoTerminalBenchAgent(AbstractInstalledAgent):
         model_name: str | None = None,
         *,
         package: str | None = None,
+        sdk_path: str | Path | None = None,
         max_iterations: int = 64,
         bash_timeout_s: int = 600,
         run_python_timeout_s: int = 120,
@@ -29,6 +37,13 @@ class TernoTerminalBenchAgent(AbstractInstalledAgent):
         super().__init__(**kwargs)
         self._model_name = model_name
         self._package = package
+        self._sdk_path = (
+            Path(sdk_path).expanduser().resolve()
+            if sdk_path is not None
+            else _DEFAULT_LOCAL_SDK_PATH
+        )
+        if sdk_path is not None and not self._sdk_path.exists():
+            raise ValueError(f"sdk_path does not exist: {self._sdk_path}")
         self._max_iterations = max_iterations
         self._bash_timeout_s = bash_timeout_s
         self._run_python_timeout_s = run_python_timeout_s
@@ -54,10 +69,27 @@ class TernoTerminalBenchAgent(AbstractInstalledAgent):
             env["TERNO_LLM_MODEL"] = model
         if self._package is not None:
             env["TERNO_AGENT_PACKAGE"] = self._package
+        elif self._sdk_path.exists():
+            env["TERNO_AGENT_SDK_PATH"] = _CONTAINER_SDK_PATH
         env["TERNO_BENCH_MAX_ITERATIONS"] = str(self._max_iterations)
         env["TERNO_BENCH_BASH_TIMEOUT_S"] = str(self._bash_timeout_s)
         env["TERNO_BENCH_RUN_PYTHON_TIMEOUT_S"] = str(self._run_python_timeout_s)
         return env
+
+    def perform_task(
+        self,
+        instruction: str,
+        session: TmuxSession,
+        logging_dir: Path | None = None,
+    ) -> AgentResult:
+        if self._package is None and self._sdk_path.exists():
+            with tempfile.TemporaryDirectory(prefix="terno-agent-sdk-") as tmp:
+                staged_sdk = _stage_sdk_source(self._sdk_path, Path(tmp) / "sdk")
+                session.copy_to_container(
+                    staged_sdk,
+                    container_dir=_CONTAINER_SDK_PATH,
+                )
+        return super().perform_task(instruction, session, logging_dir=logging_dir)
 
     def _run_agent_commands(self, instruction: str) -> list[TerminalCommand]:
         payload = json.dumps({"task": instruction})
@@ -93,3 +125,16 @@ def _split_model_name(model_name: str | None) -> tuple[str | None, str | None]:
         return (provider, model)
     return (None, model_name)
 
+
+def _stage_sdk_source(source: Path, target: Path) -> Path:
+    target.mkdir(parents=True, exist_ok=True)
+    for filename in ("pyproject.toml", "README.md", "uv.lock"):
+        path = source / filename
+        if path.exists():
+            shutil.copy2(path, target / filename)
+    shutil.copytree(
+        source / "src",
+        target / "src",
+        ignore=shutil.ignore_patterns("__pycache__", "*.pyc", ".DS_Store"),
+    )
+    return target

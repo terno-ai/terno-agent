@@ -25,10 +25,13 @@ def main() -> int:
         provider=args.provider,
         model=args.model,
         api_key=args.api_key,
+        sandbox="local",
+        sandbox_fallback="none",
     )
 
     with Agent.from_config(
         config,
+        on_event=_print_event,
         workdir=workdir,
         max_iterations=args.max_iterations,
         bash_timeout_s=args.bash_timeout_s,
@@ -49,6 +52,36 @@ def main() -> int:
 
     print(payload["answer"])
     return 0
+
+
+def _print_event(event: Any) -> None:
+    event_name = type(event).__name__
+    if event_name == "IterationStart":
+        print(f"[terno] iteration {event.iteration}", flush=True)
+    elif event_name == "TextDelta":
+        print(event.text, end="", flush=True)
+    elif event_name == "ToolCallEvent":
+        try:
+            arguments = json.dumps(event.call.arguments, sort_keys=True)
+        except TypeError:
+            arguments = repr(event.call.arguments)
+        print(
+            f"\n[terno] tool {event.call.name}: {_truncate(arguments)}",
+            flush=True,
+        )
+    elif event_name == "ToolResultEvent":
+        status = "error" if event.result.is_error else "ok"
+        print(
+            f"[terno] tool result ({status}): {_truncate(event.result.content)}",
+            flush=True,
+        )
+
+
+def _truncate(value: object, limit: int = 1200) -> str:
+    text = str(value).replace("\r", "\n")
+    if len(text) <= limit:
+        return text
+    return f"{text[: limit - 3]}..."
 
 
 def _parse_args() -> argparse.Namespace:
