@@ -31,6 +31,14 @@ docker = ["docker>=7.0"]
 postgres = ["psycopg[binary]>=3.1"]
 mysql = ["pymysql>=1.1"]
 mcp = ["mcp>=1.2", "anyio>=4.4"]
+benchmarks = [
+    "anthropic>=0.39",
+    "datasets>=2.19",
+    "docker>=7.0",
+    "openai>=1.40",
+    "swebench",
+    "terminal-bench",
+]
 all = [
     "anthropic>=0.39",
     "openai>=1.40",

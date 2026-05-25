@@ -14,6 +14,7 @@ values fall back to environment variables and `.env` files.
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from terno_agent.agents.base import AgentRun
@@ -52,6 +53,10 @@ class Agent:
         model: str | None = None,
         config: Config | None = None,
         on_event: EventHook | None = None,
+        workdir: str | Path | None = None,
+        max_iterations: int | None = None,
+        bash_timeout_s: int = 120,
+        run_python_timeout_s: int = 30,
     ) -> None:
         self.config = config or _build_config(
             api_key=api_key,
@@ -60,20 +65,58 @@ class Agent:
             model=model,
         )
         self.on_event = on_event
-        self._agent = TernoAgent.from_config(self.config, on_event=on_event)
+        self._agent = TernoAgent.from_config(
+            self.config,
+            on_event=on_event,
+            workdir=workdir,
+            max_iterations=max_iterations,
+            bash_timeout_s=bash_timeout_s,
+            run_python_timeout_s=run_python_timeout_s,
+        )
         self._closed = False
 
     # ----- Alternate constructors -------------------------------------------- #
 
     @classmethod
-    def from_env(cls, *, on_event: EventHook | None = None) -> Agent:
+    def from_env(
+        cls,
+        *,
+        on_event: EventHook | None = None,
+        workdir: str | Path | None = None,
+        max_iterations: int | None = None,
+        bash_timeout_s: int = 120,
+        run_python_timeout_s: int = 30,
+    ) -> Agent:
         """Build an `Agent` from environment variables and `.env`."""
-        return cls(config=Config.from_env(), on_event=on_event)
+        return cls(
+            config=Config.from_env(),
+            on_event=on_event,
+            workdir=workdir,
+            max_iterations=max_iterations,
+            bash_timeout_s=bash_timeout_s,
+            run_python_timeout_s=run_python_timeout_s,
+        )
 
     @classmethod
-    def from_config(cls, config: Config, *, on_event: EventHook | None = None) -> Agent:
+    def from_config(
+        cls,
+        config: Config,
+        *,
+        on_event: EventHook | None = None,
+        workdir: str | Path | None = None,
+        max_iterations: int | None = None,
+        bash_timeout_s: int = 120,
+        run_python_timeout_s: int = 30,
+    ) -> Agent:
         """Build an `Agent` from an explicit `Config`."""
-        return cls(config=config, on_event=on_event)
+        return cls(
+            config=config,
+            on_event=on_event,
+            workdir=workdir,
+            max_iterations=max_iterations,
+            bash_timeout_s=bash_timeout_s,
+            run_python_timeout_s=run_python_timeout_s,
+        )
 
     # ----- Inference --------------------------------------------------------- #
 
@@ -206,6 +249,10 @@ def _build_config(
         database_url=database_url if database_url is not None else base.database_url,
         sandbox=base.sandbox,
         sandbox_image=base.sandbox_image,
+        sandbox_options=dict(base.sandbox_options),
+        sandbox_fallback=base.sandbox_fallback,
+        sandbox_persist=base.sandbox_persist,
+        sandbox_container_name=base.sandbox_container_name,
         max_rows=base.max_rows,
         read_only_sql=base.read_only_sql,
         mcp_enabled=base.mcp_enabled,
@@ -220,6 +267,12 @@ def _build_config(
         compaction_enabled=base.compaction_enabled,
         compaction_threshold_tokens=base.compaction_threshold_tokens,
         compaction_keep_last_turns=base.compaction_keep_last_turns,
+        attachments_enabled=base.attachments_enabled,
+        attachments_dir=base.attachments_dir,
+        max_attachment_bytes=base.max_attachment_bytes,
+        max_attachments_per_turn=base.max_attachments_per_turn,
+        attachment_image_mode=base.attachment_image_mode,
+        extra=dict(base.extra),
     )
 
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -9,13 +10,19 @@ from terno_agent.core.exceptions import ToolError
 from terno_agent.core.tool import ToolSchema
 
 
-def _resolve(path_str: str) -> Path:
+def _resolve(path_str: str, workdir: Path | None = None) -> Path:
     if not path_str:
         raise ToolError("path is required.")
-    return Path(path_str).expanduser()
+    path = Path(path_str).expanduser()
+    if path.is_absolute() or workdir is None:
+        return path
+    return workdir / path
 
 
+@dataclass
 class ReadFileTool:
+    workdir: Path | None = None
+
     @property
     def schema(self) -> ToolSchema:
         return ToolSchema(
@@ -46,7 +53,7 @@ class ReadFileTool:
         )
 
     def run(self, **kwargs: Any) -> str:
-        path = _resolve(kwargs.get("path", ""))
+        path = _resolve(kwargs.get("path", ""), self.workdir)
         if not path.exists():
             raise ToolError(f"File not found: {path}")
         if path.is_dir():
@@ -74,7 +81,10 @@ class ReadFileTool:
         return "\n".join(numbered) + suffix
 
 
+@dataclass
 class WriteFileTool:
+    workdir: Path | None = None
+
     @property
     def schema(self) -> ToolSchema:
         return ToolSchema(
@@ -106,7 +116,7 @@ class WriteFileTool:
         )
 
     def run(self, **kwargs: Any) -> str:
-        path = _resolve(kwargs.get("path", ""))
+        path = _resolve(kwargs.get("path", ""), self.workdir)
         content = kwargs.get("content")
         if content is None:
             raise ToolError("write_file requires a 'content' argument.")
@@ -128,7 +138,10 @@ class WriteFileTool:
         return f"Wrote {len(content)} bytes to {path}"
 
 
+@dataclass
 class EditFileTool:
+    workdir: Path | None = None
+
     @property
     def schema(self) -> ToolSchema:
         return ToolSchema(
@@ -154,7 +167,7 @@ class EditFileTool:
         )
 
     def run(self, **kwargs: Any) -> str:
-        path = _resolve(kwargs.get("path", ""))
+        path = _resolve(kwargs.get("path", ""), self.workdir)
         old = kwargs.get("old_string")
         new = kwargs.get("new_string")
         if old is None or new is None:

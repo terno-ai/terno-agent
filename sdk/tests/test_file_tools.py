@@ -24,6 +24,21 @@ def test_read_offset_and_limit(tmp_path):
     assert "row 5" not in out
 
 
+def test_relative_paths_resolve_against_tool_workdir(tmp_path):
+    WriteFileTool(workdir=tmp_path).run(path="nested/hello.txt", content="hi\n")
+    assert (tmp_path / "nested" / "hello.txt").read_text() == "hi\n"
+
+    out = ReadFileTool(workdir=tmp_path).run(path="nested/hello.txt")
+    assert "1\thi" in out
+
+    EditFileTool(workdir=tmp_path).run(
+        path="nested/hello.txt",
+        old_string="hi",
+        new_string="bye",
+    )
+    assert (tmp_path / "nested" / "hello.txt").read_text() == "bye\n"
+
+
 def test_read_missing_file(tmp_path):
     with pytest.raises(ToolError):
         ReadFileTool().run(path=str(tmp_path / "nope.txt"))

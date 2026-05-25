@@ -23,7 +23,7 @@ def test_agent_kwargs_override_env(monkeypatch):
 
     captured: dict[str, Config] = {}
 
-    def _fake_from_config(cls, config, *, on_event=None):
+    def _fake_from_config(cls, config, **_kwargs):
         captured["config"] = config
         return object()
 
@@ -84,3 +84,59 @@ def test_agent_from_env_uses_config(monkeypatch):
     cfg = captured["c"]
     assert cfg.llm_api_key == "sk-env"
     assert cfg.llm_provider == "anthropic"
+
+
+def test_agent_from_config_forwards_benchmark_knobs(monkeypatch, tmp_path):
+    captured = {}
+
+    def _fake_from_config(cls, config, **kwargs):
+        captured["config"] = config
+        captured["kwargs"] = kwargs
+        return object()
+
+    monkeypatch.setattr(
+        "terno_agent.sdk.TernoAgent.from_config",
+        classmethod(_fake_from_config),
+    )
+
+    cfg = Config(llm_api_key="sk-test")
+    agent = Agent.from_config(
+        cfg,
+        workdir=tmp_path,
+        max_iterations=64,
+        bash_timeout_s=600,
+        run_python_timeout_s=120,
+    )
+
+    assert agent.config is cfg
+    assert captured["kwargs"]["workdir"] == tmp_path
+    assert captured["kwargs"]["max_iterations"] == 64
+    assert captured["kwargs"]["bash_timeout_s"] == 600
+    assert captured["kwargs"]["run_python_timeout_s"] == 120
+
+
+def test_config_for_benchmark_disables_host_side_effects():
+    base = Config(
+        llm_provider="openai",
+        llm_model="gpt-4o",
+        llm_api_key="sk-test",
+        sandbox="docker",
+        sandbox_fallback="local",
+        mcp_enabled=True,
+        memory_enabled=True,
+        attachments_enabled=True,
+        skills_enabled=True,
+    )
+
+    cfg = Config.for_benchmark(base)
+
+    assert cfg.llm_provider == "openai"
+    assert cfg.llm_model == "gpt-4o"
+    assert cfg.llm_api_key == "sk-test"
+    assert cfg.sandbox == "none"
+    assert cfg.sandbox_fallback == "none"
+    assert not cfg.mcp_enabled
+    assert not cfg.memory_enabled
+    assert not cfg.attachments_enabled
+    assert not cfg.skills_enabled
+    assert base.sandbox == "docker"

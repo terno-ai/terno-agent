@@ -10,7 +10,13 @@ from terno_agent.cli import _format_call_body, _format_edit_diff
 
 def _render(text: Text) -> str:
     """Capture Rich-styled ANSI output of ``text`` for snapshot-style asserts."""
-    console = Console(file=io.StringIO(), force_terminal=True, color_system="truecolor", width=120)
+    console = Console(
+        file=io.StringIO(),
+        force_terminal=True,
+        color_system="truecolor",
+        no_color=False,
+        width=120,
+    )
     console.print(text, end="")
     return console.file.getvalue()
 

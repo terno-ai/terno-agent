@@ -11,7 +11,7 @@ Precedence (highest first):
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from functools import cache
 from pathlib import Path
 
@@ -168,6 +168,50 @@ class Config:
             max_attachments_per_turn=int(os.getenv("TERNO_MAX_ATTACHMENTS_PER_TURN", "8")),
             attachment_image_mode=os.getenv("TERNO_ATTACHMENT_IMAGE_MODE", "auto").lower(),
         )
+
+    @classmethod
+    def for_benchmark(
+        cls,
+        base: Config | None = None,
+        *,
+        provider: str | None = None,
+        model: str | None = None,
+        api_key: str | None = None,
+        sandbox: str = "none",
+        sandbox_fallback: str = "none",
+        memory_enabled: bool = False,
+        mcp_enabled: bool = False,
+        attachments_enabled: bool = False,
+        skills_enabled: bool = False,
+    ) -> Config:
+        """Return a config with benchmark-host side effects disabled.
+
+        Benchmark harnesses usually provide their own task isolation and
+        lifecycle. This helper keeps provider credentials and model settings
+        from ``base``/env, but disables persistent memory, MCP servers,
+        attachment storage, project/user skills, and Terno's internal sandbox
+        unless the caller explicitly opts back in.
+        """
+        cfg = replace(base) if base is not None else cls.from_env()
+        previous_provider = cfg.llm_provider
+        if provider is not None:
+            cfg.llm_provider = provider
+        if model is not None:
+            cfg.llm_model = model
+        elif provider is not None and cfg.llm_model == DEFAULT_MODELS.get(previous_provider, ""):
+            cfg.llm_model = DEFAULT_MODELS.get(cfg.llm_provider, "")
+        elif not cfg.llm_model:
+            cfg.llm_model = DEFAULT_MODELS.get(cfg.llm_provider, "")
+        if api_key is not None:
+            cfg.llm_api_key = api_key
+
+        cfg.sandbox = _normalize_sandbox(sandbox)
+        cfg.sandbox_fallback = _normalize_sandbox(sandbox_fallback)
+        cfg.memory_enabled = memory_enabled
+        cfg.mcp_enabled = mcp_enabled
+        cfg.attachments_enabled = attachments_enabled
+        cfg.skills_enabled = skills_enabled
+        return cfg
 
     def display(self) -> str:
         masked = "***" if self.llm_api_key else "(unset)"

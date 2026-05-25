@@ -35,6 +35,7 @@ class SpawnAgentTool:
     mcp_manager: McpManager | None = None
     bash_timeout_s: int = 120
     run_python_timeout_s: int = 30
+    max_iterations: int | None = None
     on_event: EventHook | None = None
     cancel_token: CancelToken | None = None
     ask_callback: AskCallback | None = None
@@ -92,6 +93,7 @@ class SpawnAgentTool:
             mcp_manager=self.mcp_manager,
             bash_timeout_s=self.bash_timeout_s,
             run_python_timeout_s=self.run_python_timeout_s,
+            max_iterations=self.max_iterations,
             on_event=self.on_event,
             cancel_token=self.cancel_token,
             ask_callback=self.ask_callback,

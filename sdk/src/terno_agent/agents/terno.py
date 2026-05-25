@@ -76,6 +76,7 @@ class TernoAgent(BaseAgent):
         skill_catalog: SkillCatalog | None = None,
         bash_timeout_s: int = 120,
         run_python_timeout_s: int = 30,
+        max_iterations: int | None = None,
         on_event=None,
         memory_store: MemoryStore | None = None,
         memory_retriever: MemoryRetriever | None = None,
@@ -88,6 +89,10 @@ class TernoAgent(BaseAgent):
         compaction_hook: CompactionHook | None = None,
     ) -> None:
         self.workdir = (workdir or Path.cwd()).resolve()
+        if max_iterations is not None:
+            if max_iterations <= 0:
+                raise ConfigError("max_iterations must be positive.")
+            self.max_iterations = max_iterations
         self.task_store = task_store or TaskStore()
         self.sandbox = sandbox
         self.mcp_manager = mcp_manager
@@ -102,9 +107,9 @@ class TernoAgent(BaseAgent):
         token = cancel_token or CancelToken()
 
         tools: list = [
-            ReadFileTool(),
-            WriteFileTool(),
-            EditFileTool(),
+            ReadFileTool(workdir=self.workdir),
+            WriteFileTool(workdir=self.workdir),
+            EditFileTool(workdir=self.workdir),
             GlobTool(workdir=self.workdir),
             GrepTool(workdir=self.workdir),
             BashTool(
@@ -130,6 +135,7 @@ class TernoAgent(BaseAgent):
                 mcp_manager=mcp_manager,
                 bash_timeout_s=bash_timeout_s,
                 run_python_timeout_s=run_python_timeout_s,
+                max_iterations=max_iterations,
                 on_event=on_event,
                 cancel_token=token,
                 ask_callback=ask_callback,
@@ -233,6 +239,10 @@ class TernoAgent(BaseAgent):
         ask_callback: AskCallback | None = None,
         on_memory_event: ExtractionCallback | None = None,
         permission_hook: PreToolUseHook | None = None,
+        workdir: Path | str | None = None,
+        max_iterations: int | None = None,
+        bash_timeout_s: int = 120,
+        run_python_timeout_s: int = 30,
     ) -> TernoAgent:
         return cls.from_config(
             Config.from_env(),
@@ -240,6 +250,10 @@ class TernoAgent(BaseAgent):
             ask_callback=ask_callback,
             on_memory_event=on_memory_event,
             permission_hook=permission_hook,
+            workdir=workdir,
+            max_iterations=max_iterations,
+            bash_timeout_s=bash_timeout_s,
+            run_python_timeout_s=run_python_timeout_s,
         )
 
     @classmethod
@@ -251,6 +265,10 @@ class TernoAgent(BaseAgent):
         ask_callback: AskCallback | None = None,
         on_memory_event: ExtractionCallback | None = None,
         permission_hook: PreToolUseHook | None = None,
+        workdir: Path | str | None = None,
+        max_iterations: int | None = None,
+        bash_timeout_s: int = 120,
+        run_python_timeout_s: int = 30,
     ) -> TernoAgent:
         if not config.llm_api_key:
             raise ConfigError(
@@ -263,6 +281,7 @@ class TernoAgent(BaseAgent):
             api_key=config.llm_api_key,
         )
         sandbox = _init_sandbox(config)
+        resolved_workdir = (Path(workdir) if workdir is not None else Path.cwd()).resolve()
 
         mcp_manager: McpManager | None = None
         if config.mcp_enabled:
@@ -273,12 +292,12 @@ class TernoAgent(BaseAgent):
         memory_store, memory_retriever, memory_extractor = _build_memory(
             config,
             llm,
-            workdir=Path.cwd(),
+            workdir=resolved_workdir,
             on_memory_event=on_memory_event,
         )
         skill_catalog = (
             discover_skills(
-                Path.cwd(),
+                resolved_workdir,
                 extra_roots=[Path(p) for p in config.skill_paths],
             )
             if config.skills_enabled
@@ -292,13 +311,17 @@ class TernoAgent(BaseAgent):
                 threshold_input_tokens=config.compaction_threshold_tokens,
                 keep_last_turns=config.compaction_keep_last_turns,
             )
-        attachment_manager = _build_attachments(config, Path.cwd())
+        attachment_manager = _build_attachments(config, resolved_workdir)
 
         return cls(
             llm,
+            workdir=resolved_workdir,
             sandbox=sandbox,
             mcp_manager=mcp_manager,
             skill_catalog=skill_catalog,
+            bash_timeout_s=bash_timeout_s,
+            run_python_timeout_s=run_python_timeout_s,
+            max_iterations=max_iterations,
             on_event=on_event,
             memory_store=memory_store,
             memory_retriever=memory_retriever,
