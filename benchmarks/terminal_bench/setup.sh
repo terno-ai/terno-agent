@@ -5,20 +5,52 @@ if ! command -v python >/dev/null 2>&1 && command -v python3 >/dev/null 2>&1; th
   ln -s "$(command -v python3)" /usr/local/bin/python
 fi
 
+export PATH="$HOME/.local/bin:/root/.local/bin:$PATH"
+
 if ! command -v uv >/dev/null 2>&1; then
-  python -m pip install uv
+  if python -m pip --version >/dev/null 2>&1; then
+    python -m pip install uv
+  elif python -m ensurepip --upgrade >/dev/null 2>&1; then
+    python -m pip install uv
+  else
+    uv_install_script="/tmp/uv-install.sh"
+    if command -v curl >/dev/null 2>&1; then
+      curl -LsSf https://astral.sh/uv/install.sh -o "$uv_install_script"
+    elif command -v wget >/dev/null 2>&1; then
+      wget -qO "$uv_install_script" https://astral.sh/uv/install.sh
+    else
+      python - <<'PY'
+from urllib.request import urlopen
+
+with urlopen("https://astral.sh/uv/install.sh", timeout=60) as response:
+    data = response.read()
+
+with open("/tmp/uv-install.sh", "wb") as f:
+    f.write(data)
+PY
+    fi
+    sh "$uv_install_script"
+  fi
 fi
 
-install_source="${TERNO_AGENT_SDK_PATH:-}"
+if ! command -v uv >/dev/null 2>&1; then
+  echo "failed to install uv; install pip, ensurepip, curl, wget, or allow Python HTTPS downloads"
+  exit 1
+fi
+
+install_source="${TERNO_AGENT_SDK_PATH:-/installed-agent/terno-agent-sdk}"
+install_extras="${TERNO_AGENT_INSTALL_EXTRAS:-anthropic,openai}"
+agent_venv="${TERNO_AGENT_VENV:-/installed-agent/venv}"
+uv venv --python "$(command -v python)" "$agent_venv"
 if [ -n "$install_source" ] && [ -f "$install_source/pyproject.toml" ]; then
   echo "Installing terno-agent from local SDK source: $install_source"
-  (cd "$install_source" && uv pip install --system ".[benchmarks]")
+  (cd "$install_source" && uv pip install --python "$agent_venv/bin/python" ".[$install_extras]")
 elif [ -f "./pyproject.toml" ] && grep -q 'name = "terno-agent"' ./pyproject.toml; then
   echo "Installing terno-agent from task working directory"
-  uv pip install --system ".[benchmarks]"
+  uv pip install --python "$agent_venv/bin/python" ".[$install_extras]"
 else
-  echo "Installing terno-agent from package: ${TERNO_AGENT_PACKAGE:-terno-agent[benchmarks]}"
-  uv pip install --system "${TERNO_AGENT_PACKAGE:-terno-agent[benchmarks]}"
+  echo "Installing terno-agent from package: ${TERNO_AGENT_PACKAGE:-terno-agent[$install_extras]}"
+  uv pip install --python "$agent_venv/bin/python" "${TERNO_AGENT_PACKAGE:-terno-agent[$install_extras]}"
 fi
 
 cat > /installed-agent/run-terno-task.py <<'PY'

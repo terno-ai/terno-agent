@@ -35,6 +35,7 @@ benchmarks = [
     "anthropic>=0.39",
     "datasets>=2.19",
     "docker>=7.0",
+    "harbor>=0.1.32",
     "openai>=1.40",
     "swebench",
     "terminal-bench",

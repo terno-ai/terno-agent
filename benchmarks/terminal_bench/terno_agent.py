@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 import os
 import shlex
-import shutil
 import tempfile
 from pathlib import Path
 
@@ -16,8 +15,11 @@ from terminal_bench.agents.installed_agents.abstract_installed_agent import (
 from terminal_bench.terminal.models import TerminalCommand
 from terminal_bench.terminal.tmux_session import TmuxSession
 
-_CONTAINER_SDK_PATH = "/installed-agent/terno-agent-sdk"
-_DEFAULT_LOCAL_SDK_PATH = Path(__file__).resolve().parents[2] / "sdk"
+from benchmarks.terminal_bench._sdk_source import (
+    CONTAINER_SDK_PATH,
+    DEFAULT_LOCAL_SDK_PATH,
+    stage_sdk_source,
+)
 
 
 class TernoTerminalBenchAgent(AbstractInstalledAgent):
@@ -40,7 +42,7 @@ class TernoTerminalBenchAgent(AbstractInstalledAgent):
         self._sdk_path = (
             Path(sdk_path).expanduser().resolve()
             if sdk_path is not None
-            else _DEFAULT_LOCAL_SDK_PATH
+            else DEFAULT_LOCAL_SDK_PATH
         )
         if sdk_path is not None and not self._sdk_path.exists():
             raise ValueError(f"sdk_path does not exist: {self._sdk_path}")
@@ -70,7 +72,7 @@ class TernoTerminalBenchAgent(AbstractInstalledAgent):
         if self._package is not None:
             env["TERNO_AGENT_PACKAGE"] = self._package
         elif self._sdk_path.exists():
-            env["TERNO_AGENT_SDK_PATH"] = _CONTAINER_SDK_PATH
+            env["TERNO_AGENT_SDK_PATH"] = CONTAINER_SDK_PATH
         env["TERNO_BENCH_MAX_ITERATIONS"] = str(self._max_iterations)
         env["TERNO_BENCH_BASH_TIMEOUT_S"] = str(self._bash_timeout_s)
         env["TERNO_BENCH_RUN_PYTHON_TIMEOUT_S"] = str(self._run_python_timeout_s)
@@ -84,10 +86,10 @@ class TernoTerminalBenchAgent(AbstractInstalledAgent):
     ) -> AgentResult:
         if self._package is None and self._sdk_path.exists():
             with tempfile.TemporaryDirectory(prefix="terno-agent-sdk-") as tmp:
-                staged_sdk = _stage_sdk_source(self._sdk_path, Path(tmp) / "sdk")
+                staged_sdk = stage_sdk_source(self._sdk_path, Path(tmp) / "sdk")
                 session.copy_to_container(
                     staged_sdk,
-                    container_dir=_CONTAINER_SDK_PATH,
+                    container_dir=CONTAINER_SDK_PATH,
                 )
         return super().perform_task(instruction, session, logging_dir=logging_dir)
 
@@ -96,7 +98,8 @@ class TernoTerminalBenchAgent(AbstractInstalledAgent):
         return [
             TerminalCommand(
                 command=(
-                    "python /installed-agent/run-terno-task.py "
+                    "${TERNO_AGENT_VENV:-/installed-agent/venv}/bin/python "
+                    "/installed-agent/run-terno-task.py "
                     f"--task-json {shlex.quote(payload)} "
                     "--workdir . "
                     "--result-json /installed-agent/terno-agent-result.json"
@@ -124,17 +127,3 @@ def _split_model_name(model_name: str | None) -> tuple[str | None, str | None]:
     if provider in {"anthropic", "openai"}:
         return (provider, model)
     return (None, model_name)
-
-
-def _stage_sdk_source(source: Path, target: Path) -> Path:
-    target.mkdir(parents=True, exist_ok=True)
-    for filename in ("pyproject.toml", "README.md", "uv.lock"):
-        path = source / filename
-        if path.exists():
-            shutil.copy2(path, target / filename)
-    shutil.copytree(
-        source / "src",
-        target / "src",
-        ignore=shutil.ignore_patterns("__pycache__", "*.pyc", ".DS_Store"),
-    )
-    return target

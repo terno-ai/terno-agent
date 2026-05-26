@@ -1,0 +1,11 @@
+jobs_dir: jobs
+debug: true
+
+orchestrator:
+  type: local
+  n_concurrent_trials: 1
+
+environment:
+  import_path: benchmarks.terminal_bench.harbor_debug_environment:StreamingDockerEnvironment
+  force_build: false
+  delete: true

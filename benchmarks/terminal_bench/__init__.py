@@ -1,2 +1,1 @@
-"""Terminal-Bench adapter for terno-agent."""
-
+"""Terminal-Bench adapters for terno-agent."""
