@@ -30,6 +30,11 @@ from terno_agent.core.hooks import (
     HookManager,
     PreToolUseHook,
 )
+from terno_agent.core.permissions import (
+    PermissionCallback,
+    PermissionMode,
+    PermissionPolicy,
+)
 from terno_agent.core.messages import ContentPart
 from terno_agent.llm.base import LLMClient
 from terno_agent.llm.factory import create_llm_client
@@ -84,6 +89,10 @@ class TernoAgent(BaseAgent):
         attachment_manager: AttachmentManager | None = None,
         ask_callback: AskCallback | None = None,
         permission_hook: PreToolUseHook | None = None,
+        permission_policy: PermissionPolicy | None = None,
+        permission_mode: PermissionMode | str | None = None,
+        allow_rules: list | tuple | None = None,
+        on_permission_request: PermissionCallback | None = None,
         cancel_token: CancelToken | None = None,
         hook_manager: HookManager | None = None,
         compaction_hook: CompactionHook | None = None,
@@ -102,7 +111,23 @@ class TernoAgent(BaseAgent):
         self.memory_extractor = memory_extractor
         self.attachment_manager = attachment_manager
         self.ask_callback = ask_callback
-        self.permission_hook = permission_hook
+
+        resolved = _resolve_permissions(
+            permission_policy=permission_policy,
+            permission_hook=permission_hook,
+            permission_mode=permission_mode,
+            allow_rules=allow_rules,
+            on_permission_request=on_permission_request,
+        )
+        # ``permissions`` is the mutable PermissionPolicy when one is
+        # in play, or None if the caller wired a raw PreToolUseHook
+        # (back-compat path — they manage their own state).
+        self.permissions: PermissionPolicy | None = (
+            resolved if isinstance(resolved, PermissionPolicy) else None
+        )
+        # Subagents inherit the same callable so "allow always"
+        # decisions propagate across spawn boundaries.
+        self.permission_hook: PreToolUseHook | None = resolved
 
         token = cancel_token or CancelToken()
 
@@ -139,7 +164,7 @@ class TernoAgent(BaseAgent):
                 on_event=on_event,
                 cancel_token=token,
                 ask_callback=ask_callback,
-                permission_hook=permission_hook,
+                permission_hook=self.permission_hook,
             ),
         ]
         if ask_callback is not None:
@@ -167,8 +192,8 @@ class TernoAgent(BaseAgent):
             )
         if compaction_hook is not None:
             hooks.register(HookEvent.CHAT_END, compaction_hook)
-        if permission_hook is not None:
-            hooks.register(HookEvent.PRE_TOOL_USE, permission_hook)
+        if self.permission_hook is not None:
+            hooks.register(HookEvent.PRE_TOOL_USE, self.permission_hook)
 
         super().__init__(
             llm,
@@ -239,6 +264,10 @@ class TernoAgent(BaseAgent):
         ask_callback: AskCallback | None = None,
         on_memory_event: ExtractionCallback | None = None,
         permission_hook: PreToolUseHook | None = None,
+        permission_policy: PermissionPolicy | None = None,
+        permission_mode: PermissionMode | str | None = None,
+        allow_rules: list | tuple | None = None,
+        on_permission_request: PermissionCallback | None = None,
         workdir: Path | str | None = None,
         max_iterations: int | None = None,
         bash_timeout_s: int = 120,
@@ -250,6 +279,10 @@ class TernoAgent(BaseAgent):
             ask_callback=ask_callback,
             on_memory_event=on_memory_event,
             permission_hook=permission_hook,
+            permission_policy=permission_policy,
+            permission_mode=permission_mode,
+            allow_rules=allow_rules,
+            on_permission_request=on_permission_request,
             workdir=workdir,
             max_iterations=max_iterations,
             bash_timeout_s=bash_timeout_s,
@@ -265,6 +298,10 @@ class TernoAgent(BaseAgent):
         ask_callback: AskCallback | None = None,
         on_memory_event: ExtractionCallback | None = None,
         permission_hook: PreToolUseHook | None = None,
+        permission_policy: PermissionPolicy | None = None,
+        permission_mode: PermissionMode | str | None = None,
+        allow_rules: list | tuple | None = None,
+        on_permission_request: PermissionCallback | None = None,
         workdir: Path | str | None = None,
         max_iterations: int | None = None,
         bash_timeout_s: int = 120,
@@ -329,6 +366,10 @@ class TernoAgent(BaseAgent):
             attachment_manager=attachment_manager,
             ask_callback=ask_callback,
             permission_hook=permission_hook,
+            permission_policy=permission_policy,
+            permission_mode=permission_mode,
+            allow_rules=allow_rules,
+            on_permission_request=on_permission_request,
             compaction_hook=compaction_hook,
         )
 
@@ -404,6 +445,55 @@ def _with_skill_catalog(system_prompt: str, catalog: SkillCatalog) -> str:
     if not section:
         return system_prompt
     return f"{system_prompt}\n\n---\n{section}"
+
+
+def _resolve_permissions(
+    *,
+    permission_policy: PermissionPolicy | None,
+    permission_hook: PreToolUseHook | None,
+    permission_mode: PermissionMode | str | None,
+    allow_rules: list | tuple | None,
+    on_permission_request: PermissionCallback | None,
+) -> PermissionPolicy | PreToolUseHook | None:
+    """Reconcile the policy-related kwargs.
+
+    Three input shapes are accepted; mixing them is an error so the
+    caller can't silently override one with another:
+
+      * Raw ``permission_hook`` — kept for back-compat with code that
+        passed a hand-rolled ``PreToolUseHook``.
+      * Explicit ``permission_policy`` — full control.
+      * Convenience kwargs (``permission_mode`` / ``allow_rules`` /
+        ``on_permission_request``) — built into a policy here.
+
+    Returns the policy when a policy is in play, otherwise the raw hook
+    (or ``None``). Callers use ``isinstance(result, PermissionPolicy)``
+    to expose the policy on the agent for runtime mutation.
+    """
+    convenience_used = (
+        permission_mode is not None
+        or allow_rules is not None
+        or on_permission_request is not None
+    )
+    sources = [permission_hook is not None, permission_policy is not None, convenience_used]
+    if sum(sources) > 1:
+        raise ConfigError(
+            "Pass at most one of permission_hook=, permission_policy=, or the "
+            "convenience kwargs (permission_mode/allow_rules/on_permission_request)."
+        )
+    if permission_policy is not None:
+        return permission_policy
+    if convenience_used:
+        return PermissionPolicy.build(
+            mode=permission_mode or PermissionMode.ALLOW_ALL,
+            allow_rules=allow_rules or (),
+            on_request=on_permission_request,
+        )
+    if permission_hook is not None:
+        return permission_hook
+    # No caller input: provide a default ALLOW_ALL policy so
+    # ``agent.permissions`` is always available for runtime mutation.
+    return PermissionPolicy()
 
 
 def _wrap_memory_extractor(extractor: MemoryExtractor):

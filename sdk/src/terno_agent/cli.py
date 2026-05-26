@@ -31,7 +31,12 @@ from terno_agent.core.events import (
     TurnEnd,
 )
 from terno_agent.core.exceptions import TernoError, ToolError
-from terno_agent.core.hooks import PreToolUseContext
+from terno_agent.core.permissions import (
+    PermissionDecision,
+    PermissionMode,
+    PermissionPolicy,
+    PermissionRequest,
+)
 from terno_agent.knowledge.cli import run_knowledge_extraction
 from terno_agent.memory.extractor import ExtractionResult
 from terno_agent.tools.ask_user import Answer, Question
@@ -319,7 +324,7 @@ def _build_agent(args: argparse.Namespace, *, on_event=None) -> TernoAgent:
     console = renderer.console if renderer is not None else Console()
     ask_callback = CliPrompter(console, renderer=renderer)
     on_memory_event = _make_memory_notifier(console)
-    permission_hook = CliPermissionPrompter(console, renderer=renderer)
+    permission_policy = _build_cli_permission_policy(console, renderer=renderer)
 
     if overridden:
         return TernoAgent.from_config(
@@ -327,13 +332,13 @@ def _build_agent(args: argparse.Namespace, *, on_event=None) -> TernoAgent:
             on_event=on_event,
             ask_callback=ask_callback,
             on_memory_event=on_memory_event,
-            permission_hook=permission_hook,
+            permission_policy=permission_policy,
         )
     return TernoAgent.from_env(
         on_event=on_event,
         ask_callback=ask_callback,
         on_memory_event=on_memory_event,
-        permission_hook=permission_hook,
+        permission_policy=permission_policy,
     )
 
 
@@ -774,89 +779,74 @@ def _parse_selection(
 
 
 # --------------------------------------------------------------------------- #
-# Permission prompter (pre_tool_use hook)
+# Permission prompter (front-end for PermissionPolicy)
 # --------------------------------------------------------------------------- #
 
 
-_ALWAYS_ALLOWED_TOOLS = frozenset(
-    {
-        # Read-only tools that ship with terno — prompting on every call is noise.
-        "read_file",
-        "glob",
-        "grep",
-        "task_list",
-        "task_get",
-        "task_create",
-        "task_update",
-        "search_memory",
-        # Network reads; treated as read-only on the local system.
-        "web_fetch",
-        "web_search",
-        # Interactive prompts are user-driven by definition.
-        "ask_user",
-        # Skill activation just loads docs; no side effect on the system.
-        "activate_skill",
-    }
-)
+def _build_cli_permission_policy(
+    console: Console,
+    *,
+    renderer: AgentRenderer | None = None,
+) -> PermissionPolicy:
+    """Build the default CLI permission policy.
+
+    ASK mode with a Rich-driven prompter. Read-only / user-driven tools
+    are auto-allowed via the policy's ``always_allow_tools`` default.
+    """
+    prompter = CliPermissionPrompter(console, renderer=renderer)
+    return PermissionPolicy(
+        mode=PermissionMode.ASK,
+        on_request=prompter,
+    )
 
 
 class CliPermissionPrompter:
-    """Pre-tool-use hook that asks the user before each tool runs.
+    """ASK-mode prompter for the CLI.
 
     Three options (modelled on Claude Code):
       1. Allow once.
-      2. Allow this tool for the rest of the session (no more prompts
-         for that tool name).
-      3. Deny + tell the agent what to do differently — the reason is
+      2. Allow this tool for the rest of the session.
+      3. Deny + tell the agent what to do instead — the reason is
          surfaced to the LLM as a tool error.
 
-    Tools in ``_ALWAYS_ALLOWED_TOOLS`` skip the prompt; this covers
-    read-only helpers and interactive tools whose use is already
-    user-driven.
+    Returns a ``PermissionDecision`` rather than mutating a hook
+    context, so the same callable shape works for any front-end
+    (CLI, web UI, SDK consumer).
     """
 
     def __init__(self, console: Console, *, renderer: AgentRenderer | None = None) -> None:
         self.console = console
         self.renderer = renderer
-        self.session_allowed: set[str] = set()
 
-    def __call__(self, ctx: PreToolUseContext) -> None:
-        name = ctx.tool_call.name
-        if name in _ALWAYS_ALLOWED_TOOLS or name in self.session_allowed:
-            ctx.allow()
-            return
+    def __call__(self, request: PermissionRequest) -> PermissionDecision:
         if not sys.stdin.isatty():
-            # Non-interactive — default to allow (the SDK uses no prompter at all;
-            # if we got here without a TTY, the CLI was piped, so don't block).
-            ctx.allow()
-            return
+            # Non-interactive — default to allow (CLI was piped).
+            return PermissionDecision.allow_once()
         # Close any streaming text panel so the prompt isn't tangled with output.
         if self.renderer is not None:
             self.renderer.finalize()
 
-        self._render_request(ctx)
+        self._render_request(request)
         choice = self._read_choice()
         if choice == "1":
-            ctx.allow()
-        elif choice == "2":
-            self.session_allowed.add(name)
-            ctx.allow()
+            return PermissionDecision.allow_once()
+        if choice == "2":
             self.console.print(
-                f"[dim]({name!r} allowed for the rest of this session)[/]"
+                f"[dim]({request.tool_name!r} allowed for the rest of this session)[/]"
             )
-        else:
-            reason = self._read_reason()
-            ctx.deny(reason)
-            self.console.print("[dim](denied — feedback sent to the agent)[/]")
+            return PermissionDecision.allow_always(tool=request.tool_name)
+        reason = self._read_reason()
+        self.console.print("[dim](denied — feedback sent to the agent)[/]")
+        return PermissionDecision.deny(reason)
 
     # ----- rendering ---------------------------------------------------- #
 
-    def _render_request(self, ctx: PreToolUseContext) -> None:
-        name = ctx.tool_call.name
+    def _render_request(self, request: PermissionRequest) -> None:
+        name = request.tool_name
         try:
-            preview = json.dumps(ctx.tool_call.arguments, indent=2, default=str)
+            preview = json.dumps(request.arguments, indent=2, default=str)
         except Exception:
-            preview = str(ctx.tool_call.arguments)
+            preview = str(request.arguments)
         body = Text()
         body.append("Tool: ", style="dim")
         body.append(name, style="bold")

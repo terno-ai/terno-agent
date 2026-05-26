@@ -24,6 +24,13 @@ from terno_agent.config import Config
 from terno_agent.core.events import EventHook
 from terno_agent.core.hooks import Hook, HookEvent, UsageMeter
 from terno_agent.core.messages import Message
+from terno_agent.core.permissions import (
+    PermissionCallback,
+    PermissionDecision,
+    PermissionMode,
+    PermissionPolicy,
+    PermissionRequest,
+)
 
 if TYPE_CHECKING:
     from terno_agent.knowledge.runner import KnowledgeReport
@@ -57,6 +64,10 @@ class Agent:
         max_iterations: int | None = None,
         bash_timeout_s: int = 120,
         run_python_timeout_s: int = 30,
+        permission_mode: PermissionMode | str | None = None,
+        allow_rules: list | tuple | None = None,
+        on_permission_request: PermissionCallback | None = None,
+        permission_policy: PermissionPolicy | None = None,
     ) -> None:
         self.config = config or _build_config(
             api_key=api_key,
@@ -72,6 +83,10 @@ class Agent:
             max_iterations=max_iterations,
             bash_timeout_s=bash_timeout_s,
             run_python_timeout_s=run_python_timeout_s,
+            permission_mode=permission_mode,
+            allow_rules=allow_rules,
+            on_permission_request=on_permission_request,
+            permission_policy=permission_policy,
         )
         self._closed = False
 
@@ -157,6 +172,18 @@ class Agent:
     def clear_history(self) -> None:
         """Reset the conversation to just the system message and zero usage."""
         self._agent.clear_history()
+
+    # ----- Permissions ------------------------------------------------------ #
+
+    @property
+    def permissions(self) -> PermissionPolicy | None:
+        """The active permission policy, mutable at runtime.
+
+        Returns ``None`` if the agent was constructed with a raw
+        ``permission_hook`` (back-compat path); in that case the caller
+        is managing their own state.
+        """
+        return self._agent.permissions
 
     # ----- Hooks ------------------------------------------------------------ #
 
@@ -276,4 +303,11 @@ def _build_config(
     )
 
 
-__all__ = ["Agent", "HookEvent"]
+__all__ = [
+    "Agent",
+    "HookEvent",
+    "PermissionDecision",
+    "PermissionMode",
+    "PermissionPolicy",
+    "PermissionRequest",
+]

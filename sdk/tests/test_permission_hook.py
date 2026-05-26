@@ -164,11 +164,12 @@ def _silent_console() -> Console:
     return Console(file=io.StringIO(), force_terminal=False, width=80)
 
 
-def _make_ctx(name: str = "bash", args: dict | None = None) -> PreToolUseContext:
-    return PreToolUseContext(
-        agent=None,  # type: ignore[arg-type]
-        tool_call=ToolCall(id="t1", name=name, arguments=args or {"command": "ls"}),
-        tool=None,  # type: ignore[arg-type]
+def _make_request(name: str = "bash", args: dict | None = None):
+    from terno_agent.core.permissions import PermissionRequest
+
+    return PermissionRequest(
+        tool_name=name,
+        arguments=args or {"command": "ls"},
     )
 
 
@@ -180,13 +181,12 @@ def test_cli_prompter_allow_once(monkeypatch) -> None:
     monkeypatch.setattr("builtins.input", lambda _prompt="": next(inputs))
 
     prompter = CliPermissionPrompter(_silent_console())
-    ctx = _make_ctx()
-    prompter(ctx)
-    assert ctx.decision == "allow"
-    assert "bash" not in prompter.session_allowed
+    decision = prompter(_make_request())
+    assert decision.kind == "allow_once"
+    assert decision.rule is None
 
 
-def test_cli_prompter_allow_for_session_remembers_tool(monkeypatch) -> None:
+def test_cli_prompter_allow_for_session_returns_allow_always(monkeypatch) -> None:
     from terno_agent.cli import CliPermissionPrompter
 
     monkeypatch.setattr("sys.stdin.isatty", lambda: True)
@@ -194,16 +194,11 @@ def test_cli_prompter_allow_for_session_remembers_tool(monkeypatch) -> None:
     monkeypatch.setattr("builtins.input", lambda _prompt="": next(inputs))
 
     prompter = CliPermissionPrompter(_silent_console())
-    ctx1 = _make_ctx()
-    prompter(ctx1)
-    assert ctx1.decision == "allow"
-    assert "bash" in prompter.session_allowed
-
-    # A second call to the same tool must NOT prompt — input iterator is empty,
-    # so a prompt would StopIteration.
-    ctx2 = _make_ctx()
-    prompter(ctx2)
-    assert ctx2.decision == "allow"
+    decision = prompter(_make_request())
+    assert decision.kind == "allow_always"
+    assert decision.rule is not None
+    assert decision.rule.tool_name == "bash"
+    assert decision.rule.command_prefix is None
 
 
 def test_cli_prompter_deny_with_reason(monkeypatch) -> None:
@@ -214,10 +209,9 @@ def test_cli_prompter_deny_with_reason(monkeypatch) -> None:
     monkeypatch.setattr("builtins.input", lambda _prompt="": next(inputs))
 
     prompter = CliPermissionPrompter(_silent_console())
-    ctx = _make_ctx(name="bash", args={"command": "pip install foo"})
-    prompter(ctx)
-    assert ctx.decision == "deny"
-    assert ctx.feedback == "use uv instead"
+    decision = prompter(_make_request(name="bash", args={"command": "pip install foo"}))
+    assert decision.kind == "deny"
+    assert decision.feedback == "use uv instead"
 
 
 def test_cli_prompter_reprompts_on_bad_choice(monkeypatch) -> None:
@@ -228,22 +222,8 @@ def test_cli_prompter_reprompts_on_bad_choice(monkeypatch) -> None:
     monkeypatch.setattr("builtins.input", lambda _prompt="": next(inputs))
 
     prompter = CliPermissionPrompter(_silent_console())
-    ctx = _make_ctx()
-    prompter(ctx)
-    assert ctx.decision == "allow"
-
-
-def test_cli_prompter_skips_always_allowed_tools(monkeypatch) -> None:
-    from terno_agent.cli import CliPermissionPrompter
-
-    # No isatty/input mocks needed — read-only tools must not prompt at all.
-    monkeypatch.setattr("sys.stdin.isatty", lambda: True)
-
-    prompter = CliPermissionPrompter(_silent_console())
-    for safe in ("read_file", "task_list", "search_memory", "ask_user"):
-        ctx = _make_ctx(name=safe, args={})
-        prompter(ctx)
-        assert ctx.decision == "allow"
+    decision = prompter(_make_request())
+    assert decision.kind == "allow_once"
 
 
 def test_cli_prompter_allows_when_no_tty(monkeypatch) -> None:
@@ -256,9 +236,8 @@ def test_cli_prompter_allows_when_no_tty(monkeypatch) -> None:
 
     monkeypatch.setattr("builtins.input", boom)
     prompter = CliPermissionPrompter(_silent_console())
-    ctx = _make_ctx()
-    prompter(ctx)
-    assert ctx.decision == "allow"
+    decision = prompter(_make_request())
+    assert decision.kind == "allow_once"
 
 
 def test_cli_prompter_defaults_to_deny_on_eof(monkeypatch) -> None:
@@ -271,10 +250,174 @@ def test_cli_prompter_defaults_to_deny_on_eof(monkeypatch) -> None:
 
     monkeypatch.setattr("builtins.input", boom)
     prompter = CliPermissionPrompter(_silent_console())
-    ctx = _make_ctx()
-    prompter(ctx)
+    decision = prompter(_make_request())
+    assert decision.kind == "deny"
+    assert decision.feedback == "Denied by user."
+
+
+# --------------------------------------------------------------------------- #
+# PermissionPolicy (generic, front-end agnostic)
+# --------------------------------------------------------------------------- #
+
+
+def test_policy_default_mode_allows_everything() -> None:
+    from terno_agent.core.permissions import PermissionPolicy, PermissionRequest
+
+    policy = PermissionPolicy()
+    decision = policy.decide(PermissionRequest("bash", {"command": "rm -rf /"}))
+    assert decision.kind == "allow_once"
+
+
+def test_policy_allow_list_denies_unmatched() -> None:
+    from terno_agent.core.permissions import (
+        PermissionMode,
+        PermissionPolicy,
+        PermissionRequest,
+    )
+
+    policy = PermissionPolicy.build(
+        mode=PermissionMode.ALLOW_LIST,
+        allow_rules=[("bash", "uv run")],
+    )
+    matched = policy.decide(PermissionRequest("bash", {"command": "uv run pytest"}))
+    assert matched.kind == "allow_once"
+    not_matched = policy.decide(PermissionRequest("bash", {"command": "rm -rf /"}))
+    assert not_matched.kind == "deny"
+
+
+def test_policy_ask_falls_through_to_callback() -> None:
+    from terno_agent.core.permissions import (
+        PermissionDecision,
+        PermissionMode,
+        PermissionPolicy,
+        PermissionRequest,
+    )
+
+    seen: list[PermissionRequest] = []
+
+    def prompter(req: PermissionRequest) -> PermissionDecision:
+        seen.append(req)
+        return PermissionDecision.deny("nope")
+
+    policy = PermissionPolicy(mode=PermissionMode.ASK, on_request=prompter)
+    decision = policy.decide(PermissionRequest("bash", {"command": "ls"}))
+    assert decision.kind == "deny"
+    assert len(seen) == 1
+
+
+def test_policy_ask_persists_allow_always_rule() -> None:
+    from terno_agent.core.permissions import (
+        PermissionDecision,
+        PermissionMode,
+        PermissionPolicy,
+        PermissionRequest,
+    )
+
+    calls = 0
+
+    def prompter(req: PermissionRequest) -> PermissionDecision:
+        nonlocal calls
+        calls += 1
+        return PermissionDecision.allow_always(tool=req.tool_name, command_prefix="uv run")
+
+    policy = PermissionPolicy(mode=PermissionMode.ASK, on_request=prompter)
+    first = policy.decide(PermissionRequest("bash", {"command": "uv run pytest"}))
+    assert first.kind == "allow_always"
+    # Second matching call should hit the persisted rule, not the prompter.
+    second = policy.decide(PermissionRequest("bash", {"command": "uv run mypy"}))
+    assert second.kind == "allow_once"
+    assert calls == 1
+
+
+def test_policy_ask_no_callback_defaults_to_deny() -> None:
+    from terno_agent.core.permissions import (
+        PermissionMode,
+        PermissionPolicy,
+        PermissionRequest,
+    )
+
+    policy = PermissionPolicy(mode=PermissionMode.ASK, on_request=None)
+    decision = policy.decide(PermissionRequest("bash", {"command": "ls"}))
+    assert decision.kind == "deny"
+
+
+def test_policy_default_always_allow_tools_skip_prompter() -> None:
+    from terno_agent.core.permissions import (
+        PermissionMode,
+        PermissionPolicy,
+        PermissionRequest,
+    )
+
+    def boom(_req):
+        raise AssertionError("prompter must not be called for always-allowed tools")
+
+    policy = PermissionPolicy(mode=PermissionMode.ASK, on_request=boom)
+    for safe in ("read_file", "task_list", "search_memory", "ask_user"):
+        decision = policy.decide(PermissionRequest(safe, {}))
+        assert decision.kind == "allow_once"
+
+
+def test_policy_allow_revoke_mutation() -> None:
+    from terno_agent.core.permissions import (
+        PermissionMode,
+        PermissionPolicy,
+        PermissionRequest,
+    )
+
+    policy = PermissionPolicy(mode=PermissionMode.ALLOW_LIST)
+    policy.allow("bash", command_prefix="uv run")
+    assert policy.decide(PermissionRequest("bash", {"command": "uv run x"})).kind == "allow_once"
+    assert policy.revoke("bash", command_prefix="uv run") is True
+    assert policy.decide(PermissionRequest("bash", {"command": "uv run x"})).kind == "deny"
+
+
+def test_policy_acts_as_pre_tool_use_hook() -> None:
+    from terno_agent.core.hooks import PreToolUseContext
+    from terno_agent.core.messages import ToolCall
+    from terno_agent.core.permissions import (
+        PermissionDecision,
+        PermissionMode,
+        PermissionPolicy,
+        PermissionRequest,
+    )
+
+    def prompter(_req: PermissionRequest) -> PermissionDecision:
+        return PermissionDecision.deny("blocked")
+
+    policy = PermissionPolicy(mode=PermissionMode.ASK, on_request=prompter)
+    ctx = PreToolUseContext(
+        agent=None,  # type: ignore[arg-type]
+        tool_call=ToolCall(id="t1", name="bash", arguments={"command": "ls"}),
+        tool=None,  # type: ignore[arg-type]
+    )
+    policy(ctx)
     assert ctx.decision == "deny"
-    assert ctx.feedback == "Denied by user."
+    assert ctx.feedback == "blocked"
+
+
+def test_terno_agent_accepts_convenience_kwargs() -> None:
+    from terno_agent.core.permissions import PermissionMode, PermissionPolicy
+
+    agent = TernoAgent(
+        _ScriptedLLM([]),
+        permission_mode=PermissionMode.ALLOW_LIST,
+        allow_rules=["bash", ("read_file",)],
+    )
+    assert isinstance(agent.permissions, PermissionPolicy)
+    assert agent.permissions.mode == PermissionMode.ALLOW_LIST
+    labels = {r.tool_name for r in agent.permissions.rules}
+    assert {"bash", "read_file"} <= labels
+
+
+def test_terno_agent_rejects_mixed_permission_sources() -> None:
+    from terno_agent.core.permissions import PermissionMode, PermissionPolicy
+
+    with pytest.raises(Exception):
+        TernoAgent(
+            _ScriptedLLM([]),
+            permission_policy=PermissionPolicy(),
+            permission_mode=PermissionMode.ASK,
+        )
 
 
 @pytest.fixture(autouse=True)

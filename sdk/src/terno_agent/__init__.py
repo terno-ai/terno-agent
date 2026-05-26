@@ -2,7 +2,21 @@
 Python, task tracking, subagents, and pluggable MCP servers."""
 
 from terno_agent.config import Config
+from terno_agent.core.permissions import (
+    PermissionDecision,
+    PermissionMode,
+    PermissionPolicy,
+    PermissionRequest,
+)
 from terno_agent.sdk import Agent
 
 __version__ = "0.2.0"
-__all__ = ["Agent", "Config", "__version__"]
+__all__ = [
+    "Agent",
+    "Config",
+    "PermissionDecision",
+    "PermissionMode",
+    "PermissionPolicy",
+    "PermissionRequest",
+    "__version__",
+]
