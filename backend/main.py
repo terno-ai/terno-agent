@@ -15,6 +15,8 @@ from fastapi import APIRouter, FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, ValidationError
 
+from database import DB_PATH, create_db_and_tables
+from store import SessionStore
 from terno import Agent, Config
 from terno_agent.core.events import (
     IterationStart,
@@ -42,14 +44,25 @@ class ClientFrame(BaseModel):
     text: str | None = None
 
 
-class ChatSession:
+class ActiveChatSession:
     """Owns one SDK agent and serializes turns for a single chat session."""
 
-    def __init__(self, config: Config) -> None:
+    def __init__(self, session_id: str, config: Config, store: SessionStore) -> None:
+        self.session_id = session_id
+        self.store = store
         self.event_loop: asyncio.AbstractEventLoop | None = None
         self.event_queue: asyncio.Queue[dict[str, Any] | None] | None = None
         self.agent = Agent.from_config(_copy_config(config), on_event=self._on_event)
         self.lock = asyncio.Lock()
+
+        try:
+            store.upsert_session(session_id)
+            saved = store.load_history(session_id)
+        except Exception:  # noqa: BLE001
+            logger.exception("failed to load persisted chat session %s", session_id)
+        else:
+            if saved:
+                self.agent.history[:] = saved
 
     def bind_events(
         self,
@@ -89,16 +102,20 @@ def _copy_config(config: Config) -> Config:
     )
 
 
-def _sessions(request_or_websocket: Request | WebSocket) -> dict[str, ChatSession]:
+def _sessions(request_or_websocket: Request | WebSocket) -> dict[str, ActiveChatSession]:
     return request_or_websocket.app.state.sessions
 
 
-def _get_or_create_session(websocket: WebSocket, session_id: str) -> ChatSession:
+def _get_or_create_session(websocket: WebSocket, session_id: str) -> ActiveChatSession:
     sessions = _sessions(websocket)
     session = sessions.get(session_id)
     if session is None:
         logger.info("creating session %s", session_id)
-        session = ChatSession(websocket.app.state.terno_config)
+        session = ActiveChatSession(
+            session_id,
+            websocket.app.state.terno_config,
+            websocket.app.state.session_store,
+        )
         sessions[session_id] = session
     return session
 
@@ -106,13 +123,17 @@ def _get_or_create_session(websocket: WebSocket, session_id: str) -> ChatSession
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     app.state.terno_config = create_config()
+    logger.info("using sqlite database at %s", DB_PATH)
+    create_db_and_tables()
+    app.state.session_store = SessionStore()
     app.state.sessions = {}
     yield
-    sessions: dict[str, ChatSession] = app.state.sessions
+    sessions: dict[str, ActiveChatSession] = app.state.sessions
     await asyncio.gather(
         *(asyncio.to_thread(session.close) for session in sessions.values()),
         return_exceptions=True,
     )
+    app.state.session_store.close()
 
 
 app = FastAPI(title="Terno SDK Demo", lifespan=lifespan)
@@ -198,6 +219,14 @@ async def chat_ws(websocket: WebSocket, session_id: str) -> None:
                     )
                     continue
                 session.agent.clear_history()
+                saved = await _save_session_history(session)
+                if not saved:
+                    await websocket.send_json(
+                        {
+                            "type": "error",
+                            "message": "Chat cleared in memory, but database save failed.",
+                        }
+                    )
                 await websocket.send_json(
                     {"type": "cleared", "history": _history_payload(session.agent)}
                 )
@@ -213,7 +242,7 @@ async def chat_ws(websocket: WebSocket, session_id: str) -> None:
 
 async def _run_turn(
     websocket: WebSocket,
-    session: ChatSession,
+    session: ActiveChatSession,
     text: str,
     loop: asyncio.AbstractEventLoop,
 ) -> None:
@@ -246,10 +275,31 @@ async def _run_turn(
             await queue.put(None)
             await forwarder
             session.unbind_events()
+            saved = await _save_session_history(session)
+            if not saved:
+                await websocket.send_json(
+                    {
+                        "type": "error",
+                        "message": "Turn completed, but database save failed.",
+                    }
+                )
 
         await websocket.send_json(
             {"type": "turn_complete", "history": _history_payload(session.agent)}
         )
+
+
+async def _save_session_history(session: ActiveChatSession) -> bool:
+    try:
+        await asyncio.to_thread(
+            session.store.save_history,
+            session.session_id,
+            list(session.agent.history),
+        )
+    except Exception:  # noqa: BLE001
+        logger.exception("failed to save chat session %s", session.session_id)
+        return False
+    return True
 
 
 def _event_to_payload(event: Any) -> dict[str, Any] | None:
