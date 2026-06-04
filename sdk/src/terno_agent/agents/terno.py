@@ -30,12 +30,12 @@ from terno_agent.core.hooks import (
     HookManager,
     PreToolUseHook,
 )
+from terno_agent.core.messages import ContentPart
 from terno_agent.core.permissions import (
     PermissionCallback,
     PermissionMode,
     PermissionPolicy,
 )
-from terno_agent.core.messages import ContentPart
 from terno_agent.llm.base import LLMClient
 from terno_agent.llm.factory import create_llm_client
 from terno_agent.mcp.manager import McpManager

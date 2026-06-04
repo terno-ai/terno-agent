@@ -11,8 +11,6 @@ import os
 from pathlib import Path
 
 HOME_ENV_VAR = "TERNO_MEMORY_HOME"
-# Backwards-compatible alias used by older tests.
-GLOBAL_ENV_VAR = HOME_ENV_VAR
 
 
 def memory_dir(workdir: Path) -> Path:
@@ -28,7 +26,6 @@ def memory_dir(workdir: Path) -> Path:
 
 
 __all__ = [
-    "GLOBAL_ENV_VAR",
     "HOME_ENV_VAR",
     "memory_dir",
 ]
