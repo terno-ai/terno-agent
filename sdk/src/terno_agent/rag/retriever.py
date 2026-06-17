@@ -5,13 +5,13 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from terno_agent.rag.embeddings import EmbeddingClient
-from terno_agent.rag.vector_store import FileVectorStore, Hit
+from terno_agent.rag.vector_store import Hit, VectorStore
 
 
 @dataclass(slots=True)
 class Retriever:
     embedder: EmbeddingClient
-    stores: list[FileVectorStore]
+    stores: list[VectorStore]
 
     def top_k(self, query: str, k: int = 5) -> list[Hit]:
         if not query.strip() or k <= 0:

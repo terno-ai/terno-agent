@@ -17,7 +17,9 @@ import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 from threading import Lock
-from typing import Any
+from typing import Any, Protocol, runtime_checkable
+
+from terno_agent.core.exceptions import ConfigError
 
 
 @dataclass(slots=True)
@@ -34,6 +36,35 @@ class Hit:
     text: str
     score: float
     metadata: dict[str, Any]
+
+
+@runtime_checkable
+class VectorStore(Protocol):
+    """Backend-agnostic upsert/query/delete interface over embeddings.
+
+    Implemented by :class:`FileVectorStore` (local JSONL) and
+    :class:`~terno_agent.rag.milvus_store.MilvusVectorStore` (Milvus). The
+    ``score`` on returned :class:`Hit` objects is cosine similarity —
+    higher is more relevant — regardless of backend.
+    """
+
+    def upsert(
+        self,
+        key: str,
+        text: str,
+        vector: list[float],
+        metadata: dict[str, Any] | None = None,
+    ) -> None: ...
+
+    def delete(self, key: str) -> bool: ...
+
+    def query(self, vector: list[float], k: int = 5) -> list[Hit]: ...
+
+    def keys(self) -> list[str]: ...
+
+    def __len__(self) -> int: ...
+
+    def __contains__(self, key: str) -> bool: ...
 
 
 def _cosine(a: list[float], b: list[float]) -> float:
@@ -161,4 +192,47 @@ class FileVectorStore:
         return list(self._records.keys())
 
 
-__all__ = ["FileVectorStore", "Hit", "VectorRecord"]
+def create_vector_store(
+    backend: str = "file",
+    *,
+    path: Path | None = None,
+    dimensions: int | None = None,
+    uri: str = "",
+    token: str | None = None,
+    collection: str = "terno_memory",
+) -> VectorStore:
+    """Return a :class:`VectorStore` for the requested backend.
+
+    ``file`` (default) is a local JSONL store and needs ``path``. ``milvus``
+    talks to a Milvus server (or Milvus Lite when ``uri`` is a local file
+    path) and needs ``dimensions`` so the collection can be created with the
+    right vector size.
+    """
+    backend = backend.lower().strip()
+    if backend == "file":
+        if path is None:
+            raise ConfigError("file vector store requires a 'path'.")
+        return FileVectorStore(path)
+    if backend == "milvus":
+        if not dimensions:
+            raise ConfigError("milvus vector store requires 'dimensions'.")
+        from terno_agent.rag.milvus_store import MilvusVectorStore
+
+        return MilvusVectorStore(
+            uri=uri or "./milvus.db",
+            collection=collection,
+            dimensions=dimensions,
+            token=token,
+        )
+    raise ConfigError(
+        f"Unknown vector store backend: {backend!r}. Supported: file, milvus."
+    )
+
+
+__all__ = [
+    "FileVectorStore",
+    "Hit",
+    "VectorRecord",
+    "VectorStore",
+    "create_vector_store",
+]

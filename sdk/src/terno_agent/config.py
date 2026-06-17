@@ -86,6 +86,10 @@ class Config:
     embedding_provider: str = "openai"
     embedding_model: str = "text-embedding-3-small"
     embedding_api_key: str | None = None
+    vector_backend: str = "file"
+    milvus_uri: str = ""
+    milvus_token: str | None = None
+    milvus_collection: str = "terno_memory"
     # ----- compaction ------------------------------------------------------ #
     compaction_enabled: bool = True
     compaction_threshold_tokens: int = 80_000
@@ -152,6 +156,10 @@ class Config:
             embedding_provider=os.getenv("TERNO_EMBEDDING_PROVIDER", "openai").lower(),
             embedding_model=os.getenv("TERNO_EMBEDDING_MODEL", "text-embedding-3-small"),
             embedding_api_key=embedding_api_key,
+            vector_backend=os.getenv("TERNO_VECTOR_BACKEND", "file").lower(),
+            milvus_uri=os.getenv("TERNO_MILVUS_URI", ""),
+            milvus_token=os.getenv("TERNO_MILVUS_TOKEN") or None,
+            milvus_collection=os.getenv("TERNO_MILVUS_COLLECTION", "terno_memory"),
             compaction_enabled=os.getenv("TERNO_COMPACTION_ENABLED", "true").lower()
             not in {"false", "0", "no", "off"},
             compaction_threshold_tokens=int(
@@ -239,6 +247,9 @@ class Config:
             f"embedding_provider = {self.embedding_provider}\n"
             f"embedding_model    = {self.embedding_model}\n"
             f"embedding_api_key  = {embedding_masked}\n"
+            f"vector_backend     = {self.vector_backend}\n"
+            f"milvus_uri         = {self.milvus_uri or '(unset)'}\n"
+            f"milvus_collection  = {self.milvus_collection}\n"
             f"compaction_enabled = {self.compaction_enabled}\n"
             f"compaction_threshold_tokens = {self.compaction_threshold_tokens}\n"
             f"compaction_keep_last_turns  = {self.compaction_keep_last_turns}\n"

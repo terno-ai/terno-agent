@@ -18,7 +18,7 @@ from typing import Any
 from terno_agent.memory.paths import memory_dir
 from terno_agent.memory.types import MemoryEntry, MemoryType
 from terno_agent.rag.embeddings import EmbeddingClient, EmbeddingError
-from terno_agent.rag.vector_store import FileVectorStore, Hit
+from terno_agent.rag.vector_store import FileVectorStore, Hit, VectorStore
 
 INDEX_FILENAME = "MEMORY.md"
 VECTOR_FILENAME = ".vectors.jsonl"
@@ -38,12 +38,15 @@ class MemoryStore:
         self,
         workdir: Path,
         embedder: EmbeddingClient | None = None,
+        vector_store: VectorStore | None = None,
     ) -> None:
         self.workdir = Path(workdir).resolve()
         self.embedder = embedder
         self._dir = memory_dir(self.workdir)
         self._dir.mkdir(parents=True, exist_ok=True)
-        self._vectors = FileVectorStore(self._dir / VECTOR_FILENAME)
+        # Default to the local JSONL store; callers can inject Milvus (or any
+        # other VectorStore) when a shared/remote backend is configured.
+        self._vectors = vector_store or FileVectorStore(self._dir / VECTOR_FILENAME)
         self._lock = Lock()
 
     # ----- I/O on markdown files --------------------------------------- #
@@ -227,7 +230,7 @@ class MemoryStore:
         return self._dir
 
     @property
-    def vector_store(self) -> FileVectorStore:
+    def vector_store(self) -> VectorStore:
         return self._vectors
 
     def describe(self) -> dict[str, Any]:

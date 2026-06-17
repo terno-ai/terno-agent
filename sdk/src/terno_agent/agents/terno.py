@@ -45,6 +45,7 @@ from terno_agent.memory.store import MemoryStore
 from terno_agent.memory.tools import SearchMemoryTool
 from terno_agent.prompts.prompt import SYSTEM_PROMPT
 from terno_agent.rag.embeddings import create_embedding_client
+from terno_agent.rag.vector_store import create_vector_store
 from terno_agent.sandbox.base import Sandbox
 from terno_agent.sandbox.factory import create_sandbox
 from terno_agent.skills import ActivateSkillTool, SkillCatalog, discover_skills
@@ -415,7 +416,23 @@ def _build_memory(
             file=sys.stderr,
         )
         return (None, None, None)
-    store = MemoryStore(workdir=workdir, embedder=embedder)
+    vector_store = None
+    if config.vector_backend != "file":
+        try:
+            vector_store = create_vector_store(
+                config.vector_backend,
+                dimensions=embedder.dimensions,
+                uri=config.milvus_uri,
+                token=config.milvus_token,
+                collection=config.milvus_collection,
+            )
+        except Exception as exc:
+            print(
+                f"warning: falling back to file vector store — could not build "
+                f"{config.vector_backend!r} backend: {exc}",
+                file=sys.stderr,
+            )
+    store = MemoryStore(workdir=workdir, embedder=embedder, vector_store=vector_store)
     retriever = MemoryRetriever(store=store, k=config.memory_top_k)
     extractor = MemoryExtractor(
         llm=llm,
