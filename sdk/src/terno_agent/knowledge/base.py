@@ -14,13 +14,13 @@ import asyncio
 from abc import ABC, abstractmethod
 from collections.abc import Iterable
 from dataclasses import dataclass, field
-from enum import StrEnum
+from enum import Enum
 from typing import Any
 
 from terno_agent.knowledge.context import PhaseContext, TaskContext
 
 
-class TaskStatus(StrEnum):
+class TaskStatus(str, Enum):
     PENDING = "pending"
     RUNNING = "running"
     BLOCKED = "blocked"
