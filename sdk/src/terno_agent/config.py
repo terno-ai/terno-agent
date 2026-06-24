@@ -51,6 +51,7 @@ def load_env(
 DEFAULT_MODELS = {
     "anthropic": "claude-opus-4-7",
     "openai": "gpt-4o",
+    "terno": "gpt-5.5",
 }
 
 
@@ -59,6 +60,10 @@ class Config:
     llm_provider: str = "anthropic"
     llm_model: str = ""
     llm_api_key: str | None = None
+    # ----- provisioner proxy (llm_provider="terno") ------------------------ #
+    provisioner_url: str = ""
+    app_version: str = ""
+    request_source: str = ""
     database_url: str = ""
     sandbox: str = "docker"  # built-ins: docker | local | none; plus any plugin name
     sandbox_image: str = "python:3.12-slim"
@@ -133,6 +138,9 @@ class Config:
             llm_provider=provider,
             llm_model=model,
             llm_api_key=api_key,
+            provisioner_url=os.getenv("PROVISIONER_URL", "").strip(),
+            app_version=os.getenv("APP_VERSION", "").strip(),
+            request_source=os.getenv("REQUEST_SOURCE", "").strip(),
             database_url=os.getenv("TERNO_DATABASE_URL", ""),
             sandbox=_normalize_sandbox(os.getenv("TERNO_SANDBOX", "docker")),
             sandbox_image=os.getenv("TERNO_SANDBOX_IMAGE", "python:3.12-slim"),
@@ -228,6 +236,7 @@ class Config:
             f"llm_provider       = {self.llm_provider}\n"
             f"llm_model          = {self.llm_model}\n"
             f"llm_api_key        = {masked}\n"
+            f"provisioner_url    = {self.provisioner_url or '(unset)'}\n"
             f"database_url       = {self.database_url or '(unset)'}\n"
             f"sandbox            = {self.sandbox}\n"
             f"sandbox_image      = {self.sandbox_image}\n"

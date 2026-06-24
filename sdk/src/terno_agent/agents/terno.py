@@ -311,12 +311,16 @@ class TernoAgent(BaseAgent):
         if not config.llm_api_key:
             raise ConfigError(
                 "No LLM API key configured. Set ANTHROPIC_API_KEY or "
-                "OPENAI_API_KEY (or TERNO_LLM_API_KEY)."
+                "OPENAI_API_KEY (or TERNO_LLM_API_KEY); for the provisioner "
+                "proxy (TERNO_LLM_PROVIDER=terno) set TERNO_API_KEY."
             )
         llm = create_llm_client(
             provider=config.llm_provider,
             model=config.llm_model,
             api_key=config.llm_api_key,
+            provisioner_url=config.provisioner_url or None,
+            app_version=config.app_version or None,
+            request_source=config.request_source or None,
         )
         sandbox = _init_sandbox(config)
         resolved_workdir = (Path(workdir) if workdir is not None else Path.cwd()).resolve()
