@@ -47,7 +47,7 @@ class SessionStore:
             ChatMessage.from_payload(
                 session_id=session_id,
                 idx=idx,
-                role=str(message.role),
+                role=_role_str(message),
                 payload=_encode_message(message),
             )
             for idx, message in enumerate(history)
@@ -92,14 +92,21 @@ class SessionStore:
             return session.get(ChatSession, session_id)
 
 
+def _role_str(message: Message) -> str:
+    role = getattr(message, "role", None)
+    return getattr(role, "value", str(role))
+
+
 def _encode_message(message: Message) -> dict[str, Any]:
     data = asdict(message)
-    data["role"] = str(message.role)
+    data["role"] = _role_str(message)
     return data
 
 
 def _decode_message(role: str, payload: dict[str, Any] | str) -> Message:
     data = json.loads(payload) if isinstance(payload, str) else payload
+    # Be tolerant of any legacy rows stored as 'Role.USER' before the fix.
+    role = role.rsplit(".", 1)[-1].lower()
     if role == "user":
         content = data.get("content", "")
         if isinstance(content, list):

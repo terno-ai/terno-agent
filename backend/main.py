@@ -156,7 +156,10 @@ def _serialize_message(message: Any) -> dict[str, Any]:
     """Convert an SDK message dataclass to a JSON-safe dict."""
     if is_dataclass(message):
         data = asdict(message)
-        data["role"] = str(getattr(message, "role", data.get("role", "")))
+        # Use the enum *value* ('user'), not str(Role.USER) → 'Role.USER',
+        # which the frontend's role checks would not recognize.
+        role = getattr(message, "role", None)
+        data["role"] = getattr(role, "value", data.get("role", ""))
         return data
     return {"role": "unknown", "content": str(message)}
 
