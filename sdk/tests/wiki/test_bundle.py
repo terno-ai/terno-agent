@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from terno_agent.okf.bundle import KnowledgeBundle
-from terno_agent.okf.concept import Concept
+from terno_agent.wiki.bundle import KnowledgeBundle
+from terno_agent.wiki.concept import Concept
 
 
 def _bundle(tmp_path: Path) -> KnowledgeBundle:

@@ -88,9 +88,9 @@ def test_knowledge_failure_never_breaks_main_turn(
 
 
 def test_context_injected_when_bundle_exists(agent: TernoAgent):
-    from terno_agent.okf.builder import DatasourceKnowledgeAgent
-    from terno_agent.okf.bundle import KnowledgeBundle
-    from terno_agent.okf.paths import bundle_dir
+    from terno_agent.wiki.builder import DatasourceKnowledgeAgent
+    from terno_agent.wiki.bundle import KnowledgeBundle
+    from terno_agent.wiki.paths import bundle_dir
 
     assert agent.knowledge_provider.context_block() == ""  # nothing built yet
     bundle = KnowledgeBundle(

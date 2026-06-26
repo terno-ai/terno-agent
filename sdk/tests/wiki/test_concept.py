@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import pytest
 
-from terno_agent.okf import frontmatter
-from terno_agent.okf.concept import Concept, ConceptError
+from terno_agent.wiki import frontmatter
+from terno_agent.wiki.concept import Concept, ConceptError
 
 
 def test_render_parse_roundtrip():

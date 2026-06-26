@@ -5,8 +5,8 @@ from __future__ import annotations
 from pathlib import Path
 
 from terno_agent.db.connection import Database
-from terno_agent.okf.builder import DatasourceKnowledgeAgent
-from terno_agent.okf.bundle import KnowledgeBundle
+from terno_agent.wiki.builder import DatasourceKnowledgeAgent
+from terno_agent.wiki.bundle import KnowledgeBundle
 
 
 def _bundle(tmp_path: Path) -> KnowledgeBundle:

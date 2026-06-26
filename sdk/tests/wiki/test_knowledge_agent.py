@@ -7,9 +7,9 @@ from pathlib import Path
 from terno_agent.core.messages import AssistantMessage, ToolCall
 from terno_agent.db.connection import Database
 from terno_agent.llm.base import LLMResponse
-from terno_agent.okf.agent import KnowledgeAgent
-from terno_agent.okf.bundle import KnowledgeBundle
-from terno_agent.okf.paths import bundle_dir
+from terno_agent.wiki.agent import KnowledgeAgent
+from terno_agent.wiki.bundle import KnowledgeBundle
+from terno_agent.wiki.paths import bundle_dir
 
 
 class LoopLLM:

@@ -9,7 +9,7 @@ import pytest
 
 from terno_agent.core.exceptions import ToolError
 from terno_agent.db.connection import Database
-from terno_agent.okf.tools import (
+from terno_agent.wiki.tools import (
     BuildDatasourceKnowledgeTool,
     ListKnowledgeTool,
     ReadConceptTool,
