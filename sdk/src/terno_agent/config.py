@@ -82,6 +82,11 @@ class Config:
     read_only_sql: bool = True
     mcp_enabled: bool = True
     mcp_config_path: str = ""
+    # In-memory MCP server definitions, same shape as a `.mcp.json`
+    # file (``{"mcpServers": {...}}``). When set, this takes precedence
+    # over ``mcp_config_path`` so callers can inject server configs
+    # without writing credentials to disk.
+    mcp_servers: dict | None = None
     # ----- agent skills ---------------------------------------------------- #
     skills_enabled: bool = True
     skill_paths: list[str] = field(default_factory=list)

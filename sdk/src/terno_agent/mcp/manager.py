@@ -19,7 +19,11 @@ from typing import Any
 
 from terno_agent.core.exceptions import ConfigError, TernoError
 from terno_agent.mcp.bridge import AsyncBridge
-from terno_agent.mcp.config import McpServerConfig, load_mcp_config
+from terno_agent.mcp.config import (
+    McpServerConfig,
+    load_mcp_config,
+    load_mcp_config_from_dict,
+)
 from terno_agent.mcp.session import McpSession
 from terno_agent.mcp.tool import McpTool
 
@@ -63,6 +67,21 @@ class McpManager:
     ) -> McpManager:
         try:
             configs = load_mcp_config(path)
+        except ConfigError as exc:
+            _warn(str(exc))
+            configs = []
+        return cls.start_from_configs(configs, session_factory=session_factory)
+
+    @classmethod
+    def start_from_dict(
+        cls,
+        raw: Any,
+        *,
+        session_factory: SessionFactory | None = None,
+    ) -> McpManager:
+        """Start from an in-memory ``{"mcpServers": {...}}`` mapping."""
+        try:
+            configs = load_mcp_config_from_dict(raw)
         except ConfigError as exc:
             _warn(str(exc))
             configs = []

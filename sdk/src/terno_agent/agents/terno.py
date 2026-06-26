@@ -327,7 +327,12 @@ class TernoAgent(BaseAgent):
 
         mcp_manager: McpManager | None = None
         if config.mcp_enabled:
-            mcp_manager = McpManager.start_from_path(config.mcp_config_path or None)
+            if config.mcp_servers:
+                mcp_manager = McpManager.start_from_dict(config.mcp_servers)
+            else:
+                mcp_manager = McpManager.start_from_path(
+                    config.mcp_config_path or None
+                )
             if mcp_manager is not None:
                 atexit.register(mcp_manager.shutdown)
 

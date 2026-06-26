@@ -125,6 +125,14 @@ def load_mcp_config(path: Path | str | None = None) -> list[McpServerConfig]:
     return _merge_layers([default_path] if default_exists else [])
 
 
+def load_mcp_config_from_dict(raw: Any) -> list[McpServerConfig]:
+    """Parse an in-memory MCP config (same ``{"mcpServers": {...}}`` shape
+    as ``.mcp.json``).
+    Returns ``[]`` when there are no servers.
+    """
+    return _parse_config_dict(raw, "<inline>")
+
+
 # --------------------------------------------------------------------------- #
 # Internals
 # --------------------------------------------------------------------------- #
@@ -149,20 +157,28 @@ def _load_one(path: Path) -> list[McpServerConfig]:
     except OSError as exc:
         raise ConfigError(f"could not read mcp config {path}: {exc}") from exc
 
+    return _parse_config_dict(raw, str(path))
+
+
+def _parse_config_dict(raw: Any, source: str) -> list[McpServerConfig]:
+    """Validate a ``{"mcpServers": {...}}`` mapping into server configs.
+
+    ``source`` only labels error messages (a file path or ``<inline>``).
+    """
     if not isinstance(raw, dict):
-        raise ConfigError(f"mcp config {path}: top-level must be an object")
+        raise ConfigError(f"mcp config {source}: top-level must be an object")
     servers = raw.get("mcpServers")
     if servers is None:
         return []
     if not isinstance(servers, dict):
-        raise ConfigError(f"mcp config {path}: 'mcpServers' must be an object")
+        raise ConfigError(f"mcp config {source}: 'mcpServers' must be an object")
 
     out: list[McpServerConfig] = []
     for name, entry in servers.items():
         if not isinstance(name, str) or not name:
-            raise ConfigError(f"mcp config {path}: server name must be a non-empty string")
+            raise ConfigError(f"mcp config {source}: server name must be a non-empty string")
         if not isinstance(entry, dict):
-            raise ConfigError(f"mcp config {path}: server '{name}' must be an object")
+            raise ConfigError(f"mcp config {source}: server '{name}' must be an object")
         out.append(_parse_server(name, entry))
     return out
 
@@ -370,4 +386,5 @@ __all__ = [
     "RunnerBlock",
     "StdioServerConfig",
     "load_mcp_config",
+    "load_mcp_config_from_dict",
 ]

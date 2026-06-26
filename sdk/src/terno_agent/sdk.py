@@ -284,6 +284,7 @@ def _build_config(
         read_only_sql=base.read_only_sql,
         mcp_enabled=base.mcp_enabled,
         mcp_config_path=base.mcp_config_path,
+        mcp_servers=base.mcp_servers,
         skills_enabled=base.skills_enabled,
         skill_paths=list(base.skill_paths),
         memory_enabled=base.memory_enabled,
