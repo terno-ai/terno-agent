@@ -13,6 +13,7 @@ agent clean, schema-aware addressing.
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -285,6 +286,131 @@ class ListKnowledgeTool:
         )
 
 
+_SEARCH_DEFAULT_LIMIT = 20
+_SNIPPETS_PER_CONCEPT = 5
+
+
+def _match_concept(rx: "re.Pattern[str]", concept: Concept) -> list[str]:
+    """Return labelled snippets where ``rx`` matches a concept's text.
+
+    Title and summary are surfaced as their own lines (they carry the most
+    signal for the index); the body is scanned line by line so the caller
+    sees the matching context, not the whole document.
+    """
+    snippets: list[str] = []
+    for label, text in (("title", concept.title), ("summary", concept.summary)):
+        if text and rx.search(text):
+            snippets.append(f"{label}: {text}")
+    for lineno, line in enumerate(concept.body.splitlines(), start=1):
+        if rx.search(line):
+            snippets.append(f"L{lineno}: {line.strip()}")
+    return snippets
+
+
+@dataclass
+class SearchKnowledgeTool:
+    """OKF-aware content search across a bundle's concept documents.
+
+    Unlike ``read_concept`` (which needs an exact id) this walks every
+    concept in every subdirectory and returns the ones whose title, summary,
+    or body match — the way to locate relevant knowledge in a nested bundle
+    without reading each file. Follow up with ``read_concept`` on the hits.
+    """
+
+    workdir: Path
+    default_datasource: str = ""
+
+    @property
+    def schema(self) -> ToolSchema:
+        return ToolSchema(
+            name="search_datasource_knowledge",
+            description=(
+                "Search the concept documents in a datasource knowledge bundle "
+                "for a term or regex (case-insensitive). Scans titles, "
+                "summaries, and bodies across every subdirectory and returns "
+                "the matching concepts with the lines that matched. Use this to "
+                "find where relevant knowledge lives without reading every "
+                "file, then `read_concept` the returned concept_ids for full "
+                "detail."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": (
+                            "Text or regular expression to search for "
+                            "(matched case-insensitively)."
+                        ),
+                    },
+                    "datasource": {
+                        "type": "string",
+                        "description": (
+                            "Bundle to search. Omit to search across every "
+                            "available bundle."
+                        ),
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": (
+                            "Maximum matching concepts to return "
+                            f"(default {_SEARCH_DEFAULT_LIMIT})."
+                        ),
+                    },
+                },
+                "required": ["query"],
+            },
+        )
+
+    def run(self, **kwargs: Any) -> str:
+        query = (kwargs.get("query") or "").strip()
+        if not query:
+            raise ToolError("search_datasource_knowledge requires a 'query'.")
+        limit = int(kwargs.get("limit") or _SEARCH_DEFAULT_LIMIT)
+        if limit <= 0:
+            raise ToolError("limit must be positive.")
+        # Treat the query as a regex, but fall back to a literal match so a
+        # stray metacharacter (e.g. a bare '(') never errors the tool.
+        try:
+            rx = re.compile(query, re.IGNORECASE)
+        except re.error:
+            rx = re.compile(re.escape(query), re.IGNORECASE)
+
+        datasource = (
+            kwargs.get("datasource") or self.default_datasource or ""
+        ).strip()
+        if datasource:
+            bundle = KnowledgeBundle(
+                bundle_dir(self.workdir, datasource), name=datasource
+            )
+            if not bundle.exists():
+                raise ToolError(
+                    f"No knowledge bundle for datasource {datasource!r}."
+                )
+            bundles = [bundle]
+        else:
+            bundles = KnowledgeContextProvider(self.workdir).bundles()
+
+        hits: list[dict[str, Any]] = []
+        for bundle in bundles:
+            for concept in bundle.list_concepts():
+                snippets = _match_concept(rx, concept)
+                if not snippets:
+                    continue
+                hits.append(
+                    {
+                        "datasource": bundle.name,
+                        "concept_id": concept.concept_id,
+                        "title": concept.title,
+                        "summary": concept.summary,
+                        "matches": snippets[:_SNIPPETS_PER_CONCEPT],
+                    }
+                )
+                if len(hits) >= limit:
+                    return json.dumps(hits)
+        return json.dumps(hits)
+
+
 def knowledge_agent_tools(
     workdir: Path,
     *,
@@ -294,9 +420,10 @@ def knowledge_agent_tools(
     datasource: str = "",
     max_tables: int = 50,
 ) -> list:
-    """The toolset for the knowledge agent: list / read / write / build."""
+    """The toolset for the knowledge agent: list / search / read / write / build."""
     return [
         ListKnowledgeTool(workdir),
+        SearchKnowledgeTool(workdir, default_datasource=datasource),
         ReadConceptTool(workdir),
         WriteConceptTool(workdir),
         BuildDatasourceKnowledgeTool(
@@ -314,6 +441,7 @@ __all__ = [
     "BuildDatasourceKnowledgeTool",
     "ListKnowledgeTool",
     "ReadConceptTool",
+    "SearchKnowledgeTool",
     "WriteConceptTool",
     "knowledge_agent_tools",
 ]

@@ -36,6 +36,11 @@ concepts), and notes/gotchas (enum meanings, caveats, business rules).
 
 - `list_datasource_knowledge(datasource?)`: see which concepts exist
   (or list all bundles). Use this first to understand current coverage.
+- `search_datasource_knowledge(query, datasource?)`: search the bundle's
+  concepts (titles, summaries, bodies, across every subdirectory) for a
+  term or regex and get back the matching concept_ids with the lines that
+  matched. Use this to locate where relevant knowledge lives in a nested
+  bundle before reading; then `read_concept` the hits.
 - `read_concept(datasource, concept_id)`: read one concept (e.g.
   `tables/users`, `overview`) to check whether it is accurate and
   sufficient.
