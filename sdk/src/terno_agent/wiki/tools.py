@@ -1,13 +1,19 @@
-"""OKF tools exposed to the main agent.
+"""Wiki memory tools.
 
-* ``build_datasource_knowledge`` — run the enrichment agent to (re)build a
-  bundle for a datasource (requires a live DB connection).
-* ``read_concept`` — read one concept document by id.
-* ``list_datasource_knowledge`` — list bundles, or the concepts in one bundle.
+Two toolsets are exposed:
 
-Reads also work through the ordinary ``read_file`` / ``grep`` tools since the
-bundle lives on disk under the working directory; these tools just give the
-agent clean, schema-aware addressing.
+* The **main agent** gets the READ-ONLY set (``list_memory``, ``search_memory``,
+  ``read_memory``) so it can recall facts while answering.
+* The **wiki memory agent** (the background curator) gets the full set,
+  adding ``write_memory`` and ``edit_memory`` so it can record and refine
+  facts after a turn.
+
+Storage reuses the OKF bundle engine (``KnowledgeBundle`` / ``Concept``): one
+markdown file per fact under ``.terno/knowledge/<datasource>/`` with a
+generated ``index.md``. The memory-specific fields (``scope``,
+``datasource_name``, ``originSessionId``) travel through the concept
+frontmatter's ``metadata``, so old datasource-knowledge bundles (e.g.
+``cxl-guide``) and new scoped memories share one format and one reader.
 """
 
 from __future__ import annotations
@@ -15,255 +21,130 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 from terno_agent.core.exceptions import ToolError
 from terno_agent.core.tool import ToolSchema
-from terno_agent.wiki.builder import DatasourceKnowledgeAgent
 from terno_agent.wiki.bundle import KnowledgeBundle
 from terno_agent.wiki.concept import Concept, ConceptError
-from terno_agent.wiki.context import KnowledgeContextProvider
+from terno_agent.wiki.context import MemoryContextProvider
 from terno_agent.wiki.paths import bundle_dir
 
-if TYPE_CHECKING:
-    from terno_agent.db.connection import Database
-    from terno_agent.llm.base import LLMClient
+# Where a fact came from — recorded in frontmatter as `source` so a reader can
+# weigh how much to trust it and a future curator knows what may be stale.
+_KNOWN_SOURCES = ("introspection", "query", "conversation", "user", "curator")
+_DEFAULT_SOURCE = "curator"
+
+# Memory types from terno-ai plus the datasource-knowledge types.
+_KNOWN_TYPES = (
+    "user", "feedback", "project", "reference",
+    "table", "domain", "metric", "datasource",
+)
+
+
+def _utc_now_iso() -> str:
+    """Current UTC time as a second-precision ISO string for `updated`."""
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+
+
+def _normalize_scope(scope: str, datasource_name: str) -> dict[str, str]:
+    """Return the ``scope``/``datasource_name`` metadata for a memory.
+
+    ``scope: datasource:<id>`` keeps ``datasource_name``; ``global`` (or an
+    empty/unknown value) drops it. This is the terno-ai scoping rule.
+    """
+    scope = (scope or "").strip()
+    if scope.startswith("datasource:"):
+        out = {"scope": scope}
+        if datasource_name.strip():
+            out["datasource_name"] = datasource_name.strip()
+        return out
+    return {"scope": "global"}
+
+
+def _stamp(metadata: dict[str, Any], source: str, session_id: str) -> dict[str, Any]:
+    """Return ``metadata`` with provenance set.
+
+    Every write/edit refreshes ``updated`` and marks ``node_type: memory``.
+    ``source`` is only overwritten when a recognised one is supplied.
+    ``originSessionId`` is set once (on create) and preserved on later edits.
+    """
+    stamped = dict(metadata)
+    stamped["node_type"] = "memory"
+    stamped["updated"] = _utc_now_iso()
+    source = (source or "").strip().lower()
+    if source in _KNOWN_SOURCES:
+        stamped["source"] = source
+    elif "source" not in stamped:
+        stamped["source"] = _DEFAULT_SOURCE
+    if session_id and not stamped.get("originSessionId"):
+        stamped["originSessionId"] = session_id
+    return stamped
 
 
 @dataclass
-class BuildDatasourceKnowledgeTool:
+class MemoryReadTool:
     workdir: Path
-    db: Database | None = None
-    database_url: str = ""
-    llm: LLMClient | None = None
-    default_datasource: str = ""
-    max_tables: int = 50
-    sample_rows: int = 5
-
-    def _resolve_db(self) -> Database:
-        """Return a live DB connection, connecting lazily from the URL.
-
-        Registered unconditionally so the model can always choose to build a
-        guide; raises a clear, actionable error when no datasource is
-        configured rather than the tool being silently absent.
-        """
-        if self.db is not None:
-            return self.db
-        if self.database_url:
-            from terno_agent.db.connection import Database as _Database
-
-            self.db = _Database(self.database_url)
-            return self.db
-        raise ToolError(
-            "No datasource is configured. Set TERNO_DATABASE_URL (a SQLAlchemy "
-            "URL) so the knowledge agent can introspect the database, then try "
-            "again."
-        )
 
     @property
     def schema(self) -> ToolSchema:
         return ToolSchema(
-            name="build_datasource_knowledge",
+            name="read_memory",
             description=(
-                "Build (or refresh) an Open Knowledge Format bundle describing "
-                "the connected datasource: one markdown concept per table "
-                "(structure + inferred meaning, enum decoding, gotchas) plus an "
-                "index. Writes to disk under .terno/knowledge/<datasource>/. Run "
-                "this once per datasource (or when the schema changes); afterwards "
-                "read the concepts instead of re-introspecting."
+                "Read one memory file from a datasource memory bundle. "
+                "memory_id is the file path within the bundle without '.md' "
+                "(e.g. 'metrics/active_user', 'datasource', 'domains/identity')."
             ),
             parameters={
                 "type": "object",
                 "properties": {
                     "datasource": {
                         "type": "string",
-                        "description": (
-                            "Name for the bundle/folder. Defaults to the "
-                            "configured datasource name."
-                        ),
+                        "description": "Memory bundle / datasource name.",
                     },
-                    "tables": {
-                        "type": "array",
-                        "items": {"type": "string"},
-                        "description": (
-                            "Optional subset of tables to document. Omit to "
-                            "document all tables (up to the configured cap)."
-                        ),
-                    },
-                    "refresh": {
-                        "type": "boolean",
-                        "description": (
-                            "Re-document tables that already have a concept "
-                            "(default false: existing concepts are skipped)."
-                        ),
+                    "memory_id": {
+                        "type": "string",
+                        "description": "Memory id, e.g. 'domains/identity'.",
                     },
                 },
-                "required": [],
-            },
-        )
-
-    def run(self, **kwargs: Any) -> str:
-        datasource = (kwargs.get("datasource") or self.default_datasource or "").strip()
-        if not datasource:
-            raise ToolError(
-                "build_datasource_knowledge needs a 'datasource' name (none "
-                "configured by default)."
-            )
-        tables = kwargs.get("tables") or None
-        if tables is not None and not isinstance(tables, list):
-            raise ToolError("'tables' must be an array of table names.")
-        refresh = bool(kwargs.get("refresh", False))
-
-        db = self._resolve_db()
-        bundle = KnowledgeBundle(
-            bundle_dir(self.workdir, datasource), name=datasource
-        )
-        agent = DatasourceKnowledgeAgent(
-            db=db,
-            bundle=bundle,
-            llm=self.llm,
-            max_tables=self.max_tables,
-            sample_rows=self.sample_rows,
-        )
-        report = agent.build(tables=tables, refresh=refresh)
-        out = report.to_dict()
-        out["bundle_dir"] = str(bundle.root)
-        out["index"] = bundle.index_text()
-        return json.dumps(out)
-
-
-@dataclass
-class ReadConceptTool:
-    workdir: Path
-
-    @property
-    def schema(self) -> ToolSchema:
-        return ToolSchema(
-            name="read_concept",
-            description=(
-                "Read one concept document from a datasource knowledge bundle. "
-                "concept_id is the file path within the bundle without '.md' "
-                "(e.g. 'tables/users', 'overview')."
-            ),
-            parameters={
-                "type": "object",
-                "properties": {
-                    "datasource": {
-                        "type": "string",
-                        "description": "Bundle/datasource name.",
-                    },
-                    "concept_id": {
-                        "type": "string",
-                        "description": "Concept id, e.g. 'tables/users'.",
-                    },
-                },
-                "required": ["datasource", "concept_id"],
+                "required": ["datasource", "memory_id"],
             },
         )
 
     def run(self, **kwargs: Any) -> str:
         datasource = (kwargs.get("datasource") or "").strip()
-        concept_id = (kwargs.get("concept_id") or "").strip()
-        if not datasource or not concept_id:
-            raise ToolError("read_concept requires 'datasource' and 'concept_id'.")
+        memory_id = (kwargs.get("memory_id") or "").strip()
+        if not datasource or not memory_id:
+            raise ToolError("read_memory requires 'datasource' and 'memory_id'.")
         bundle = KnowledgeBundle(bundle_dir(self.workdir, datasource), name=datasource)
-        concept = bundle.read_concept(concept_id)
+        concept = bundle.read_concept(memory_id)
         if concept is None:
             raise ToolError(
-                f"No concept {concept_id!r} in datasource {datasource!r}."
+                f"No memory {memory_id!r} in datasource {datasource!r}."
             )
         return concept.render()
 
 
 @dataclass
-class WriteConceptTool:
+class MemoryListTool:
     workdir: Path
 
     @property
     def schema(self) -> ToolSchema:
         return ToolSchema(
-            name="write_concept",
+            name="list_memory",
             description=(
-                "Create or replace a single concept document in a datasource "
-                "bundle, then regenerate the index. Use for knowledge "
-                "introspection can't produce (a metric/term definition, a "
-                "business rule, a correction, a gotcha from the conversation). "
-                "concept_id is the path within the bundle without '.md' "
-                "(e.g. 'tables/users', 'concepts/active_user')."
-            ),
-            parameters={
-                "type": "object",
-                "properties": {
-                    "datasource": {"type": "string", "description": "Bundle name."},
-                    "concept_id": {
-                        "type": "string",
-                        "description": "Concept id, e.g. 'concepts/active_user'.",
-                    },
-                    "title": {"type": "string", "description": "Human title."},
-                    "type": {
-                        "type": "string",
-                        "description": "Concept type, e.g. table|metric|domain|datasource.",
-                    },
-                    "summary": {
-                        "type": "string",
-                        "description": "One-line summary for the index.",
-                    },
-                    "body": {
-                        "type": "string",
-                        "description": "Markdown body (sections, links, notes).",
-                    },
-                },
-                "required": ["datasource", "concept_id", "title", "type"],
-            },
-        )
-
-    def run(self, **kwargs: Any) -> str:
-        datasource = (kwargs.get("datasource") or "").strip()
-        concept_id = (kwargs.get("concept_id") or "").strip()
-        title = (kwargs.get("title") or "").strip()
-        type_ = (kwargs.get("type") or "").strip()
-        if not (datasource and concept_id and title and type_):
-            raise ToolError(
-                "write_concept requires 'datasource', 'concept_id', 'title', "
-                "and 'type'."
-            )
-        try:
-            concept = Concept(
-                concept_id=concept_id,
-                title=title,
-                type=type_,
-                summary=(kwargs.get("summary") or "").strip(),
-                body=(kwargs.get("body") or "").strip(),
-            )
-        except ConceptError as exc:
-            raise ToolError(str(exc)) from exc
-        bundle = KnowledgeBundle(bundle_dir(self.workdir, datasource), name=datasource)
-        path = bundle.write_concept(concept)
-        bundle.rebuild_index()
-        return json.dumps({"concept_id": concept_id, "path": str(path)})
-
-
-@dataclass
-class ListKnowledgeTool:
-    workdir: Path
-
-    @property
-    def schema(self) -> ToolSchema:
-        return ToolSchema(
-            name="list_datasource_knowledge",
-            description=(
-                "List available datasource knowledge bundles, or the concepts "
-                "within one bundle when 'datasource' is given."
+                "List available memory bundles, or the memories within one "
+                "bundle when 'datasource' is given."
             ),
             parameters={
                 "type": "object",
                 "properties": {
                     "datasource": {
                         "type": "string",
-                        "description": (
-                            "Optional bundle name; omit to list all bundles."
-                        ),
+                        "description": "Optional bundle name; omit to list all.",
                     }
                 },
                 "required": [],
@@ -273,30 +154,31 @@ class ListKnowledgeTool:
     def run(self, **kwargs: Any) -> str:
         datasource = (kwargs.get("datasource") or "").strip()
         if not datasource:
-            provider = KnowledgeContextProvider(self.workdir)
+            provider = MemoryContextProvider(self.workdir)
             return json.dumps([b.name for b in provider.bundles()])
         bundle = KnowledgeBundle(bundle_dir(self.workdir, datasource), name=datasource)
         if not bundle.exists():
-            raise ToolError(f"No knowledge bundle for datasource {datasource!r}.")
+            raise ToolError(f"No memory bundle for datasource {datasource!r}.")
         return json.dumps(
             [
-                {"concept_id": c.concept_id, "title": c.title, "summary": c.summary}
+                {
+                    "memory_id": c.concept_id,
+                    "title": c.title,
+                    "type": c.type,
+                    "scope": c.metadata.get("scope", "global"),
+                    "summary": c.summary,
+                }
                 for c in bundle.list_concepts()
             ]
         )
 
 
 _SEARCH_DEFAULT_LIMIT = 20
-_SNIPPETS_PER_CONCEPT = 5
+_SNIPPETS_PER_MEMORY = 5
 
 
-def _match_concept(rx: "re.Pattern[str]", concept: Concept) -> list[str]:
-    """Return labelled snippets where ``rx`` matches a concept's text.
-
-    Title and summary are surfaced as their own lines (they carry the most
-    signal for the index); the body is scanned line by line so the caller
-    sees the matching context, not the whole document.
-    """
+def _match(rx: "re.Pattern[str]", concept: Concept) -> list[str]:
+    """Return labelled snippets where ``rx`` matches a memory's text."""
     snippets: list[str] = []
     for label, text in (("title", concept.title), ("summary", concept.summary)):
         if text and rx.search(text):
@@ -308,53 +190,36 @@ def _match_concept(rx: "re.Pattern[str]", concept: Concept) -> list[str]:
 
 
 @dataclass
-class SearchKnowledgeTool:
-    """OKF-aware content search across a bundle's concept documents.
-
-    Unlike ``read_concept`` (which needs an exact id) this walks every
-    concept in every subdirectory and returns the ones whose title, summary,
-    or body match — the way to locate relevant knowledge in a nested bundle
-    without reading each file. Follow up with ``read_concept`` on the hits.
-    """
-
+class MemorySearchTool:
     workdir: Path
     default_datasource: str = ""
 
     @property
     def schema(self) -> ToolSchema:
         return ToolSchema(
-            name="search_datasource_knowledge",
+            name="search_memory",
             description=(
-                "Search the concept documents in a datasource knowledge bundle "
-                "for a term or regex (case-insensitive). Scans titles, "
-                "summaries, and bodies across every subdirectory and returns "
-                "the matching concepts with the lines that matched. Use this to "
-                "find where relevant knowledge lives without reading every "
-                "file, then `read_concept` the returned concept_ids for full "
-                "detail."
+                "Search the memory files in a bundle for a term or regex "
+                "(case-insensitive). Scans titles, summaries, and bodies across "
+                "every subdirectory and returns the matching memories with the "
+                "lines that matched. Use this to find where relevant knowledge "
+                "lives, then read_memory the returned memory_ids for detail."
             ),
             parameters={
                 "type": "object",
                 "properties": {
                     "query": {
                         "type": "string",
-                        "description": (
-                            "Text or regular expression to search for "
-                            "(matched case-insensitively)."
-                        ),
+                        "description": "Text or regex (matched case-insensitively).",
                     },
                     "datasource": {
                         "type": "string",
-                        "description": (
-                            "Bundle to search. Omit to search across every "
-                            "available bundle."
-                        ),
+                        "description": "Bundle to search. Omit to search all.",
                     },
                     "limit": {
                         "type": "integer",
                         "description": (
-                            "Maximum matching concepts to return "
-                            f"(default {_SEARCH_DEFAULT_LIMIT})."
+                            f"Max matching memories (default {_SEARCH_DEFAULT_LIMIT})."
                         ),
                     },
                 },
@@ -365,12 +230,10 @@ class SearchKnowledgeTool:
     def run(self, **kwargs: Any) -> str:
         query = (kwargs.get("query") or "").strip()
         if not query:
-            raise ToolError("search_datasource_knowledge requires a 'query'.")
+            raise ToolError("search_memory requires a 'query'.")
         limit = int(kwargs.get("limit") or _SEARCH_DEFAULT_LIMIT)
         if limit <= 0:
             raise ToolError("limit must be positive.")
-        # Treat the query as a regex, but fall back to a literal match so a
-        # stray metacharacter (e.g. a bare '(') never errors the tool.
         try:
             rx = re.compile(query, re.IGNORECASE)
         except re.error:
@@ -384,26 +247,25 @@ class SearchKnowledgeTool:
                 bundle_dir(self.workdir, datasource), name=datasource
             )
             if not bundle.exists():
-                raise ToolError(
-                    f"No knowledge bundle for datasource {datasource!r}."
-                )
+                raise ToolError(f"No memory bundle for datasource {datasource!r}.")
             bundles = [bundle]
         else:
-            bundles = KnowledgeContextProvider(self.workdir).bundles()
+            bundles = MemoryContextProvider(self.workdir).bundles()
 
         hits: list[dict[str, Any]] = []
         for bundle in bundles:
             for concept in bundle.list_concepts():
-                snippets = _match_concept(rx, concept)
+                snippets = _match(rx, concept)
                 if not snippets:
                     continue
                 hits.append(
                     {
                         "datasource": bundle.name,
-                        "concept_id": concept.concept_id,
+                        "memory_id": concept.concept_id,
                         "title": concept.title,
+                        "scope": concept.metadata.get("scope", "global"),
                         "summary": concept.summary,
-                        "matches": snippets[:_SNIPPETS_PER_CONCEPT],
+                        "matches": snippets[:_SNIPPETS_PER_MEMORY],
                     }
                 )
                 if len(hits) >= limit:
@@ -411,37 +273,282 @@ class SearchKnowledgeTool:
         return json.dumps(hits)
 
 
-def knowledge_agent_tools(
-    workdir: Path,
-    *,
-    db: Database | None = None,
-    database_url: str = "",
-    llm: LLMClient | None = None,
-    datasource: str = "",
-    max_tables: int = 50,
-) -> list:
-    """The toolset for the knowledge agent: list / search / read / write / build."""
+@dataclass
+class MemoryWriteTool:
+    workdir: Path
+    session_id: str = ""
+
+    @property
+    def schema(self) -> ToolSchema:
+        return ToolSchema(
+            name="write_memory",
+            description=(
+                "Create a NEW memory file (or fully replace one) in a bundle, "
+                "then regenerate the index. Use for a durable fact that has no "
+                "file yet: a metric/term definition, a business rule, an enum "
+                "decoding, a join path, or a stable user preference. To ADD to "
+                "or correct an EXISTING memory, use edit_memory instead. "
+                "memory_id is the path within the bundle without '.md' "
+                "(e.g. 'metrics/active_user'). Records provenance automatically."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "datasource": {"type": "string", "description": "Bundle name."},
+                    "memory_id": {
+                        "type": "string",
+                        "description": "Memory id, e.g. 'metrics/active_user'.",
+                    },
+                    "title": {"type": "string", "description": "Human title."},
+                    "type": {
+                        "type": "string",
+                        "description": (
+                            "One of: user|feedback|project|reference (memory "
+                            "about the user/work) or table|domain|metric|"
+                            "datasource (knowledge about the data)."
+                        ),
+                    },
+                    "scope": {
+                        "type": "string",
+                        "description": (
+                            "'datasource:<id>' for a fact specific to one "
+                            "database, or 'global' otherwise."
+                        ),
+                    },
+                    "datasource_name": {
+                        "type": "string",
+                        "description": "Datasource name (only when scope is a datasource).",
+                    },
+                    "summary": {
+                        "type": "string",
+                        "description": "One-line summary for the index.",
+                    },
+                    "body": {
+                        "type": "string",
+                        "description": (
+                            "Markdown body. For feedback/project include "
+                            "**Why:** and **How to apply:** lines."
+                        ),
+                    },
+                    "source": {
+                        "type": "string",
+                        "description": (
+                            "Where this came from: introspection|query|"
+                            "conversation|user. Defaults to 'curator'."
+                        ),
+                    },
+                },
+                "required": ["datasource", "memory_id", "title", "type", "scope"],
+            },
+        )
+
+    def run(self, **kwargs: Any) -> str:
+        datasource = (kwargs.get("datasource") or "").strip()
+        memory_id = (kwargs.get("memory_id") or "").strip()
+        title = (kwargs.get("title") or "").strip()
+        type_ = (kwargs.get("type") or "").strip()
+        scope = (kwargs.get("scope") or "").strip()
+        if not (datasource and memory_id and title and type_ and scope):
+            raise ToolError(
+                "write_memory requires 'datasource', 'memory_id', 'title', "
+                "'type', and 'scope'."
+            )
+        metadata = _normalize_scope(scope, kwargs.get("datasource_name") or "")
+        metadata = _stamp(metadata, kwargs.get("source") or "", self.session_id)
+        try:
+            concept = Concept(
+                concept_id=memory_id,
+                title=title,
+                type=type_,
+                summary=(kwargs.get("summary") or "").strip(),
+                body=(kwargs.get("body") or "").strip(),
+                metadata=metadata,
+            )
+        except ConceptError as exc:
+            raise ToolError(str(exc)) from exc
+        bundle = KnowledgeBundle(bundle_dir(self.workdir, datasource), name=datasource)
+        path = bundle.write_concept(concept)
+        bundle.rebuild_index()
+        return json.dumps({"memory_id": memory_id, "path": str(path)})
+
+
+@dataclass
+class MemoryEditTool:
+    """Targeted, additive edits to an EXISTING memory file."""
+
+    workdir: Path
+    session_id: str = ""
+
+    @property
+    def schema(self) -> ToolSchema:
+        return ToolSchema(
+            name="edit_memory",
+            description=(
+                "Make a targeted, additive edit to an EXISTING memory without "
+                "rewriting the whole file, then regenerate the index. Prefer "
+                "this over write_memory when the memory already exists. Provide "
+                "'append' to add a markdown block to the end, and/or "
+                "'old_string'+'new_string' to replace an exact, unique span "
+                "(empty new_string deletes it). You may also update "
+                "title/summary/type/scope. Fails if the memory does not exist "
+                "or if old_string is missing/not unique. Refreshes provenance."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "datasource": {"type": "string", "description": "Bundle name."},
+                    "memory_id": {
+                        "type": "string",
+                        "description": "Existing memory id, e.g. 'domains/identity'.",
+                    },
+                    "append": {
+                        "type": "string",
+                        "description": "Markdown block to append to the body.",
+                    },
+                    "old_string": {
+                        "type": "string",
+                        "description": "Exact body text to replace (must be unique).",
+                    },
+                    "new_string": {
+                        "type": "string",
+                        "description": "Replacement (empty deletes). Required with old_string.",
+                    },
+                    "title": {"type": "string", "description": "Optional new title."},
+                    "summary": {"type": "string", "description": "Optional new summary."},
+                    "type": {"type": "string", "description": "Optional new type."},
+                    "scope": {
+                        "type": "string",
+                        "description": "Optional new scope ('datasource:<id>' or 'global').",
+                    },
+                    "datasource_name": {
+                        "type": "string",
+                        "description": "Datasource name (when scope is a datasource).",
+                    },
+                    "source": {
+                        "type": "string",
+                        "description": (
+                            "Where the change came from. Preserves existing if omitted."
+                        ),
+                    },
+                },
+                "required": ["datasource", "memory_id"],
+            },
+        )
+
+    def run(self, **kwargs: Any) -> str:
+        datasource = (kwargs.get("datasource") or "").strip()
+        memory_id = (kwargs.get("memory_id") or "").strip()
+        if not (datasource and memory_id):
+            raise ToolError("edit_memory requires 'datasource' and 'memory_id'.")
+
+        append = kwargs.get("append")
+        old_string = kwargs.get("old_string")
+        new_string = kwargs.get("new_string")
+        title = kwargs.get("title")
+        summary = kwargs.get("summary")
+        type_ = kwargs.get("type")
+        scope = kwargs.get("scope")
+        if not any(
+            v not in (None, "")
+            for v in (append, old_string, title, summary, type_, scope)
+        ):
+            raise ToolError(
+                "edit_memory needs something to change: 'append', "
+                "'old_string'/'new_string', or a title/summary/type/scope update."
+            )
+
+        bundle = KnowledgeBundle(bundle_dir(self.workdir, datasource), name=datasource)
+        concept = bundle.read_concept(memory_id)
+        if concept is None:
+            raise ToolError(
+                f"No memory {memory_id!r} in datasource {datasource!r} to edit. "
+                "Use write_memory to create it."
+            )
+
+        body = concept.body
+        if old_string is not None and old_string != "":
+            if new_string is None:
+                raise ToolError(
+                    "edit_memory: 'new_string' is required when 'old_string' is given."
+                )
+            count = body.count(old_string)
+            if count == 0:
+                raise ToolError(
+                    "edit_memory: 'old_string' not found in the memory body."
+                )
+            if count > 1:
+                raise ToolError(
+                    f"edit_memory: 'old_string' is not unique ({count} matches). "
+                    "Include more surrounding context."
+                )
+            body = body.replace(old_string, new_string, 1)
+
+        if append not in (None, ""):
+            block = append.strip()
+            body = f"{body.rstrip()}\n\n{block}" if body.strip() else block
+
+        def _override(value: Any, current: str) -> str:
+            return value.strip() if isinstance(value, str) and value.strip() else current
+
+        metadata = dict(concept.metadata)
+        if isinstance(scope, str) and scope.strip():
+            # Recompute scope/datasource_name, dropping a stale datasource_name
+            # when moving to global.
+            metadata.pop("datasource_name", None)
+            metadata.update(
+                _normalize_scope(scope, kwargs.get("datasource_name") or "")
+            )
+        metadata = _stamp(metadata, kwargs.get("source") or "", self.session_id)
+
+        try:
+            edited = Concept(
+                concept_id=memory_id,
+                title=_override(title, concept.title),
+                type=_override(type_, concept.type),
+                summary=(
+                    summary.strip()
+                    if isinstance(summary, str) and summary != ""
+                    else concept.summary
+                ),
+                body=body,
+                metadata=metadata,
+            )
+        except ConceptError as exc:
+            raise ToolError(str(exc)) from exc
+
+        path = bundle.write_concept(edited)
+        bundle.rebuild_index()
+        return json.dumps({"memory_id": memory_id, "path": str(path)})
+
+
+def memory_read_tools(workdir: Path, *, datasource: str = "") -> list:
+    """Read-only memory toolset for the MAIN agent."""
     return [
-        ListKnowledgeTool(workdir),
-        SearchKnowledgeTool(workdir, default_datasource=datasource),
-        ReadConceptTool(workdir),
-        WriteConceptTool(workdir),
-        BuildDatasourceKnowledgeTool(
-            workdir=workdir,
-            db=db,
-            database_url=database_url,
-            llm=llm,
-            default_datasource=datasource,
-            max_tables=max_tables,
-        ),
+        MemoryListTool(workdir),
+        MemorySearchTool(workdir, default_datasource=datasource),
+        MemoryReadTool(workdir),
+    ]
+
+
+def memory_agent_tools(
+    workdir: Path, *, datasource: str = "", session_id: str = ""
+) -> list:
+    """Full memory toolset for the wiki memory agent (curator)."""
+    return [
+        MemoryListTool(workdir),
+        MemorySearchTool(workdir, default_datasource=datasource),
+        MemoryReadTool(workdir),
+        MemoryWriteTool(workdir, session_id=session_id),
+        MemoryEditTool(workdir, session_id=session_id),
     ]
 
 
 __all__ = [
-    "BuildDatasourceKnowledgeTool",
-    "ListKnowledgeTool",
-    "ReadConceptTool",
-    "SearchKnowledgeTool",
-    "WriteConceptTool",
-    "knowledge_agent_tools",
+    "MemoryEditTool",
+    "MemoryListTool",
+    "MemoryReadTool",
+    "MemorySearchTool",
+    "MemoryWriteTool",
+    "memory_agent_tools",
+    "memory_read_tools",
 ]

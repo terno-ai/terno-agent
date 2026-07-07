@@ -100,6 +100,8 @@ class Config:
     milvus_uri: str = ""
     milvus_token: str | None = None
     milvus_collection: str = "terno_memory"
+    wiki_memory_enabled: bool = True
+    wiki_datasource: str = "memory"
     # ----- compaction ------------------------------------------------------ #
     compaction_enabled: bool = True
     compaction_threshold_tokens: int = 80_000
@@ -136,6 +138,7 @@ class Config:
                 api_key = os.getenv("OPENAI_API_KEY")
         embedding_api_key = os.getenv("TERNO_EMBEDDING_API_KEY") or os.getenv("OPENAI_API_KEY")
         memory_enabled_raw = os.getenv("TERNO_MEMORY_ENABLED", "true").lower()
+        wiki_memory_enabled_raw = os.getenv("TERNO_WIKI_MEMORY_ENABLED", "true").lower()
         skills_enabled_raw = os.getenv("TERNO_SKILLS_ENABLED", "true").lower()
         attachments_enabled_raw = os.getenv("TERNO_ATTACHMENTS_ENABLED", "true").lower()
         skill_paths_raw = os.getenv("TERNO_SKILL_PATHS", "")
@@ -165,6 +168,10 @@ class Config:
                 if path.strip()
             ],
             memory_enabled=memory_enabled_raw not in {"false", "0", "no", "off"},
+            wiki_memory_enabled=wiki_memory_enabled_raw
+            not in {"false", "0", "no", "off"},
+            wiki_datasource=os.getenv("TERNO_WIKI_DATASOURCE", "memory").strip()
+            or "memory",
             memory_top_k=int(os.getenv("TERNO_MEMORY_TOP_K", "5")),
             embedding_provider=os.getenv("TERNO_EMBEDDING_PROVIDER", "openai").lower(),
             embedding_model=os.getenv("TERNO_EMBEDDING_MODEL", "text-embedding-3-small"),

@@ -64,6 +64,9 @@ from terno_agent.tools.tasks import (
     TaskUpdateTool,
 )
 from terno_agent.tools.web import WebFetchTool, WebSearchTool
+from terno_agent.wiki.agent import MemoryAgent, latest_exchange
+from terno_agent.wiki.context import MemoryContextProvider
+from terno_agent.wiki.tools import memory_read_tools
 
 
 class TernoAgent(BaseAgent):
@@ -97,6 +100,9 @@ class TernoAgent(BaseAgent):
         cancel_token: CancelToken | None = None,
         hook_manager: HookManager | None = None,
         compaction_hook: CompactionHook | None = None,
+        wiki_memory_tools: list | None = None,
+        wiki_memory_agent: MemoryAgent | None = None,
+        wiki_memory_context: MemoryContextProvider | None = None,
     ) -> None:
         self.workdir = (workdir or Path.cwd()).resolve()
         if max_iterations is not None:
@@ -110,6 +116,10 @@ class TernoAgent(BaseAgent):
         self.memory_store = memory_store
         self.memory_retriever = memory_retriever
         self.memory_extractor = memory_extractor
+        # Wiki memory (file-based, non-RAG): the main agent reads; a background
+        # MemoryAgent writes/edits after each turn.
+        self.wiki_memory_agent = wiki_memory_agent
+        self.wiki_memory_context = wiki_memory_context
         self.attachment_manager = attachment_manager
         self.ask_callback = ask_callback
 
@@ -184,12 +194,21 @@ class TernoAgent(BaseAgent):
             tools.extend(mcp_manager.tools())
         if memory_store is not None:
             tools.append(SearchMemoryTool(memory_store))
+        # Read-only wiki-memory tools (list/search/read) for the main agent.
+        if wiki_memory_tools:
+            tools.extend(wiki_memory_tools)
 
         hooks = hook_manager or HookManager()
         if memory_extractor is not None:
             hooks.register(
                 HookEvent.CHAT_END,
                 _wrap_memory_extractor(memory_extractor),
+            )
+        # Curate wiki memory after each turn, fire-and-forget.
+        if wiki_memory_agent is not None:
+            hooks.register(
+                HookEvent.CHAT_END,
+                _wrap_wiki_memory_agent(wiki_memory_agent),
             )
         if compaction_hook is not None:
             hooks.register(HookEvent.CHAT_END, compaction_hook)
@@ -241,6 +260,14 @@ class TernoAgent(BaseAgent):
             if recalled:
                 extra_context = (
                     recalled if not extra_context else f"{recalled}\n\n---\n{extra_context}"
+                )
+        # Inject the wiki-memory index (non-RAG recall) so the agent knows what
+        # memory exists and can pull detail with read_memory / search_memory.
+        if self.wiki_memory_context is not None:
+            block = self.wiki_memory_context.context_block()
+            if block:
+                extra_context = (
+                    block if not extra_context else f"{block}\n\n---\n{extra_context}"
                 )
         if content_parts is not None:
             return super().run(task, extra_context=extra_context, content_parts=content_parts)
@@ -342,6 +369,9 @@ class TernoAgent(BaseAgent):
             workdir=resolved_workdir,
             on_memory_event=on_memory_event,
         )
+        wiki_memory_tools, wiki_memory_agent, wiki_memory_context = _build_wiki_memory(
+            config, llm, workdir=resolved_workdir
+        )
         skill_catalog = (
             discover_skills(
                 resolved_workdir,
@@ -381,6 +411,9 @@ class TernoAgent(BaseAgent):
             allow_rules=allow_rules,
             on_permission_request=on_permission_request,
             compaction_hook=compaction_hook,
+            wiki_memory_tools=wiki_memory_tools,
+            wiki_memory_agent=wiki_memory_agent,
+            wiki_memory_context=wiki_memory_context,
         )
 
     # ----- Convenience --------------------------------------------------- #
@@ -450,6 +483,32 @@ def _build_memory(
         on_complete=on_memory_event,
     )
     return (store, retriever, extractor)
+
+
+def _build_wiki_memory(
+    config: Config,
+    llm: LLMClient,
+    *,
+    workdir: Path,
+) -> tuple[list | None, MemoryAgent | None, MemoryContextProvider | None]:
+    """Construct the file-based wiki-memory pipeline if enabled in config.
+
+    Unlike ``_build_memory`` this needs no embeddings and never fails on a
+    missing dependency: the main agent gets read-only tools plus the injected
+    index, and a background ``MemoryAgent`` curates the bundle after each turn.
+    Returns ``(None, None, None)`` when disabled.
+    """
+    if not config.wiki_memory_enabled:
+        return (None, None, None)
+    datasource = config.wiki_datasource or "memory"
+    read_tools = memory_read_tools(workdir, datasource=datasource)
+    context = MemoryContextProvider(workdir)
+    agent = MemoryAgent(
+        llm=llm,
+        workdir=workdir,
+        datasource=datasource,
+    )
+    return (read_tools, agent, context)
 
 
 def _build_attachments(config: Config, workdir: Path) -> AttachmentManager | None:
@@ -529,6 +588,24 @@ def _wrap_memory_extractor(extractor: MemoryExtractor):
         if ctx.run is not None and ctx.run.cancelled:
             return
         extractor.extract(ctx.history)
+
+    return hook
+
+
+def _wrap_wiki_memory_agent(agent: MemoryAgent):
+    """Run the wiki MemoryAgent (fire-and-forget) after each turn.
+
+    Curation is skipped for cancelled turns and turns with no usable exchange,
+    so we never spawn a curator loop over nothing.
+    """
+
+    def hook(ctx: HookContext) -> None:
+        if ctx.run is not None and ctx.run.cancelled:
+            return
+        user_task, assistant_answer = latest_exchange(ctx.history)
+        if not user_task.strip():
+            return
+        agent.curate_async(user_task, assistant_answer=assistant_answer or None)
 
     return hook
 

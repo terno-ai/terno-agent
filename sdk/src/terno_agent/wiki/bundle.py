@@ -15,17 +15,60 @@ tools (``read_file`` / ``grep``) or the thin OKF read tools.
 
 from __future__ import annotations
 
+import os
+import tempfile
+import threading
 from pathlib import Path
 
 from terno_agent.wiki.concept import Concept, ConceptError
 
 INDEX_FILENAME = "index.md"
 
+# One lock per bundle root, shared across every KnowledgeBundle instance that
+# points at the same directory. The background memory curator writes on a
+# daemon thread; without this, two overlapping turns (or the main agent
+# reading the index while a curator rewrites it) could tear index.md. Locks
+# live process-wide keyed by the resolved root path.
+_ROOT_LOCKS: dict[str, threading.RLock] = {}
+_ROOT_LOCKS_GUARD = threading.Lock()
+
+
+def _lock_for(root: Path) -> threading.RLock:
+    key = str(root)
+    with _ROOT_LOCKS_GUARD:
+        lock = _ROOT_LOCKS.get(key)
+        if lock is None:
+            lock = threading.RLock()
+            _ROOT_LOCKS[key] = lock
+        return lock
+
+
+def _atomic_write(path: Path, text: str) -> None:
+    """Write ``text`` to ``path`` atomically (temp file + os.replace).
+
+    A reader — in this or another process — either sees the old file or the
+    new one, never a partial write.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=str(path.parent), suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(text)
+        os.replace(tmp, path)
+    except BaseException:
+        # Best-effort cleanup; never leak a temp file on failure.
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
 
 class KnowledgeBundle:
     def __init__(self, root: Path, *, name: str | None = None) -> None:
         self.root = Path(root).resolve()
         self.name = name or self.root.name
+        self._lock = _lock_for(self.root)
 
     # ----- predicates ---------------------------------------------------- #
 
@@ -40,8 +83,8 @@ class KnowledgeBundle:
 
     def write_concept(self, concept: Concept) -> Path:
         path = self._path_for(concept.concept_id)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(concept.render(), encoding="utf-8")
+        with self._lock:
+            _atomic_write(path, concept.render())
         return path
 
     # ----- reads --------------------------------------------------------- #
@@ -75,27 +118,29 @@ class KnowledgeBundle:
     # ----- index generation --------------------------------------------- #
 
     def rebuild_index(self) -> Path:
-        """Regenerate the root ``index.md`` and every subdirectory ``index.md``."""
-        concepts = self.list_concepts()
-        groups: dict[str, list[Concept]] = {}
-        for c in concepts:
-            parent = c.concept_id.rsplit("/", 1)[0] if "/" in c.concept_id else ""
-            groups.setdefault(parent, []).append(c)
+        """Regenerate the root ``index.md`` and every subdirectory ``index.md``.
 
-        self.root.mkdir(parents=True, exist_ok=True)
-        root_index = self.root / INDEX_FILENAME
-        root_index.write_text(self._render_root_index(groups), encoding="utf-8")
+        Serialized against concurrent writers on the same bundle and written
+        atomically, so a reader never sees a half-rebuilt index.
+        """
+        with self._lock:
+            concepts = self.list_concepts()
+            groups: dict[str, list[Concept]] = {}
+            for c in concepts:
+                parent = c.concept_id.rsplit("/", 1)[0] if "/" in c.concept_id else ""
+                groups.setdefault(parent, []).append(c)
 
-        # Per-subdirectory listings (relative links scoped to that directory).
-        for parent, items in groups.items():
-            if not parent:
-                continue
-            sub_index = self.root / parent / INDEX_FILENAME
-            sub_index.parent.mkdir(parents=True, exist_ok=True)
-            sub_index.write_text(
-                self._render_sub_index(parent, items), encoding="utf-8"
-            )
-        return root_index
+            self.root.mkdir(parents=True, exist_ok=True)
+            root_index = self.root / INDEX_FILENAME
+            _atomic_write(root_index, self._render_root_index(groups))
+
+            # Per-subdirectory listings (relative links scoped to that dir).
+            for parent, items in groups.items():
+                if not parent:
+                    continue
+                sub_index = self.root / parent / INDEX_FILENAME
+                _atomic_write(sub_index, self._render_sub_index(parent, items))
+            return root_index
 
     def _render_root_index(self, groups: dict[str, list[Concept]]) -> str:
         lines = [

@@ -1,47 +1,52 @@
-"""Open Knowledge Format (OKF) — datasource knowledge bundles.
+"""Wiki memory — file-based memory bundles curated by a background agent.
 
-A *bundle* is a directory of markdown files (with YAML frontmatter) that
-describes one datasource: an ``index.md`` for progressive disclosure plus
-one concept document per table, organized in subdirectories.
+A *bundle* is a directory of markdown files (with YAML frontmatter) that holds
+memory for one datasource: an ``index.md`` for progressive disclosure plus one
+file per fact, organized in subdirectories. One file = one fact. Facts carry a
+``type`` (user|feedback|project|reference, or table|domain|metric|datasource)
+and a ``scope`` (``global`` or ``datasource:<id>``), mirroring terno-ai's
+memory format.
 
-  - Curate:   KnowledgeAgent (per-turn loop; import from terno_agent.wiki.agent)
-  - Build:    DatasourceKnowledgeAgent (introspection + optional LLM enrichment)
-  - Format:   Concept, KnowledgeBundle (read/write + index generation)
-  - Consume:  KnowledgeContextProvider (per-turn injection into the main agent)
-
-``KnowledgeAgent`` lives in ``terno_agent.wiki.agent`` and is intentionally not
-re-exported here: it imports ``terno_agent.agents.base``, so importing it from
-this package would create an import cycle. Import it from its submodule.
+  - Curate:   MemoryAgent (per-turn background loop; import from
+              ``terno_agent.wiki.agent`` — it depends on
+              ``terno_agent.agents.base``, so it is not re-exported here to
+              avoid an import cycle).
+  - Build:    DatasourceKnowledgeAgent (DB introspection + optional enrichment).
+  - Format:   Concept, KnowledgeBundle (read/write + index generation).
+  - Consume:  MemoryContextProvider (per-turn injection into the main agent).
+  - Tools:    memory_read_tools (main agent) / memory_agent_tools (curator).
 """
 
 from terno_agent.wiki.builder import BuildReport, DatasourceKnowledgeAgent
 from terno_agent.wiki.bundle import KnowledgeBundle
 from terno_agent.wiki.concept import Concept, ConceptError
-from terno_agent.wiki.context import KnowledgeContextProvider
+from terno_agent.wiki.context import MemoryContextProvider
 from terno_agent.wiki.paths import bundle_dir, knowledge_root, slugify
 from terno_agent.wiki.tools import (
-    BuildDatasourceKnowledgeTool,
-    ListKnowledgeTool,
-    ReadConceptTool,
-    SearchKnowledgeTool,
-    WriteConceptTool,
-    knowledge_agent_tools,
+    MemoryEditTool,
+    MemoryListTool,
+    MemoryReadTool,
+    MemorySearchTool,
+    MemoryWriteTool,
+    memory_agent_tools,
+    memory_read_tools,
 )
 
 __all__ = [
-    "BuildDatasourceKnowledgeTool",
     "BuildReport",
     "Concept",
     "ConceptError",
     "DatasourceKnowledgeAgent",
     "KnowledgeBundle",
-    "KnowledgeContextProvider",
-    "ListKnowledgeTool",
-    "ReadConceptTool",
-    "SearchKnowledgeTool",
-    "WriteConceptTool",
+    "MemoryContextProvider",
+    "MemoryEditTool",
+    "MemoryListTool",
+    "MemoryReadTool",
+    "MemorySearchTool",
+    "MemoryWriteTool",
     "bundle_dir",
-    "knowledge_agent_tools",
     "knowledge_root",
+    "memory_agent_tools",
+    "memory_read_tools",
     "slugify",
 ]
