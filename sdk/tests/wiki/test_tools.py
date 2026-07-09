@@ -1,4 +1,4 @@
-"""OKF tools: build, read, list."""
+"""Workspace memory tools: location, org-admin gate, traversal, read/list."""
 
 from __future__ import annotations
 
@@ -8,176 +8,160 @@ from pathlib import Path
 import pytest
 
 from terno_agent.core.exceptions import ToolError
-from terno_agent.db.connection import Database
 from terno_agent.wiki.tools import (
-    BuildDatasourceKnowledgeTool,
-    EditConceptTool,
-    ListKnowledgeTool,
-    ReadConceptTool,
-    WriteConceptTool,
+    MemoryEditTool,
+    MemoryListTool,
+    MemoryReadTool,
+    MemorySearchTool,
+    MemoryWriteTool,
 )
 
 
-def test_build_then_read_and_list(sqlite_db: Database, workdir: Path, scripted_llm):
-    build = BuildDatasourceKnowledgeTool(
-        db=sqlite_db, workdir=workdir, llm=scripted_llm, default_datasource="sales_db"
+@pytest.fixture
+def user_root(tmp_path: Path) -> Path:
+    return tmp_path / "users" / "acme" / "ada" / "memory"
+
+
+@pytest.fixture
+def org_root(tmp_path: Path) -> Path:
+    return tmp_path / "orgs" / "acme" / "memory"
+
+
+def _write(tool: MemoryWriteTool, **over):
+    args = dict(
+        datasource="sales_db",
+        memory_id="metrics/active_user",
+        title="Active user",
+        type="metric",
+        scope="datasource:1",
+        datasource_name="sales_db",
+        body="An active user has status = 1.",
     )
-    out = json.loads(build.run())
-    assert out["datasource"] == "sales_db"
-    assert set(out["tables_written"]) == {"users", "orders"}
-    assert "users" in out["index"]
-    assert Path(out["bundle_dir"]).exists()
-
-    read = ReadConceptTool(workdir)
-    doc = read.run(datasource="sales_db", concept_id="tables/users")
-    assert "title: users" in doc
-    assert "Enriched summary." in doc
-
-    listing = ListKnowledgeTool(workdir)
-    assert json.loads(listing.run()) == ["sales_db"]
-    concepts = json.loads(listing.run(datasource="sales_db"))
-    ids = {c["concept_id"] for c in concepts}
-    assert {"overview", "tables/users", "tables/orders"} <= ids
+    args.update(over)
+    return json.loads(tool.run(**args))
 
 
-def test_write_concept_creates_and_indexes(workdir: Path):
-    tool = WriteConceptTool(workdir)
-    out = json.loads(
-        tool.run(
-            datasource="sales_db",
-            concept_id="concepts/active_user",
-            title="Active user",
-            type="metric",
-            summary="status = 1",
-            body="An active user has status = 1.",
-        )
+def test_private_write_lands_in_memory_folder_not_terno(user_root: Path):
+    out = _write(MemoryWriteTool(user_root))
+    written = Path(out["path"])
+    assert out["shared"] is False
+    # Directly under the workspace memory folder, never under `.terno`.
+    assert written == user_root / "sales_db" / "metrics" / "active_user.md"
+    assert written.exists()
+    assert ".terno" not in written.parts
+
+
+def test_write_then_read_roundtrip_and_index(user_root: Path):
+    _write(MemoryWriteTool(user_root))
+    doc = MemoryReadTool(user_root).run(
+        datasource="sales_db", memory_id="metrics/active_user"
     )
-    assert out["concept_id"] == "concepts/active_user"
-    # The concept is readable and the index now lists it.
-    read = ReadConceptTool(workdir)
-    doc = read.run(datasource="sales_db", concept_id="concepts/active_user")
     assert "type: metric" in doc
-    listing = json.loads(ListKnowledgeTool(workdir).run(datasource="sales_db"))
-    assert any(c["concept_id"] == "concepts/active_user" for c in listing)
+    assert "status = 1" in doc
+    # The bundle index was regenerated so the fact is discoverable.
+    assert (user_root / "sales_db" / "index.md").exists()
 
 
-def test_write_concept_requires_fields(workdir: Path):
-    with pytest.raises(ToolError):
-        WriteConceptTool(workdir).run(datasource="d", concept_id="c", title="t")
+def test_shared_write_denied_for_non_admin(user_root: Path, org_root: Path):
+    tool = MemoryWriteTool(user_root, org_root=org_root, is_org_admin=False)
+    with pytest.raises(ToolError, match="org admin"):
+        _write(tool, shared=True)
+    assert not org_root.exists()  # nothing written to the org folder
 
 
-def test_write_concept_stamps_provenance(workdir: Path):
-    WriteConceptTool(workdir).run(
-        datasource="sales_db",
-        concept_id="tables/users",
-        title="Users",
-        type="table",
-        body="Registered users.",
-        source="introspection",
-    )
-    doc = ReadConceptTool(workdir).run(datasource="sales_db", concept_id="tables/users")
-    assert "source: introspection" in doc
-    assert "updated:" in doc  # timestamp recorded automatically
+def test_shared_write_allowed_for_admin_lands_in_org_folder(
+    user_root: Path, org_root: Path
+):
+    tool = MemoryWriteTool(user_root, org_root=org_root, is_org_admin=True)
+    out = _write(tool, shared=True)
+    written = Path(out["path"])
+    assert out["shared"] is True
+    assert written == org_root / "sales_db" / "metrics" / "active_user.md"
+    assert not (user_root / "sales_db").exists()  # not in the user folder
 
 
-def _seed_users(workdir: Path) -> None:
-    WriteConceptTool(workdir).run(
-        datasource="sales_db",
-        concept_id="tables/users",
-        title="Users",
-        type="table",
-        summary="Registered users.",
-        body="## Overview\nOne row per user.\n\nstatus is an int.",
-    )
+def test_shared_write_without_org_folder_errors(user_root: Path):
+    tool = MemoryWriteTool(user_root, org_root=None, is_org_admin=True)
+    with pytest.raises(ToolError, match="No organisation memory"):
+        _write(tool, shared=True)
 
 
-def test_edit_concept_append_preserves_body(workdir: Path):
-    _seed_users(workdir)
-    EditConceptTool(workdir).run(
-        datasource="sales_db",
-        concept_id="tables/users",
-        append="## Notes\nstatus = 1 means active.",
-        source="query",
-    )
-    doc = ReadConceptTool(workdir).run(datasource="sales_db", concept_id="tables/users")
-    assert "One row per user." in doc  # original body kept
-    assert "status = 1 means active." in doc  # appended fact
-    assert "source: query" in doc
-
-
-def test_edit_concept_replaces_unique_span(workdir: Path):
-    _seed_users(workdir)
-    EditConceptTool(workdir).run(
-        datasource="sales_db",
-        concept_id="tables/users",
-        old_string="status is an int.",
-        new_string="status: 1=active, 0=inactive.",
-    )
-    doc = ReadConceptTool(workdir).run(datasource="sales_db", concept_id="tables/users")
-    assert "1=active, 0=inactive." in doc
-    assert "status is an int." not in doc
-
-
-def test_edit_concept_errors_when_missing(workdir: Path):
-    with pytest.raises(ToolError):
-        EditConceptTool(workdir).run(
-            datasource="sales_db", concept_id="tables/ghost", append="x"
-        )
-
-
-def test_edit_concept_errors_on_ambiguous_old_string(workdir: Path):
-    WriteConceptTool(workdir).run(
-        datasource="sales_db",
-        concept_id="tables/users",
-        title="Users",
-        type="table",
-        body="dup\ndup",
-    )
-    with pytest.raises(ToolError):
-        EditConceptTool(workdir).run(
+def test_edit_shared_denied_for_non_admin(user_root: Path, org_root: Path):
+    # Seed a shared fact as admin, then a non-admin tool must not edit it.
+    _write(MemoryWriteTool(user_root, org_root=org_root, is_org_admin=True), shared=True)
+    non_admin = MemoryEditTool(user_root, org_root=org_root, is_org_admin=False)
+    with pytest.raises(ToolError, match="org admin"):
+        non_admin.run(
             datasource="sales_db",
-            concept_id="tables/users",
-            old_string="dup",
-            new_string="x",
+            memory_id="metrics/active_user",
+            shared=True,
+            append="tampered",
         )
 
 
-def test_edit_concept_requires_a_change(workdir: Path):
-    _seed_users(workdir)
-    with pytest.raises(ToolError):
-        EditConceptTool(workdir).run(datasource="sales_db", concept_id="tables/users")
-
-
-def test_build_connects_lazily_from_url(sqlite_db: Database, workdir: Path):
-    # No live db handed in — only the URL. The tool connects on demand.
-    build = BuildDatasourceKnowledgeTool(
-        workdir=workdir,
-        database_url=str(sqlite_db.url),
-        default_datasource="sales_db",
+def test_read_spans_user_then_org(user_root: Path, org_root: Path):
+    _write(MemoryWriteTool(user_root, org_root=org_root, is_org_admin=True), shared=True)
+    # A reader with both roots finds the org-shared fact even with nothing
+    # private.
+    doc = MemoryReadTool(user_root, org_root=org_root).run(
+        datasource="sales_db", memory_id="metrics/active_user"
     )
-    out = json.loads(build.run())
-    assert set(out["tables_written"]) == {"users", "orders"}
+    assert "Active user" in doc
 
 
-def test_build_errors_without_any_datasource(workdir: Path):
-    build = BuildDatasourceKnowledgeTool(workdir=workdir, default_datasource="ds")
-    with pytest.raises(ToolError):  # no db, no url
-        build.run()
-
-
-def test_build_requires_datasource(sqlite_db: Database, workdir: Path):
-    build = BuildDatasourceKnowledgeTool(db=sqlite_db, workdir=workdir, llm=None)
-    with pytest.raises(ToolError):
-        build.run()  # no default, none passed
-
-
-def test_read_missing_concept_errors(sqlite_db: Database, workdir: Path):
-    build = BuildDatasourceKnowledgeTool(
-        db=sqlite_db, workdir=workdir, llm=None, default_datasource="sales_db"
+def test_list_merges_user_and_org_bundles(user_root: Path, org_root: Path):
+    _write(MemoryWriteTool(user_root), memory_id="prefs/output", type="user",
+           scope="global", title="Output prefs", datasource_name="")
+    _write(
+        MemoryWriteTool(user_root, org_root=org_root, is_org_admin=True),
+        shared=True,
     )
-    build.run()
-    read = ReadConceptTool(workdir)
+    names = json.loads(MemoryListTool(user_root, org_root=org_root).run())
+    assert names == ["sales_db"]  # same bundle name in both roots, de-duped
+    rows = json.loads(
+        MemoryListTool(user_root, org_root=org_root).run(datasource="sales_db")
+    )
+    shared_flags = {r["memory_id"]: r["shared"] for r in rows}
+    assert shared_flags["prefs/output"] is False
+    assert shared_flags["metrics/active_user"] is True
+
+
+def test_search_reports_scope_and_shared(user_root: Path, org_root: Path):
+    _write(
+        MemoryWriteTool(user_root, org_root=org_root, is_org_admin=True),
+        shared=True,
+    )
+    hits = json.loads(
+        MemorySearchTool(user_root, org_root=org_root).run(query="active user")
+    )
+    assert hits and hits[0]["shared"] is True
+    assert hits[0]["memory_id"] == "metrics/active_user"
+
+
+def test_write_requires_core_fields(user_root: Path):
     with pytest.raises(ToolError):
-        read.run(datasource="sales_db", concept_id="tables/nope")
-    with pytest.raises(ToolError):
-        ListKnowledgeTool(workdir).run(datasource="ghost")
+        MemoryWriteTool(user_root).run(
+            datasource="d", memory_id="c", title="t"
+        )
+
+
+@pytest.mark.parametrize("bad", ["../escape", "/etc/passwd", "a/../../b"])
+def test_traversal_ids_are_rejected(user_root: Path, bad: str):
+    with pytest.raises(ToolError, match="unsafe"):
+        _write(MemoryWriteTool(user_root), memory_id=bad)
+    with pytest.raises(ToolError, match="unsafe"):
+        MemoryReadTool(user_root).run(datasource="sales_db", memory_id=bad)
+
+
+def test_edit_append_preserves_body(user_root: Path):
+    _write(MemoryWriteTool(user_root))
+    MemoryEditTool(user_root).run(
+        datasource="sales_db",
+        memory_id="metrics/active_user",
+        append="## Notes\nConfirmed by query.",
+    )
+    doc = MemoryReadTool(user_root).run(
+        datasource="sales_db", memory_id="metrics/active_user"
+    )
+    assert "status = 1" in doc  # original body kept
+    assert "Confirmed by query." in doc  # appended

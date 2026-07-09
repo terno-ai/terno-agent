@@ -1,29 +1,53 @@
-"""KnowledgeContextProvider: pre-turn injection block."""
+"""MemoryContextProvider: pre-turn recall block over user + org folders."""
 
 from __future__ import annotations
 
 from pathlib import Path
 
-from terno_agent.wiki.bundle import KnowledgeBundle
-from terno_agent.wiki.concept import Concept
-from terno_agent.wiki.context import KnowledgeContextProvider
-from terno_agent.wiki.paths import bundle_dir
+from terno_agent.wiki.context import MemoryContextProvider
+from terno_agent.wiki.tools import MemoryWriteTool
 
 
-def test_empty_when_no_bundles(workdir: Path):
-    assert KnowledgeContextProvider(workdir).context_block() == ""
-    assert KnowledgeContextProvider(workdir).bundles() == []
+def _seed(root: Path, memory_id: str, title: str, *, shared: bool, org=None) -> None:
+    tool = MemoryWriteTool(root, org_root=org, is_org_admin=True)
+    tool.run(
+        datasource="sales_db",
+        memory_id=memory_id,
+        title=title,
+        type="metric",
+        scope="global",
+        summary=f"{title} summary.",
+        shared=shared,
+    )
 
 
-def test_block_lists_bundles_and_index(workdir: Path):
-    b = KnowledgeBundle(bundle_dir(workdir, "sales_db"), name="sales_db")
-    b.write_concept(Concept("tables/users", "users", "table", summary="Users."))
-    b.rebuild_index()
+def test_empty_when_no_bundles(tmp_path: Path):
+    provider = MemoryContextProvider(tmp_path / "memory")
+    assert provider.context_block() == ""
+    assert provider.bundles() == []
 
-    provider = KnowledgeContextProvider(workdir)
-    assert [x.name for x in provider.bundles()] == ["sales_db"]
+
+def test_block_lists_user_bundle(tmp_path: Path):
+    user_root = tmp_path / "user" / "memory"
+    _seed(user_root, "metrics/active_user", "Active user", shared=False)
+
+    provider = MemoryContextProvider(user_root)
+    assert [b.name for b in provider.bundles()] == ["sales_db"]
     block = provider.context_block()
-    assert "Datasource knowledge" in block
-    assert "sales_db" in block
-    assert "users" in block
-    assert "curated automatically" in block  # footer hint
+    assert "Available memory" in block
+    assert "Active user" in block
+    assert "curated automatically" in block  # footer
+
+
+def test_block_separates_org_shared_section(tmp_path: Path):
+    user_root = tmp_path / "user" / "memory"
+    org_root = tmp_path / "org" / "memory"
+    _seed(user_root, "prefs/output", "Output prefs", shared=False)
+    _seed(user_root, "metrics/active_user", "Active user", shared=True, org=org_root)
+
+    provider = MemoryContextProvider(user_root, org_root=org_root)
+    assert [b.name for b in provider.org_bundles()] == ["sales_db"]
+    block = provider.context_block()
+    assert "Output prefs" in block  # private
+    assert "Organisation-wide shared memory" in block  # org section header
+    assert "(shared)" in block

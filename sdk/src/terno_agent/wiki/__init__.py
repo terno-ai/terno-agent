@@ -21,7 +21,15 @@ from terno_agent.wiki.builder import BuildReport, DatasourceKnowledgeAgent
 from terno_agent.wiki.bundle import KnowledgeBundle
 from terno_agent.wiki.concept import Concept, ConceptError
 from terno_agent.wiki.context import MemoryContextProvider
-from terno_agent.wiki.paths import bundle_dir, knowledge_root, slugify
+from terno_agent.wiki.paths import (
+    bundle_dir,
+    knowledge_root,
+    memory_bundle_dir,
+    org_memory_dir,
+    slugify,
+    user_memory_dir,
+    workspace_memory_dirs,
+)
 from terno_agent.wiki.tools import (
     MemoryEditTool,
     MemoryListTool,
@@ -47,6 +55,10 @@ __all__ = [
     "bundle_dir",
     "knowledge_root",
     "memory_agent_tools",
+    "memory_bundle_dir",
     "memory_read_tools",
+    "org_memory_dir",
     "slugify",
+    "user_memory_dir",
+    "workspace_memory_dirs",
 ]

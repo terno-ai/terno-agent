@@ -82,6 +82,13 @@ class Agent:
             provider=provider,
             model=model,
         )
+        _apply_memory_identity(
+            self.config,
+            user_memory_root=user_memory_root,
+            org_memory_root=org_memory_root,
+            is_org_admin=is_org_admin,
+            session_id=session_id,
+        )
         self.on_event = on_event
         self._agent = TernoAgent.from_config(
             self.config,
@@ -290,6 +297,31 @@ class Agent:
         )
 
 
+def _apply_memory_identity(
+    config: Config,
+    *,
+    user_memory_root: str | Path | None,
+    org_memory_root: str | Path | None,
+    is_org_admin: bool | None,
+    session_id: str | None,
+) -> None:
+    """Override memory-location fields on ``config`` from explicit kwargs.
+
+    A host passes the already-authorized memory folders (and the org-admin
+    flag) it resolved for the authenticated user. Only non-``None`` values
+    override what the config/env already carries, so callers can set just the
+    fields they know.
+    """
+    if user_memory_root is not None:
+        config.user_memory_root = str(user_memory_root)
+    if org_memory_root is not None:
+        config.org_memory_root = str(org_memory_root)
+    if is_org_admin is not None:
+        config.is_org_admin = is_org_admin
+    if session_id is not None:
+        config.session_id = session_id
+
+
 def _build_config(
     *,
     api_key: str | None,
@@ -316,6 +348,12 @@ def _build_config(
         mcp_servers=base.mcp_servers,
         skills_enabled=base.skills_enabled,
         skill_paths=list(base.skill_paths),
+        wiki_memory_enabled=base.wiki_memory_enabled,
+        wiki_datasource=base.wiki_datasource,
+        user_memory_root=base.user_memory_root,
+        org_memory_root=base.org_memory_root,
+        is_org_admin=base.is_org_admin,
+        session_id=base.session_id,
         memory_enabled=base.memory_enabled,
         memory_top_k=base.memory_top_k,
         embedding_provider=base.embedding_provider,

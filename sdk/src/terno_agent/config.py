@@ -102,6 +102,20 @@ class Config:
     milvus_collection: str = "terno_memory"
     wiki_memory_enabled: bool = True
     wiki_datasource: str = "memory"
+    # ----- workspace memory location + org-admin gate ---------------------- #
+    # Already-resolved, already-authorized memory folders. The caller (the app
+    # server, which authenticated the user) computes these — e.g. via
+    # ``wiki.paths.user_memory_dir`` / ``org_memory_dir`` — and passes them in.
+    # The SDK never handles a raw username, so it can't be tricked into
+    # touching another user's folder. When unset the SDK falls back to the
+    # local workdir's ``memory`` folder.
+    user_memory_root: str = ""
+    org_memory_root: str = ""
+    # Only org admins may write to the org-shared memory folder. The caller
+    # sets this from the authenticated user's group membership.
+    is_org_admin: bool = False
+    # Stamped into memory frontmatter as ``originSessionId``.
+    session_id: str = ""
     # ----- compaction ------------------------------------------------------ #
     compaction_enabled: bool = True
     compaction_threshold_tokens: int = 80_000
@@ -172,6 +186,11 @@ class Config:
             not in {"false", "0", "no", "off"},
             wiki_datasource=os.getenv("TERNO_WIKI_DATASOURCE", "memory").strip()
             or "memory",
+            user_memory_root=os.getenv("TERNO_USER_MEMORY_ROOT", "").strip(),
+            org_memory_root=os.getenv("TERNO_ORG_MEMORY_ROOT", "").strip(),
+            is_org_admin=os.getenv("TERNO_IS_ORG_ADMIN", "false").lower()
+            not in {"false", "0", "no", "off", ""},
+            session_id=os.getenv("TERNO_SESSION_ID", "").strip(),
             memory_top_k=int(os.getenv("TERNO_MEMORY_TOP_K", "5")),
             embedding_provider=os.getenv("TERNO_EMBEDDING_PROVIDER", "openai").lower(),
             embedding_model=os.getenv("TERNO_EMBEDDING_MODEL", "text-embedding-3-small"),

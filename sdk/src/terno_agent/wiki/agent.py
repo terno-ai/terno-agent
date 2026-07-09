@@ -20,7 +20,7 @@ from typing import TYPE_CHECKING
 from terno_agent.agents.base import AgentRun, BaseAgent
 from terno_agent.core.messages import AssistantMessage, SystemMessage, UserMessage
 from terno_agent.wiki.bundle import KnowledgeBundle
-from terno_agent.wiki.paths import bundle_dir
+from terno_agent.wiki.paths import memory_bundle_dir
 from terno_agent.wiki.prompts import MEMORY_AGENT_PROMPT
 from terno_agent.wiki.tools import memory_agent_tools
 
@@ -35,16 +35,24 @@ class MemoryAgent:
         self,
         *,
         llm: LLMClient,
-        workdir: Path,
+        user_root: Path,
         datasource: str,
+        org_root: Path | None = None,
+        is_org_admin: bool = False,
         session_id: str = "",
         max_iterations: int = 8,
         cancel_token: CancelToken | None = None,
     ) -> None:
-        self.workdir = Path(workdir).resolve()
+        self.user_root = Path(user_root).resolve()
+        self.org_root = Path(org_root).resolve() if org_root is not None else None
+        self.is_org_admin = is_org_admin
         self.datasource = datasource
         tools = memory_agent_tools(
-            self.workdir, datasource=datasource, session_id=session_id
+            self.user_root,
+            datasource=datasource,
+            org_root=self.org_root,
+            is_org_admin=is_org_admin,
+            session_id=session_id,
         )
         self._agent = BaseAgent(
             llm,
@@ -70,10 +78,22 @@ class MemoryAgent:
         from them; it does not archive the conversation.
         """
         bundle = KnowledgeBundle(
-            bundle_dir(self.workdir, self.datasource), name=self.datasource
+            memory_bundle_dir(self.user_root, self.datasource),
+            name=self.datasource,
         )
         exists = bundle.exists()
         state = bundle.index_text().strip() if exists else "(no bundle yet)"
+        if self.org_root is not None:
+            org_bundle = KnowledgeBundle(
+                memory_bundle_dir(self.org_root, self.datasource),
+                name=self.datasource,
+            )
+            if org_bundle.exists():
+                shared_state = org_bundle.index_text().strip()
+                if shared_state:
+                    state = (
+                        f"{state}\n\n[organisation-shared memory]\n{shared_state}"
+                    )
         evidence = [f'The user asked the main assistant:\n"{user_task}"']
         if assistant_answer:
             evidence.append(f"The assistant answered:\n{assistant_answer.strip()}")
