@@ -8,7 +8,6 @@ from terno_agent.core.messages import AssistantMessage, ToolCall
 from terno_agent.llm.base import LLMResponse
 from terno_agent.wiki.agent import MemoryAgent
 from terno_agent.wiki.bundle import KnowledgeBundle
-from terno_agent.wiki.paths import memory_bundle_dir
 
 
 class LoopLLM:
@@ -44,8 +43,7 @@ def _final(text: str) -> LLMResponse:
 
 def _write_call(**over) -> LLMResponse:
     args = dict(
-        datasource="sales_db",
-        memory_id="metrics/active_user",
+        memory_id="active_user",
         title="Active user",
         type="metric",
         scope="datasource:1",
@@ -57,71 +55,67 @@ def _write_call(**over) -> LLMResponse:
 
 
 def test_curator_writes_private_memory_into_workspace_not_terno(tmp_path: Path):
-    user_root = tmp_path / "acme" / "ada" / "memory"
+    user_root = tmp_path / "user_workspace" / "memory"
     agent = MemoryAgent(
         llm=LoopLLM([_write_call(), _final("recorded the metric")]),
         user_root=user_root,
-        datasource="sales_db",
+        datasource="memory",
     )
     agent.run_turn("define active user", assistant_answer="status = 1")
 
-    bundle = KnowledgeBundle(
-        memory_bundle_dir(user_root, "sales_db"), name="sales_db"
-    )
-    concept = bundle.read_concept("metrics/active_user")
+    bundle = KnowledgeBundle(user_root, name="memory")
+    concept = bundle.read_concept("active_user")
     assert concept is not None and concept.type == "metric"
     assert "status = 1" in concept.body
-    # Landed in the workspace memory folder, never under `.terno`.
-    assert ".terno" not in memory_bundle_dir(user_root, "sales_db").parts
-    assert not (tmp_path / "orgs").exists()
+    # Landed directly under the memory folder — no `.terno`, no nested subdir.
+    written = user_root / "active_user.md"
+    assert written.exists()
+    assert ".terno" not in written.parts
+    assert not (tmp_path / "org_workspace").exists()
 
 
 def test_curator_noop_leaves_no_bundle(tmp_path: Path):
-    user_root = tmp_path / "acme" / "ada" / "memory"
+    user_root = tmp_path / "user_workspace" / "memory"
     agent = MemoryAgent(
         llm=LoopLLM([_final("no changes needed")]),
         user_root=user_root,
-        datasource="sales_db",
+        datasource="memory",
     )
     agent.run_turn("hi there")
-    bundle = KnowledgeBundle(
-        memory_bundle_dir(user_root, "sales_db"), name="sales_db"
-    )
-    assert not bundle.exists()
+    assert not KnowledgeBundle(user_root, name="memory").exists()
 
 
 def test_curator_shared_write_refused_without_admin(tmp_path: Path):
-    user_root = tmp_path / "acme" / "ada" / "memory"
-    org_root = tmp_path / "acme" / "memory"
+    user_root = tmp_path / "user_workspace" / "memory"
+    org_root = tmp_path / "org_workspace" / "memory"
     # A non-admin curator that tries a shared write gets a tool error; the loop
     # continues and nothing lands in the org folder.
     agent = MemoryAgent(
         llm=LoopLLM([_write_call(shared=True), _final("fell back")]),
         user_root=user_root,
-        datasource="sales_db",
+        datasource="memory",
         org_root=org_root,
         is_org_admin=False,
     )
     agent.run_turn("try to share org memory")
-    assert not (org_root / "sales_db").exists()
+    assert not org_root.exists()
 
 
 def test_curator_admin_can_write_shared(tmp_path: Path):
-    user_root = tmp_path / "acme" / "ada" / "memory"
-    org_root = tmp_path / "acme" / "memory"
+    user_root = tmp_path / "user_workspace" / "memory"
+    org_root = tmp_path / "org_workspace" / "memory"
     agent = MemoryAgent(
         llm=LoopLLM([_write_call(shared=True), _final("shared it")]),
         user_root=user_root,
-        datasource="sales_db",
+        datasource="memory",
         org_root=org_root,
         is_org_admin=True,
         session_id="sess-42",
     )
     agent.run_turn("record the org metric")
-    bundle = KnowledgeBundle(
-        memory_bundle_dir(org_root, "sales_db"), name="sales_db"
+    concept = KnowledgeBundle(org_root, name="memory").read_concept(
+        "active_user"
     )
-    concept = bundle.read_concept("metrics/active_user")
     assert concept is not None
     # session_id is stamped as provenance.
     assert concept.metadata.get("originSessionId") == "sess-42"
@@ -131,7 +125,7 @@ def test_fresh_history_each_turn(tmp_path: Path):
     agent = MemoryAgent(
         llm=LoopLLM([_final("a"), _final("b")]),
         user_root=tmp_path / "memory",
-        datasource="sales_db",
+        datasource="memory",
     )
     agent.run_turn("first")
     agent.run_turn("second")

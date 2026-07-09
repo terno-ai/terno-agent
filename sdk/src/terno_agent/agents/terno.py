@@ -527,10 +527,8 @@ def _build_wiki_memory(
     org_root = (
         Path(org_source).expanduser().resolve() if org_source else None
     )
-    read_tools = memory_read_tools(
-        user_root, datasource=datasource, org_root=org_root
-    )
-    context = MemoryContextProvider(user_root, org_root=org_root)
+    read_tools = memory_read_tools(user_root, org_root=org_root, name=datasource)
+    context = MemoryContextProvider(user_root, org_root=org_root, name=datasource)
     agent = MemoryAgent(
         llm=llm,
         user_root=user_root,

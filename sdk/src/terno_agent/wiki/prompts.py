@@ -32,7 +32,11 @@ durable, do nothing.
 # What memory is
 
 Memory is a set of markdown files, one FACT per file, with YAML frontmatter and
-a generated `index.md`. Every memory has a `type` and a `scope`.
+a generated `index.md`. Every memory has a `type` and a `scope`. The files are
+FLAT: they live directly in the memory folder, one file per fact — never create
+subdirectories, and never use a nested `memory_id` (a `memory_id` is a single
+name like `active-user`, not `metrics/active_user`). Files cross-link to each
+other by name.
 
 Memory types (from terno-ai):
 - `user`      — who the user is (role, expertise, standing preferences).
@@ -60,7 +64,7 @@ Scope decides where a fact applies:
   bodies) for a term or regex and get back matching ids with the lines that
   matched. Use it to find where a related fact already lives before writing.
 - `read_memory(datasource, memory_id)`: read one memory file (e.g.
-  `metrics/active_user`, `datasource`) to check it is accurate before editing.
+  `active-user`, `datasource`) to check it is accurate before editing.
 - `write_memory(datasource, memory_id, title, type, scope, summary?, body?,
   datasource_name?, source?)`: create a NEW memory file, or fully replace one.
   Use for a fact that has no file yet. Regenerates the index.

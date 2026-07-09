@@ -9,17 +9,22 @@ Two toolsets are exposed:
   facts after a turn.
 
 Storage uses the OKF bundle engine (``KnowledgeBundle`` / ``Concept``): one
-markdown file per fact under ``<memory>/<datasource>/`` with a generated
-``index.md``. Unlike datasource *knowledge*, memory bundles live directly in
-the workspace ``memory`` folders (never under ``.terno``):
+markdown file per fact with a generated ``index.md``. There is exactly ONE
+memory bundle per workspace ``memory`` folder — the folder itself is the bundle
+root. Learned facts are FLAT files that live directly in that memory directory,
+one file per fact (e.g. ``customer.md``, ``active-user.md``), never under
+``.terno``, never in a per-datasource subfolder, and never nested in any
+subdirectory. Files cross-link to each other by name; the directory stays flat.
 
 * **private** memory → the caller's user folder
-  (``USER_WORKSPACE_ROOT/<org>/<user>/memory``);
-* **shared** memory → the org folder (``ORG_WORKSPACE_ROOT/<org>/memory``),
-  which **only an org admin may write to**.
+  (``.../user_workspace/memory``);
+* **shared** memory → the org folder (``.../org_workspace/memory``), which
+  **only an org admin may write to**.
 
 Everyone in an org can READ the shared folder; the read tools search the user
-folder and the org folder together.
+folder and the org folder together. A fact's APPLICABILITY to a specific
+database is recorded in its ``scope`` frontmatter (``datasource:<id>`` vs
+``global``), not by its location.
 """
 
 from __future__ import annotations
@@ -35,8 +40,9 @@ from terno_agent.core.exceptions import ToolError
 from terno_agent.core.tool import ToolSchema
 from terno_agent.wiki.bundle import KnowledgeBundle
 from terno_agent.wiki.concept import Concept, ConceptError
-from terno_agent.wiki.context import MemoryContextProvider
-from terno_agent.wiki.paths import memory_bundle_dir
+
+#: Display name of the single memory bundle (used in index titles / headers).
+DEFAULT_BUNDLE_NAME = "memory"
 
 # Where a fact came from — recorded in frontmatter as `source` so a reader can
 # weigh how much to trust it and a future curator knows what may be stale.
@@ -49,10 +55,15 @@ _KNOWN_TYPES = (
     "table", "domain", "metric", "datasource",
 )
 
+_SEARCH_DEFAULT_LIMIT = 20
+_SNIPPETS_PER_MEMORY = 5
+
 
 def _utc_now_iso() -> str:
     """Current UTC time as a second-precision ISO string for `updated`."""
-    return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+    # `timezone.utc` (not `datetime.UTC`) — the latter is Python 3.11+, but this
+    # project supports 3.10. noqa keeps ruff UP017 from "modernising" it.
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat()  # noqa: UP017
 
 
 def _normalize_scope(scope: str, datasource_name: str) -> dict[str, str]:
@@ -92,6 +103,22 @@ def _stamp(metadata: dict[str, Any], source: str, session_id: str) -> dict[str, 
     return stamped
 
 
+def _flat_memory_id(memory_id: str) -> str:
+    """Return a safe, FLAT memory id — a single file name, never a subpath.
+
+    Memory is a flat set of files living directly in the memory folder; it must
+    never grow subdirectories. Any ``/`` the caller supplies is folded to ``-``
+    so a write can only ever create a top-level file, and traversal (absolute
+    paths, ``..``, backslashes) is rejected outright.
+    """
+    mid = (memory_id or "").strip()
+    if not mid:
+        raise ToolError("memory_id must be non-empty.")
+    if mid.startswith("/") or "\\" in mid or ".." in mid.split("/"):
+        raise ToolError(f"unsafe memory_id {memory_id!r}.")
+    return mid.strip("/").replace("/", "-")
+
+
 def _write_target(
     *,
     shared: bool,
@@ -121,129 +148,6 @@ def _write_target(
     return org_root
 
 
-@dataclass
-class MemoryReadTool:
-    user_root: Path
-    org_root: Path | None = None
-
-    @property
-    def schema(self) -> ToolSchema:
-        return ToolSchema(
-            name="read_memory",
-            description=(
-                "Read one memory file from a datasource memory bundle. Searches "
-                "your private memory first, then organisation-shared memory. "
-                "memory_id is the file path within the bundle without '.md' "
-                "(e.g. 'metrics/active_user', 'datasource', 'domains/identity')."
-            ),
-            parameters={
-                "type": "object",
-                "properties": {
-                    "datasource": {
-                        "type": "string",
-                        "description": "Memory bundle / datasource name.",
-                    },
-                    "memory_id": {
-                        "type": "string",
-                        "description": "Memory id, e.g. 'domains/identity'.",
-                    },
-                },
-                "required": ["datasource", "memory_id"],
-            },
-        )
-
-    def run(self, **kwargs: Any) -> str:
-        datasource = (kwargs.get("datasource") or "").strip()
-        memory_id = (kwargs.get("memory_id") or "").strip()
-        if not datasource or not memory_id:
-            raise ToolError("read_memory requires 'datasource' and 'memory_id'.")
-        if memory_id.startswith("/") or ".." in memory_id.split("/"):
-            raise ToolError(f"unsafe memory_id {memory_id!r}.")
-        bundle = KnowledgeBundle(
-            memory_bundle_dir(self.user_root, datasource), name=datasource
-        )
-        concept = bundle.read_concept(memory_id)
-        if concept is None and self.org_root is not None:
-            org_bundle = KnowledgeBundle(
-                memory_bundle_dir(self.org_root, datasource), name=datasource
-            )
-            concept = org_bundle.read_concept(memory_id)
-        if concept is None:
-            raise ToolError(
-                f"No memory {memory_id!r} in datasource {datasource!r}."
-            )
-        return concept.render()
-
-
-@dataclass
-class MemoryListTool:
-    user_root: Path
-    org_root: Path | None = None
-
-    @property
-    def schema(self) -> ToolSchema:
-        return ToolSchema(
-            name="list_memory",
-            description=(
-                "List available memory bundles (private + organisation-shared), "
-                "or the memories within one bundle when 'datasource' is given."
-            ),
-            parameters={
-                "type": "object",
-                "properties": {
-                    "datasource": {
-                        "type": "string",
-                        "description": "Optional bundle name; omit to list all.",
-                    }
-                },
-                "required": [],
-            },
-        )
-
-    def run(self, **kwargs: Any) -> str:
-        datasource = (kwargs.get("datasource") or "").strip()
-        if not datasource:
-            provider = MemoryContextProvider(self.user_root, org_root=self.org_root)
-            names = [b.name for b in provider.bundles()]
-            names += [b.name for b in provider.org_bundles()]
-            return json.dumps(sorted(set(names)))
-        concepts = self._list_bundle(datasource)
-        return json.dumps(concepts)
-
-    def _list_bundle(self, datasource: str) -> list[dict[str, Any]]:
-        found: list[dict[str, Any]] = []
-        seen: set[str] = set()
-        for root, shared in ((self.user_root, False), (self.org_root, True)):
-            if root is None:
-                continue
-            bundle = KnowledgeBundle(
-                memory_bundle_dir(root, datasource), name=datasource
-            )
-            if not bundle.exists():
-                continue
-            for c in bundle.list_concepts():
-                if c.concept_id in seen:
-                    continue
-                seen.add(c.concept_id)
-                found.append(
-                    {
-                        "memory_id": c.concept_id,
-                        "title": c.title,
-                        "type": c.type,
-                        "scope": c.metadata.get("scope", "global"),
-                        "shared": shared,
-                        "summary": c.summary,
-                    }
-                )
-        if not found:
-            raise ToolError(f"No memory bundle for datasource {datasource!r}.")
-        return found
-
-
-_SEARCH_DEFAULT_LIMIT = 20
-_SNIPPETS_PER_MEMORY = 5
-
-
 def _match(rx: re.Pattern[str], concept: Concept) -> list[str]:
     """Return labelled snippets where ``rx`` matches a memory's text."""
     snippets: list[str] = []
@@ -257,11 +161,92 @@ def _match(rx: re.Pattern[str], concept: Concept) -> list[str]:
 
 
 @dataclass
-class MemorySearchTool:
-    user_root: Path
-    default_datasource: str = ""
-    org_root: Path | None = None
+class _MemoryToolBase:
+    """Shared state: the two memory folders, each a single OKF bundle."""
 
+    user_root: Path
+    org_root: Path | None = None
+    name: str = DEFAULT_BUNDLE_NAME
+
+    def _bundle(self, root: Path) -> KnowledgeBundle:
+        return KnowledgeBundle(Path(root).resolve(), name=self.name)
+
+    def _roots(self) -> list[tuple[Path, bool]]:
+        """The (root, shared) folders to read, private first."""
+        roots: list[tuple[Path, bool]] = [(self.user_root, False)]
+        if self.org_root is not None:
+            roots.append((self.org_root, True))
+        return roots
+
+
+@dataclass
+class MemoryReadTool(_MemoryToolBase):
+    @property
+    def schema(self) -> ToolSchema:
+        return ToolSchema(
+            name="read_memory",
+            description=(
+                "Read one memory file. Searches your private memory first, then "
+                "organisation-shared memory. memory_id is the file name within "
+                "the memory folder without '.md' (e.g. 'active-user', "
+                "'customer', 'identity') — a single flat name, never a path."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "memory_id": {
+                        "type": "string",
+                        "description": "Flat memory id (no '/'), e.g. 'customer'.",
+                    },
+                },
+                "required": ["memory_id"],
+            },
+        )
+
+    def run(self, **kwargs: Any) -> str:
+        memory_id = (kwargs.get("memory_id") or "").strip()
+        if not memory_id:
+            raise ToolError("read_memory requires 'memory_id'.")
+        memory_id = _flat_memory_id(memory_id)
+        for root, _shared in self._roots():
+            concept = self._bundle(root).read_concept(memory_id)
+            if concept is not None:
+                return concept.render()
+        raise ToolError(f"No memory {memory_id!r}.")
+
+
+@dataclass
+class MemoryListTool(_MemoryToolBase):
+    @property
+    def schema(self) -> ToolSchema:
+        return ToolSchema(
+            name="list_memory",
+            description=(
+                "List all memory files (private + organisation-shared) with "
+                "their id, title, type and scope."
+            ),
+            parameters={"type": "object", "properties": {}, "required": []},
+        )
+
+    def run(self, **kwargs: Any) -> str:
+        rows: list[dict[str, Any]] = []
+        for root, shared in self._roots():
+            for c in self._bundle(root).list_concepts():
+                rows.append(
+                    {
+                        "memory_id": c.concept_id,
+                        "title": c.title,
+                        "type": c.type,
+                        "scope": c.metadata.get("scope", "global"),
+                        "shared": shared,
+                        "summary": c.summary,
+                    }
+                )
+        return json.dumps(rows)
+
+
+@dataclass
+class MemorySearchTool(_MemoryToolBase):
     @property
     def schema(self) -> ToolSchema:
         return ToolSchema(
@@ -269,10 +254,10 @@ class MemorySearchTool:
             description=(
                 "Search memory files for a term or regex (case-insensitive) "
                 "across both private and organisation-shared memory. Scans "
-                "titles, summaries, and bodies across every subdirectory and "
-                "returns the matching memories with the lines that matched. Use "
-                "this to find where relevant knowledge lives, then read_memory "
-                "the returned memory_ids for detail."
+                "titles, summaries, and bodies and returns the matching "
+                "memories with the lines that matched. Use this to find where "
+                "relevant knowledge lives, then read_memory the returned "
+                "memory_ids for detail."
             ),
             parameters={
                 "type": "object",
@@ -280,10 +265,6 @@ class MemorySearchTool:
                     "query": {
                         "type": "string",
                         "description": "Text or regex (matched case-insensitively).",
-                    },
-                    "datasource": {
-                        "type": "string",
-                        "description": "Bundle to search. Omit to search all.",
                     },
                     "limit": {
                         "type": "integer",
@@ -308,20 +289,14 @@ class MemorySearchTool:
         except re.error:
             rx = re.compile(re.escape(query), re.IGNORECASE)
 
-        datasource = (
-            kwargs.get("datasource") or self.default_datasource or ""
-        ).strip()
-        bundles = self._bundles(datasource)
-
         hits: list[dict[str, Any]] = []
-        for bundle, shared in bundles:
-            for concept in bundle.list_concepts():
+        for root, shared in self._roots():
+            for concept in self._bundle(root).list_concepts():
                 snippets = _match(rx, concept)
                 if not snippets:
                     continue
                 hits.append(
                     {
-                        "datasource": bundle.name,
                         "memory_id": concept.concept_id,
                         "title": concept.title,
                         "scope": concept.metadata.get("scope", "global"),
@@ -334,30 +309,9 @@ class MemorySearchTool:
                     return json.dumps(hits)
         return json.dumps(hits)
 
-    def _bundles(self, datasource: str) -> list[tuple[KnowledgeBundle, bool]]:
-        if datasource:
-            out: list[tuple[KnowledgeBundle, bool]] = []
-            for root, shared in ((self.user_root, False), (self.org_root, True)):
-                if root is None:
-                    continue
-                bundle = KnowledgeBundle(
-                    memory_bundle_dir(root, datasource), name=datasource
-                )
-                if bundle.exists():
-                    out.append((bundle, shared))
-            if not out:
-                raise ToolError(f"No memory bundle for datasource {datasource!r}.")
-            return out
-        provider = MemoryContextProvider(self.user_root, org_root=self.org_root)
-        return [(b, False) for b in provider.bundles()] + [
-            (b, True) for b in provider.org_bundles()
-        ]
-
 
 @dataclass
-class MemoryWriteTool:
-    user_root: Path
-    org_root: Path | None = None
+class MemoryWriteTool(_MemoryToolBase):
     is_org_admin: bool = False
     session_id: str = ""
 
@@ -366,24 +320,24 @@ class MemoryWriteTool:
         return ToolSchema(
             name="write_memory",
             description=(
-                "Create a NEW memory file (or fully replace one) in a bundle, "
-                "then regenerate the index. Use for a durable fact that has no "
-                "file yet: a metric/term definition, a business rule, an enum "
+                "Create a NEW memory file (or fully replace one), then "
+                "regenerate the index. Use for a durable fact that has no file "
+                "yet: a metric/term definition, a business rule, an enum "
                 "decoding, a join path, or a stable user preference. To ADD to "
                 "or correct an EXISTING memory, use edit_memory instead. "
-                "memory_id is the path within the bundle without '.md' "
-                "(e.g. 'metrics/active_user'). Set shared=true to store the fact "
-                "in organisation-shared memory (org admins only); otherwise it "
-                "is saved as your private memory. Records provenance "
-                "automatically."
+                "memory_id is the file name without '.md' (e.g. "
+                "'active-user') — a single flat name, never a nested path; "
+                "memory files are never placed in subdirectories. Set "
+                "shared=true to store the fact in "
+                "organisation-shared memory (org admins only); otherwise it is "
+                "saved as your private memory. Records provenance automatically."
             ),
             parameters={
                 "type": "object",
                 "properties": {
-                    "datasource": {"type": "string", "description": "Bundle name."},
                     "memory_id": {
                         "type": "string",
-                        "description": "Memory id, e.g. 'metrics/active_user'.",
+                        "description": "Flat memory id (no '/'), e.g. 'active-user'.",
                     },
                     "title": {"type": "string", "description": "Human title."},
                     "type": {
@@ -431,23 +385,20 @@ class MemoryWriteTool:
                         ),
                     },
                 },
-                "required": ["datasource", "memory_id", "title", "type", "scope"],
+                "required": ["memory_id", "title", "type", "scope"],
             },
         )
 
     def run(self, **kwargs: Any) -> str:
-        datasource = (kwargs.get("datasource") or "").strip()
         memory_id = (kwargs.get("memory_id") or "").strip()
         title = (kwargs.get("title") or "").strip()
         type_ = (kwargs.get("type") or "").strip()
         scope = (kwargs.get("scope") or "").strip()
-        if not (datasource and memory_id and title and type_ and scope):
+        if not (memory_id and title and type_ and scope):
             raise ToolError(
-                "write_memory requires 'datasource', 'memory_id', 'title', "
-                "'type', and 'scope'."
+                "write_memory requires 'memory_id', 'title', 'type', and 'scope'."
             )
-        if memory_id.startswith("/") or ".." in memory_id.split("/"):
-            raise ToolError(f"unsafe memory_id {memory_id!r}.")
+        memory_id = _flat_memory_id(memory_id)
         shared = bool(kwargs.get("shared"))
         root = _write_target(
             shared=shared,
@@ -470,9 +421,7 @@ class MemoryWriteTool:
             )
         except ConceptError as exc:
             raise ToolError(str(exc)) from exc
-        bundle = KnowledgeBundle(
-            memory_bundle_dir(root, datasource), name=datasource
-        )
+        bundle = self._bundle(root)
         path = bundle.write_concept(concept)
         bundle.rebuild_index()
         return json.dumps(
@@ -481,11 +430,9 @@ class MemoryWriteTool:
 
 
 @dataclass
-class MemoryEditTool:
+class MemoryEditTool(_MemoryToolBase):
     """Targeted, additive edits to an EXISTING memory file."""
 
-    user_root: Path
-    org_root: Path | None = None
     is_org_admin: bool = False
     session_id: str = ""
 
@@ -508,10 +455,9 @@ class MemoryEditTool:
             parameters={
                 "type": "object",
                 "properties": {
-                    "datasource": {"type": "string", "description": "Bundle name."},
                     "memory_id": {
                         "type": "string",
-                        "description": "Existing memory id, e.g. 'domains/identity'.",
+                        "description": "Existing flat memory id, e.g. 'identity'.",
                     },
                     "shared": {
                         "type": "boolean",
@@ -550,17 +496,15 @@ class MemoryEditTool:
                         ),
                     },
                 },
-                "required": ["datasource", "memory_id"],
+                "required": ["memory_id"],
             },
         )
 
     def run(self, **kwargs: Any) -> str:
-        datasource = (kwargs.get("datasource") or "").strip()
         memory_id = (kwargs.get("memory_id") or "").strip()
-        if not (datasource and memory_id):
-            raise ToolError("edit_memory requires 'datasource' and 'memory_id'.")
-        if memory_id.startswith("/") or ".." in memory_id.split("/"):
-            raise ToolError(f"unsafe memory_id {memory_id!r}.")
+        if not memory_id:
+            raise ToolError("edit_memory requires 'memory_id'.")
+        memory_id = _flat_memory_id(memory_id)
 
         append = kwargs.get("append")
         old_string = kwargs.get("old_string")
@@ -586,14 +530,11 @@ class MemoryEditTool:
             is_org_admin=self.is_org_admin,
             action="edit",
         )
-        bundle = KnowledgeBundle(
-            memory_bundle_dir(root, datasource), name=datasource
-        )
+        bundle = self._bundle(root)
         concept = bundle.read_concept(memory_id)
         if concept is None:
             raise ToolError(
-                f"No memory {memory_id!r} in datasource {datasource!r} to edit. "
-                "Use write_memory to create it."
+                f"No memory {memory_id!r} to edit. Use write_memory to create it."
             )
 
         body = concept.body
@@ -658,8 +599,8 @@ class MemoryEditTool:
 def memory_read_tools(
     user_root: Path,
     *,
-    datasource: str = "",
     org_root: Path | None = None,
+    name: str = DEFAULT_BUNDLE_NAME,
 ) -> list:
     """Read-only memory toolset for the MAIN agent.
 
@@ -667,23 +608,19 @@ def memory_read_tools(
     given, the org-shared folder too.
     """
     return [
-        MemoryListTool(user_root, org_root=org_root),
-        MemorySearchTool(
-            user_root,
-            default_datasource=datasource,
-            org_root=org_root,
-        ),
-        MemoryReadTool(user_root, org_root=org_root),
+        MemoryListTool(user_root, org_root=org_root, name=name),
+        MemorySearchTool(user_root, org_root=org_root, name=name),
+        MemoryReadTool(user_root, org_root=org_root, name=name),
     ]
 
 
 def memory_agent_tools(
     user_root: Path,
     *,
-    datasource: str = "",
     org_root: Path | None = None,
     is_org_admin: bool = False,
     session_id: str = "",
+    name: str = DEFAULT_BUNDLE_NAME,
 ) -> list:
     """Full memory toolset for the wiki memory agent (curator).
 
@@ -692,18 +629,20 @@ def memory_agent_tools(
     ``is_org_admin`` is set and ``org_root`` is configured.
     """
     return [
-        MemoryListTool(user_root, org_root=org_root),
-        MemorySearchTool(user_root, default_datasource=datasource, org_root=org_root),
-        MemoryReadTool(user_root, org_root=org_root),
+        MemoryListTool(user_root, org_root=org_root, name=name),
+        MemorySearchTool(user_root, org_root=org_root, name=name),
+        MemoryReadTool(user_root, org_root=org_root, name=name),
         MemoryWriteTool(
             user_root,
             org_root=org_root,
+            name=name,
             is_org_admin=is_org_admin,
             session_id=session_id,
         ),
         MemoryEditTool(
             user_root,
             org_root=org_root,
+            name=name,
             is_org_admin=is_org_admin,
             session_id=session_id,
         ),
@@ -711,6 +650,7 @@ def memory_agent_tools(
 
 
 __all__ = [
+    "DEFAULT_BUNDLE_NAME",
     "MemoryEditTool",
     "MemoryListTool",
     "MemoryReadTool",

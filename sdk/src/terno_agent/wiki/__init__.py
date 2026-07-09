@@ -24,7 +24,6 @@ from terno_agent.wiki.context import MemoryContextProvider
 from terno_agent.wiki.paths import (
     bundle_dir,
     knowledge_root,
-    memory_bundle_dir,
     org_memory_dir,
     slugify,
     user_memory_dir,
@@ -55,7 +54,6 @@ __all__ = [
     "bundle_dir",
     "knowledge_root",
     "memory_agent_tools",
-    "memory_bundle_dir",
     "memory_read_tools",
     "org_memory_dir",
     "slugify",

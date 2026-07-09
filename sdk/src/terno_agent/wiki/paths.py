@@ -87,16 +87,6 @@ def org_memory_dir(org_workspace_root: str | Path, org: str) -> Path:
     return (root / slugify(org) / MEMORY_DIRNAME).resolve()
 
 
-def memory_bundle_dir(memory_root: str | Path, datasource: str) -> Path:
-    """Return the OKF bundle dir for ``datasource`` under a memory folder.
-
-    Unlike :func:`bundle_dir` (which nests under ``.terno/knowledge``), memory
-    bundles sit directly under the workspace ``memory`` folder so they are
-    visible in the terno-ai file browser: ``<memory_root>/<datasource>``.
-    """
-    return (Path(memory_root).resolve() / slugify(datasource)).resolve()
-
-
 def workspace_memory_dirs(
     *,
     user_workspace_root: str | Path | None,
@@ -126,7 +116,6 @@ __all__ = [
     "USER_WORKSPACE_ENV_VAR",
     "bundle_dir",
     "knowledge_root",
-    "memory_bundle_dir",
     "org_memory_dir",
     "slugify",
     "user_memory_dir",

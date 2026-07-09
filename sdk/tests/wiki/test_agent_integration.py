@@ -105,13 +105,15 @@ def test_context_injected_when_memory_exists(agent: TernoAgent):
     from terno_agent.wiki.tools import MemoryWriteTool
 
     assert agent.wiki_memory_context.context_block() == ""  # nothing yet
-    MemoryWriteTool(agent.wiki_memory_context.user_root).run(
-        datasource="sales_db",
-        memory_id="metrics/active_user",
+    MemoryWriteTool(
+        agent.wiki_memory_context.user_root,
+        name=agent.wiki_memory_context.name,
+    ).run(
+        memory_id="active_user",
         title="Active user",
         type="metric",
         scope="global",
         summary="status = 1",
     )
     block = agent.wiki_memory_context.context_block()
-    assert "sales_db" in block and "Active user" in block
+    assert "Active user" in block
