@@ -35,6 +35,7 @@ from terno_agent.core.permissions import (
 if TYPE_CHECKING:
     from terno_agent.knowledge.runner import KnowledgeReport
     from terno_agent.knowledge.store import KnowledgeStore
+    from terno_agent.sandbox.base import Sandbox
 
 
 class Agent:
@@ -61,6 +62,7 @@ class Agent:
         config: Config | None = None,
         on_event: EventHook | None = None,
         workdir: str | Path | None = None,
+        org_workdir: str | Path | None = None,
         max_iterations: int | None = None,
         bash_timeout_s: int = 120,
         run_python_timeout_s: int = 30,
@@ -68,6 +70,11 @@ class Agent:
         allow_rules: list | tuple | None = None,
         on_permission_request: PermissionCallback | None = None,
         permission_policy: PermissionPolicy | None = None,
+        sandbox: "Sandbox | None" = None,
+        user_memory_root: str | Path | None = None,
+        org_memory_root: str | Path | None = None,
+        is_org_admin: bool | None = None,
+        session_id: str | None = None,
     ) -> None:
         self.config = config or _build_config(
             api_key=api_key,
@@ -80,12 +87,14 @@ class Agent:
             self.config,
             on_event=on_event,
             workdir=workdir,
+            org_workdir=org_workdir,
             max_iterations=max_iterations,
             bash_timeout_s=bash_timeout_s,
             run_python_timeout_s=run_python_timeout_s,
             permission_mode=permission_mode,
             allow_rules=allow_rules,
             on_permission_request=on_permission_request,
+            sandbox=sandbox,
             permission_policy=permission_policy,
         )
         self._closed = False
@@ -119,18 +128,27 @@ class Agent:
         *,
         on_event: EventHook | None = None,
         workdir: str | Path | None = None,
+        org_workdir: str | Path | None = None,
         max_iterations: int | None = None,
         bash_timeout_s: int = 120,
         run_python_timeout_s: int = 30,
+        sandbox: "Sandbox | None" = None,
     ) -> Agent:
-        """Build an `Agent` from an explicit `Config`."""
+        """Build an `Agent` from an explicit `Config`.
+
+        Pass ``sandbox`` to inject a pre-built :class:`Sandbox` (e.g. a host
+        that proxies ``run_python`` into an externally-managed container). When
+        given it overrides the sandbox the SDK would build from ``config``.
+        """
         return cls(
             config=config,
             on_event=on_event,
             workdir=workdir,
+            org_workdir=org_workdir,
             max_iterations=max_iterations,
             bash_timeout_s=bash_timeout_s,
             run_python_timeout_s=run_python_timeout_s,
+            sandbox=sandbox,
         )
 
     # ----- Inference --------------------------------------------------------- #
@@ -140,22 +158,33 @@ class Agent:
         task: str,
         *,
         attachments: list[AttachmentInput] | None = None,
+        extra_context: str | None = None,
     ) -> AgentRun:
-        """Run the agent on a task and return the result."""
+        """Run the agent on a task and return the result.
+
+        ``extra_context`` is injected ahead of ``task`` as a ``<context>``
+        block for this run only (e.g. tool/usage guidance the host wants the
+        model to see without baking it into the persistent system prompt).
+        """
         if attachments is None:
-            return self._agent.run(task)
-        return self._agent.run(task, attachments=attachments)
+            return self._agent.run(task, extra_context=extra_context)
+        return self._agent.run(
+            task, attachments=attachments, extra_context=extra_context
+        )
 
     def ask(
         self,
         task: str,
         *,
         attachments: list[AttachmentInput] | None = None,
+        extra_context: str | None = None,
     ) -> AgentRun:
         """Alias for `run`."""
         if attachments is None:
-            return self._agent.ask(task)
-        return self._agent.ask(task, attachments=attachments)
+            return self._agent.ask(task, extra_context=extra_context)
+        return self._agent.ask(
+            task, attachments=attachments, extra_context=extra_context
+        )
 
     # ----- Conversation state ----------------------------------------------- #
 

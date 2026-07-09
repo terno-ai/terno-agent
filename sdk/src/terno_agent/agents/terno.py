@@ -331,10 +331,20 @@ class TernoAgent(BaseAgent):
         allow_rules: list | tuple | None = None,
         on_permission_request: PermissionCallback | None = None,
         workdir: Path | str | None = None,
+        org_workdir: Path | str | None = None,
         max_iterations: int | None = None,
         bash_timeout_s: int = 120,
         run_python_timeout_s: int = 30,
+        sandbox: Sandbox | None = None,
     ) -> TernoAgent:
+        """Build a :class:`TernoAgent` from a :class:`Config`.
+
+        Pass ``sandbox`` to inject a pre-built :class:`Sandbox` (e.g. a host
+        that proxies ``run_python`` into an externally-managed container); when
+        given it overrides the sandbox that would be built from ``config``.
+        ``org_workdir`` is the already-resolved org-shared memory folder for the
+        wiki-memory read tools and context block.
+        """
         if not config.llm_api_key:
             raise ConfigError(
                 "No LLM API key configured. Set ANTHROPIC_API_KEY or "
@@ -349,7 +359,7 @@ class TernoAgent(BaseAgent):
             app_version=config.app_version or None,
             request_source=config.request_source or None,
         )
-        sandbox = _init_sandbox(config)
+        sandbox = sandbox if sandbox is not None else _init_sandbox(config)
         resolved_workdir = (Path(workdir) if workdir is not None else Path.cwd()).resolve()
 
         mcp_manager: McpManager | None = None
@@ -370,7 +380,7 @@ class TernoAgent(BaseAgent):
             on_memory_event=on_memory_event,
         )
         wiki_memory_tools, wiki_memory_agent, wiki_memory_context = _build_wiki_memory(
-            config, llm, workdir=resolved_workdir
+            config, llm, workdir=resolved_workdir, org_workdir=org_workdir
         )
         skill_catalog = (
             discover_skills(
@@ -490,6 +500,7 @@ def _build_wiki_memory(
     llm: LLMClient,
     *,
     workdir: Path,
+    org_workdir: Path | str | None = None,
 ) -> tuple[list | None, MemoryAgent | None, MemoryContextProvider | None]:
     """Construct the file-based wiki-memory pipeline if enabled in config.
 
@@ -501,12 +512,32 @@ def _build_wiki_memory(
     if not config.wiki_memory_enabled:
         return (None, None, None)
     datasource = config.wiki_datasource or "memory"
-    read_tools = memory_read_tools(workdir, datasource=datasource)
-    context = MemoryContextProvider(workdir)
+    # The caller (the app server, which authenticated the user) passes
+    # already-resolved, already-authorized memory folders. When unset, fall
+    # back to a local `memory` folder under the workdir so the SDK still works
+    # standalone (CLI / tests) with no workspace configured.
+    user_root = (
+        Path(config.user_memory_root).expanduser().resolve()
+        if config.user_memory_root
+        else (workdir / "memory").resolve()
+    )
+    # An explicit ``org_workdir`` (already the org's ``.../memory`` folder) wins
+    # over the config field; fall back to the config value, then to none.
+    org_source = org_workdir or config.org_memory_root or None
+    org_root = (
+        Path(org_source).expanduser().resolve() if org_source else None
+    )
+    read_tools = memory_read_tools(
+        user_root, datasource=datasource, org_root=org_root
+    )
+    context = MemoryContextProvider(user_root, org_root=org_root)
     agent = MemoryAgent(
         llm=llm,
-        workdir=workdir,
+        user_root=user_root,
         datasource=datasource,
+        org_root=org_root,
+        is_org_admin=config.is_org_admin,
+        session_id=config.session_id,
     )
     return (read_tools, agent, context)
 
