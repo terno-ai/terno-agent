@@ -7,6 +7,7 @@ from terno_agent.tools.ask_user import (
 )
 from terno_agent.tools.code_exec import RunPythonTool
 from terno_agent.tools.files import EditFileTool, ReadFileTool, WriteFileTool
+from terno_agent.tools.memory import MemoryContextProvider
 from terno_agent.tools.monitor import MonitorTool
 from terno_agent.tools.search import GlobTool, GrepTool
 from terno_agent.tools.shell import BashTool
@@ -29,6 +30,7 @@ __all__ = [
     "EditFileTool",
     "GlobTool",
     "GrepTool",
+    "MemoryContextProvider",
     "MonitorTool",
     "Question",
     "QuestionOption",
