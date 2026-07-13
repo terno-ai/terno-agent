@@ -36,6 +36,7 @@ if TYPE_CHECKING:
     from terno_agent.knowledge.runner import KnowledgeReport
     from terno_agent.knowledge.store import KnowledgeStore
     from terno_agent.sandbox.base import Sandbox
+    from terno_agent.tools.tasks import TaskStore
 
 
 class Agent:
@@ -71,6 +72,7 @@ class Agent:
         on_permission_request: PermissionCallback | None = None,
         permission_policy: PermissionPolicy | None = None,
         sandbox: "Sandbox | None" = None,
+        task_store: "TaskStore | None" = None,
         user_memory_root: str | Path | None = None,
         org_memory_root: str | Path | None = None,
         is_org_admin: bool | None = None,
@@ -102,6 +104,7 @@ class Agent:
             allow_rules=allow_rules,
             on_permission_request=on_permission_request,
             sandbox=sandbox,
+            task_store=task_store,
             permission_policy=permission_policy,
         )
         self._closed = False
@@ -140,12 +143,17 @@ class Agent:
         bash_timeout_s: int = 120,
         run_python_timeout_s: int = 30,
         sandbox: "Sandbox | None" = None,
+        task_store: "TaskStore | None" = None,
     ) -> Agent:
         """Build an `Agent` from an explicit `Config`.
 
         Pass ``sandbox`` to inject a pre-built :class:`Sandbox` (e.g. a host
         that proxies ``run_python`` into an externally-managed container). When
         given it overrides the sandbox the SDK would build from ``config``.
+
+        Pass ``task_store`` to inject a persistence-backed task store (e.g.
+        terno-ai's database store). When omitted the agent uses a
+        process-local in-memory store, so the SDK works fully standalone.
         """
         return cls(
             config=config,
@@ -156,6 +164,7 @@ class Agent:
             bash_timeout_s=bash_timeout_s,
             run_python_timeout_s=run_python_timeout_s,
             sandbox=sandbox,
+            task_store=task_store,
         )
 
     # ----- Inference --------------------------------------------------------- #

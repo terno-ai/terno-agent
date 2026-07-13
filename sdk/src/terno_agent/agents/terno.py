@@ -23,6 +23,7 @@ from terno_agent.attachments import (
 from terno_agent.config import Config
 from terno_agent.core.cancel import CancelToken
 from terno_agent.core.compaction import CompactionHook
+from terno_agent.core.events import TaskListUpdate
 from terno_agent.core.exceptions import ConfigError, SandboxError
 from terno_agent.core.hooks import (
     HookContext,
@@ -58,6 +59,8 @@ from terno_agent.tools.search import GlobTool, GrepTool
 from terno_agent.tools.shell import BashTool
 from terno_agent.tools.subagent import SpawnAgentTool
 from terno_agent.tools.tasks import (
+    InMemoryTaskStore,
+    Task,
     TaskCreateTool,
     TaskGetTool,
     TaskListTool,
@@ -78,6 +81,7 @@ class TernoAgent(BaseAgent):
         system_prompt: str | None = None,
         workdir: Path | None = None,
         task_store: TaskStore | None = None,
+        wire_task_events: bool = True,
         sandbox: Sandbox | None = None,
         mcp_manager: McpManager | None = None,
         skill_catalog: SkillCatalog | None = None,
@@ -105,7 +109,7 @@ class TernoAgent(BaseAgent):
             if max_iterations <= 0:
                 raise ConfigError("max_iterations must be positive.")
             self.max_iterations = max_iterations
-        self.task_store = task_store or TaskStore()
+        self.task_store = task_store or InMemoryTaskStore()
         self.sandbox = sandbox
         self.mcp_manager = mcp_manager
         self.skill_catalog = skill_catalog or SkillCatalog()
@@ -212,6 +216,21 @@ class TernoAgent(BaseAgent):
             on_event=on_event,
             hook_manager=hooks,
             cancel_token=token,
+        )
+
+        # Stream task-list changes as events so a host (CLI, terno-ai) can
+        # render a live todo list. Only the top-level agent wires this: it
+        # owns the store, and subagents share the same store object, so a
+        # single observer already sees every mutation (subagents pass
+        # ``wire_task_events=False`` to avoid clobbering the callback).
+        if wire_task_events:
+            self.task_store.set_on_change(self._emit_task_update)
+
+    def _emit_task_update(self, tasks: list[Task]) -> None:
+        self._emit(
+            TaskListUpdate(
+                agent=self.name, tasks=[t.to_dict() for t in tasks]
+            )
         )
 
     # ----- Cancellation -------------------------------------------------- #
@@ -332,6 +351,7 @@ class TernoAgent(BaseAgent):
         bash_timeout_s: int = 120,
         run_python_timeout_s: int = 30,
         sandbox: Sandbox | None = None,
+        task_store: TaskStore | None = None,
     ) -> TernoAgent:
         """Build a :class:`TernoAgent` from a :class:`Config`.
 
@@ -340,6 +360,11 @@ class TernoAgent(BaseAgent):
         given it overrides the sandbox that would be built from ``config``.
         ``org_workdir`` is the already-resolved org-shared memory folder for the
         wiki-memory read tools and context block.
+
+        Pass ``task_store`` to inject a persistence-backed store (e.g.
+        terno-ai's database store); when omitted the agent uses a
+        process-local :class:`InMemoryTaskStore`, so the SDK is fully
+        functional standalone.
         """
         if not config.llm_api_key:
             raise ConfigError(
@@ -399,6 +424,7 @@ class TernoAgent(BaseAgent):
         return cls(
             llm,
             workdir=resolved_workdir,
+            task_store=task_store,
             sandbox=sandbox,
             mcp_manager=mcp_manager,
             skill_catalog=skill_catalog,

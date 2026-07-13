@@ -89,6 +89,9 @@ class SpawnAgentTool:
             system_prompt=prompt,
             workdir=self.workdir,
             task_store=self.task_store,
+            # The subagent shares the parent's store; the parent already
+            # observes it, so don't overwrite the change callback.
+            wire_task_events=False,
             sandbox=self.sandbox,
             mcp_manager=self.mcp_manager,
             bash_timeout_s=self.bash_timeout_s,

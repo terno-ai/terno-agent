@@ -13,6 +13,7 @@ from terno_agent.tools.search import GlobTool, GrepTool
 from terno_agent.tools.shell import BashTool
 from terno_agent.tools.subagent import SpawnAgentTool
 from terno_agent.tools.tasks import (
+    InMemoryTaskStore,
     Task,
     TaskCreateTool,
     TaskGetTool,
@@ -30,6 +31,7 @@ __all__ = [
     "EditFileTool",
     "GlobTool",
     "GrepTool",
+    "InMemoryTaskStore",
     "MemoryContextProvider",
     "MonitorTool",
     "Question",

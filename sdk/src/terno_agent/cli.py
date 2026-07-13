@@ -25,6 +25,7 @@ from terno_agent.config import Config
 from terno_agent.core.events import (
     AgentEvent,
     IterationStart,
+    TaskListUpdate,
     TextDelta,
     ToolCallEvent,
     ToolResultEvent,
@@ -441,6 +442,9 @@ class AgentRenderer:
         elif isinstance(event, ToolResultEvent):
             self._close_stream()
             self._render_tool_result(event)
+        elif isinstance(event, TaskListUpdate):
+            self._close_stream()
+            self._render_task_list(event)
         elif isinstance(event, TurnEnd):
             self._close_stream()
 
@@ -467,6 +471,31 @@ class AgentRenderer:
         if self._stream_open:
             self.console.print()
             self._stream_open = False
+
+    # ----- task/todo list ------------------------------------------------- #
+
+    _TASK_MARKERS = {
+        "pending": "[ ]",
+        "in_progress": "[~]",
+        "completed": "[x]",
+    }
+
+    def _render_task_list(self, event: TaskListUpdate) -> None:
+        if not event.tasks:
+            return
+        lines = []
+        for t in event.tasks:
+            marker = self._TASK_MARKERS.get(t.get("status", ""), "[ ]")
+            label = t.get("active_form") if t.get("status") == "in_progress" else None
+            lines.append(f"{marker} {label or t.get('subject', '')}")
+        self.console.print(
+            Panel(
+                "\n".join(lines),
+                title=f"[{event.agent}] todo",
+                border_style=_AGENT_STYLE,
+                expand=False,
+            )
+        )
 
     # ----- tool call/result panels --------------------------------------- #
 

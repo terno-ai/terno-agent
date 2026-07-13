@@ -4,17 +4,17 @@ import pytest
 
 from terno_agent.core.exceptions import ToolError
 from terno_agent.tools.tasks import (
+    InMemoryTaskStore,
     TaskCreateTool,
     TaskGetTool,
     TaskListTool,
-    TaskStore,
     TaskUpdateTool,
 )
 
 
 @pytest.fixture()
 def store():
-    return TaskStore()
+    return InMemoryTaskStore()
 
 
 def test_create_and_list(store):
@@ -58,3 +58,24 @@ def test_deleted_tasks_hidden_from_list(store):
 def test_create_requires_subject(store):
     with pytest.raises(ToolError):
         TaskCreateTool(store).run(subject="   ")
+
+
+def test_on_change_fires_with_full_list(store):
+    seen: list[list[str]] = []
+    store.set_on_change(lambda tasks: seen.append([t.status for t in tasks]))
+
+    TaskCreateTool(store).run(subject="A")
+    TaskUpdateTool(store).run(task_id="1", status="in_progress")
+    TaskUpdateTool(store).run(task_id="1", status="completed")
+
+    assert seen == [["pending"], ["in_progress"], ["completed"]]
+
+
+def test_on_change_observer_error_does_not_break_mutation(store):
+    def boom(_tasks):
+        raise RuntimeError("observer blew up")
+
+    store.set_on_change(boom)
+    # Mutation must still succeed even though the observer raises.
+    created = json.loads(TaskCreateTool(store).run(subject="Resilient"))
+    assert created["id"] == "1"

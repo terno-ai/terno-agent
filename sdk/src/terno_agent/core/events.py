@@ -52,8 +52,28 @@ class TurnEnd:
     message: AssistantMessage
 
 
+@dataclass(slots=True)
+class TaskListUpdate:
+    """The agent's task/todo list changed.
+
+    Emitted whenever a task is created or updated, carrying the full current
+    list (non-deleted tasks, in creation order) as plain dicts so subscribers
+    — the CLI renderer or an app host pushing a live todo panel to a UI — can
+    mirror it without touching the store. Each dict has ``id``, ``subject``,
+    ``description``, ``active_form`` and ``status``.
+    """
+
+    agent: str
+    tasks: list[dict]
+
+
 AgentEvent = (
-    IterationStart | TextDelta | ToolCallEvent | ToolResultEvent | TurnEnd
+    IterationStart
+    | TextDelta
+    | ToolCallEvent
+    | ToolResultEvent
+    | TurnEnd
+    | TaskListUpdate
 )
 EventHook = Callable[[AgentEvent], None]
 
@@ -62,6 +82,7 @@ __all__ = [
     "AgentEvent",
     "EventHook",
     "IterationStart",
+    "TaskListUpdate",
     "TextDelta",
     "ToolCallEvent",
     "ToolResultEvent",
