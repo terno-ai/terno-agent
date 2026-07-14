@@ -37,10 +37,10 @@ benchmarks = [
     "anthropic>=0.39",
     "datasets>=2.19",
     "docker>=7.0",
-    "harbor>=0.1.32",
+    "harbor>=0.1.32; python_version >= '3.12'",
     "openai>=1.40",
     "swebench",
-    "terminal-bench",
+    "terminal-bench; python_version >= '3.12'",
 ]
 all = [
     "anthropic>=0.39",
