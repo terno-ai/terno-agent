@@ -31,6 +31,7 @@ from terno_agent.core.permissions import (
     PermissionPolicy,
     PermissionRequest,
 )
+from terno_agent.tools.ask_user import AskCallback
 
 if TYPE_CHECKING:
     from terno_agent.knowledge.runner import KnowledgeReport
@@ -71,6 +72,7 @@ class Agent:
         allow_rules: list | tuple | None = None,
         on_permission_request: PermissionCallback | None = None,
         permission_policy: PermissionPolicy | None = None,
+        ask_callback: AskCallback | None = None,
         sandbox: "Sandbox | None" = None,
         task_store: "TaskStore | None" = None,
         user_memory_root: str | Path | None = None,
@@ -103,6 +105,7 @@ class Agent:
             permission_mode=permission_mode,
             allow_rules=allow_rules,
             on_permission_request=on_permission_request,
+            ask_callback=ask_callback,
             sandbox=sandbox,
             task_store=task_store,
             permission_policy=permission_policy,
@@ -142,6 +145,7 @@ class Agent:
         max_iterations: int | None = None,
         bash_timeout_s: int = 120,
         run_python_timeout_s: int = 30,
+        ask_callback: AskCallback | None = None,
         sandbox: "Sandbox | None" = None,
         task_store: "TaskStore | None" = None,
     ) -> Agent:
@@ -154,6 +158,11 @@ class Agent:
         Pass ``task_store`` to inject a persistence-backed task store (e.g.
         terno-ai's database store). When omitted the agent uses a
         process-local in-memory store, so the SDK works fully standalone.
+
+        Pass ``ask_callback`` to enable the ``ask_user`` tool: a callable
+        receiving the pending ``list[Question]`` and returning one
+        ``Answer`` per question. Without it, ``ask_user`` is not offered
+        to the model at all (matching the SDK's standalone default).
         """
         return cls(
             config=config,
@@ -163,6 +172,7 @@ class Agent:
             max_iterations=max_iterations,
             bash_timeout_s=bash_timeout_s,
             run_python_timeout_s=run_python_timeout_s,
+            ask_callback=ask_callback,
             sandbox=sandbox,
             task_store=task_store,
         )
