@@ -51,7 +51,7 @@ def test_agent_run_delegates_to_terno_agent(monkeypatch):
         def __init__(self):
             self.calls: list[str] = []
 
-        def run(self, task: str):
+        def run(self, task: str, *, extra_context: str | None = None):
             self.calls.append(task)
             return sentinel
 

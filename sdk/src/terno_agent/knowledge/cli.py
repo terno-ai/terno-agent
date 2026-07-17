@@ -16,7 +16,6 @@ from rich.text import Text
 
 from terno_agent.config import Config
 from terno_agent.core.exceptions import ConfigError
-from terno_agent.db.connection import Database
 from terno_agent.knowledge.agent import KnowledgeExtractionAgent
 from terno_agent.knowledge.prompts import PromptChannel, UserPrompt, UserResponse
 from terno_agent.knowledge.runner import KnowledgeReport
@@ -120,7 +119,12 @@ async def run_knowledge_extraction(
     console = console or Console()
     if require_database and not cfg.database_url:
         raise ConfigError("TERNO_DATABASE_URL is required for knowledge extraction.")
-    db = Database(cfg.database_url) if cfg.database_url else None
+    if cfg.database_url:
+        raise ConfigError(
+            "Database-backed knowledge extraction is no longer available "
+            "(terno_agent.db was removed)."
+        )
+    db = None
     llm = create_llm_client(
         provider=cfg.llm_provider,
         model=cfg.llm_model,

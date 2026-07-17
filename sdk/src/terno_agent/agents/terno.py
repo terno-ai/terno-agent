@@ -14,12 +14,6 @@ import sys
 from pathlib import Path
 
 from terno_agent.agents.base import AgentRun, BaseAgent
-from terno_agent.attachments import (
-    AttachmentInput,
-    AttachmentManager,
-    AttachmentPolicy,
-    AttachmentStore,
-)
 from terno_agent.config import Config
 from terno_agent.core.cancel import CancelToken
 from terno_agent.core.compaction import CompactionHook
@@ -92,7 +86,6 @@ class TernoAgent(BaseAgent):
         memory_store: MemoryStore | None = None,
         memory_retriever: MemoryRetriever | None = None,
         memory_extractor: MemoryExtractor | None = None,
-        attachment_manager: AttachmentManager | None = None,
         ask_callback: AskCallback | None = None,
         permission_hook: PreToolUseHook | None = None,
         permission_policy: PermissionPolicy | None = None,
@@ -120,7 +113,6 @@ class TernoAgent(BaseAgent):
         # it inline with the ordinary file tools. This provider injects the
         # MEMORY.md index(es) and folder paths into each turn's context.
         self.memory_context = memory_context
-        self.attachment_manager = attachment_manager
         self.ask_callback = ask_callback
 
         resolved = _resolve_permissions(
@@ -262,7 +254,6 @@ class TernoAgent(BaseAgent):
         *,
         extra_context: str | None = None,
         content_parts: list[ContentPart] | None = None,
-        attachments: list[AttachmentInput] | None = None,
     ) -> AgentRun:
         if self.memory_retriever is not None:
             recalled = self.memory_retriever.fetch_relevant(task)
@@ -286,15 +277,6 @@ class TernoAgent(BaseAgent):
             print("[memory] no memory_context on this agent — nothing injected")
         if content_parts is not None:
             return super().run(task, extra_context=extra_context, content_parts=content_parts)
-        if attachments:
-            if self.attachment_manager is None:
-                raise ConfigError("Attachments are disabled for this agent.")
-            content_parts = self.attachment_manager.build_parts(task, list(attachments))
-            return super().run(
-                task,
-                extra_context=extra_context,
-                content_parts=content_parts,
-            )
         return super().run(task, extra_context=extra_context)
 
     # ----- Construction helpers ----------------------------------------- #
@@ -419,8 +401,6 @@ class TernoAgent(BaseAgent):
                 threshold_input_tokens=config.compaction_threshold_tokens,
                 keep_last_turns=config.compaction_keep_last_turns,
             )
-        attachment_manager = _build_attachments(config, resolved_workdir)
-
         return cls(
             llm,
             workdir=resolved_workdir,
@@ -435,7 +415,6 @@ class TernoAgent(BaseAgent):
             memory_store=memory_store,
             memory_retriever=memory_retriever,
             memory_extractor=memory_extractor,
-            attachment_manager=attachment_manager,
             ask_callback=ask_callback,
             permission_hook=permission_hook,
             permission_policy=permission_policy,
@@ -448,13 +427,8 @@ class TernoAgent(BaseAgent):
 
     # ----- Convenience --------------------------------------------------- #
 
-    def ask(
-        self,
-        task: str,
-        *,
-        attachments: list[AttachmentInput] | None = None,
-    ) -> AgentRun:
-        return self.run(task, attachments=attachments)
+    def ask(self, task: str) -> AgentRun:
+        return self.run(task)
 
 
 def _build_memory(
@@ -550,20 +524,6 @@ def _build_memory_context(
     return MemoryContextProvider(
         user_root, org_root=org_root, session_id=config.session_id
     )
-
-
-def _build_attachments(config: Config, workdir: Path) -> AttachmentManager | None:
-    if not config.attachments_enabled:
-        return None
-    root = Path(config.attachments_dir).expanduser()
-    if not root.is_absolute():
-        root = workdir / root
-    policy = AttachmentPolicy(
-        max_attachment_bytes=config.max_attachment_bytes,
-        max_attachments_per_turn=config.max_attachments_per_turn,
-        image_mode=config.attachment_image_mode,
-    )
-    return AttachmentManager(AttachmentStore(root), policy)
 
 
 def _with_skill_catalog(system_prompt: str, catalog: SkillCatalog) -> str:

@@ -19,7 +19,6 @@ from typing import TYPE_CHECKING, Any
 
 from terno_agent.agents.base import AgentRun
 from terno_agent.agents.terno import TernoAgent
-from terno_agent.attachments import AttachmentInput
 from terno_agent.config import Config
 from terno_agent.core.events import EventHook
 from terno_agent.core.hooks import Hook, HookEvent, UsageMeter
@@ -183,7 +182,6 @@ class Agent:
         self,
         task: str,
         *,
-        attachments: list[AttachmentInput] | None = None,
         extra_context: str | None = None,
     ) -> AgentRun:
         """Run the agent on a task and return the result.
@@ -192,25 +190,11 @@ class Agent:
         block for this run only (e.g. tool/usage guidance the host wants the
         model to see without baking it into the persistent system prompt).
         """
-        if attachments is None:
-            return self._agent.run(task, extra_context=extra_context)
-        return self._agent.run(
-            task, attachments=attachments, extra_context=extra_context
-        )
+        return self._agent.run(task, extra_context=extra_context)
 
-    def ask(
-        self,
-        task: str,
-        *,
-        attachments: list[AttachmentInput] | None = None,
-        extra_context: str | None = None,
-    ) -> AgentRun:
+    def ask(self, task: str) -> AgentRun:
         """Alias for `run`."""
-        if attachments is None:
-            return self._agent.ask(task, extra_context=extra_context)
-        return self._agent.ask(
-            task, attachments=attachments, extra_context=extra_context
-        )
+        return self._agent.ask(task)
 
     # ----- Conversation state ----------------------------------------------- #
 

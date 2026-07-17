@@ -20,7 +20,6 @@ from rich.text import Text
 from terno_agent import __version__
 from terno_agent.agents.base import AgentRun
 from terno_agent.agents.terno import TernoAgent
-from terno_agent.attachments import AttachmentInput
 from terno_agent.config import Config
 from terno_agent.core.events import (
     AgentEvent,
@@ -104,13 +103,6 @@ def _build_parser() -> argparse.ArgumentParser:
     sub = p.add_subparsers(dest="command")
 
     ask = sub.add_parser("ask", help="Run the agent on a single task and exit.")
-    ask.add_argument(
-        "--attach",
-        action="append",
-        default=[],
-        metavar="PATH",
-        help="Attach a file to this turn. May be passed multiple times.",
-    )
     ask.add_argument("task", nargs="+", help="The task to run.")
     ask.set_defaults(func=_cmd_ask)
 
@@ -137,12 +129,7 @@ def _cmd_ask(args: argparse.Namespace) -> int:
     renderer = None if args.quiet else AgentRenderer(console)
     agent = _build_agent(args, on_event=renderer)
     try:
-        result, _exc = _run_turn_with_cancel(
-            agent,
-            task,
-            console,
-            attachments=args.attach,
-        )
+        result, _exc = _run_turn_with_cancel(agent, task, console)
         if _exc is not None and not isinstance(_exc, TernoError):
             raise _exc
         if _exc is not None:
@@ -168,7 +155,6 @@ def _cmd_chat(args: argparse.Namespace) -> int:
         "Hit Ctrl-C once to stop a running turn; twice in 2s to quit.\n"
     )
     last_ctrlc = 0.0
-    pending_attachments: list[str] = []
     try:
         while True:
             try:
@@ -197,19 +183,6 @@ def _cmd_chat(args: argparse.Namespace) -> int:
                 agent.clear_history()
                 console.print("[dim](conversation cleared)[/]\n")
                 continue
-            if lowered.startswith("/attach "):
-                path = line[len("/attach ") :].strip()
-                if path:
-                    pending_attachments.append(path)
-                    console.print(f"[dim]attached for next turn:[/] {path}")
-                continue
-            if lowered == "/attachments":
-                if pending_attachments:
-                    for path in pending_attachments:
-                        console.print(f"[dim]- {path}[/]")
-                else:
-                    console.print("[dim](no pending attachments)[/]")
-                continue
             if lowered in {"/usage", "/tokens"}:
                 u = agent.usage
                 console.print(
@@ -219,14 +192,7 @@ def _cmd_chat(args: argparse.Namespace) -> int:
                 )
                 continue
 
-            turn_attachments: list[AttachmentInput] = list(pending_attachments)
-            pending_attachments = []
-            result, exc = _run_turn_with_cancel(
-                agent,
-                line,
-                console,
-                attachments=turn_attachments,
-            )
+            result, exc = _run_turn_with_cancel(agent, line, console)
             if exc is not None:
                 if isinstance(exc, TernoError):
                     console.print(f"[bold red]error:[/] {exc}")
@@ -251,8 +217,6 @@ def _run_turn_with_cancel(
     agent: TernoAgent,
     task: str,
     console: Console,
-    *,
-    attachments: list[AttachmentInput] | None = None,
 ) -> tuple[AgentRun | None, BaseException | None]:
     """Run one agent turn on a worker thread with Ctrl-C → cancel wired up.
 
@@ -263,7 +227,7 @@ def _run_turn_with_cancel(
 
     def _worker() -> None:
         try:
-            holder["result"] = agent.run(task, attachments=attachments)
+            holder["result"] = agent.run(task)
         except BaseException as exc:
             holder["exc"] = exc
 
