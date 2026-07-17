@@ -50,69 +50,111 @@ class LocalSandbox:
             script = os.path.join(workdir, "snippet.py")
             with open(script, "w", encoding="utf-8") as f:
                 f.write(code)
-            child_env = {**os.environ, **(env or {})}
+            return self._exec(
+                [self.python, script],
+                workdir=workdir,
+                env=env,
+                timeout_s=timeout_s,
+                cancel_token=cancel_token,
+                what="run_python",
+                launch_error="failed to launch python",
+            )
 
-            if cancel_token is not None and cancel_token.is_cancelled:
-                raise AgentCancelled("cancelled before run_python started")
+    def run_shell(
+        self,
+        command: str,
+        *,
+        timeout_s: int = 30,
+        cwd: str | None = None,
+        env: dict[str, str] | None = None,
+        cancel_token: CancelToken | None = None,
+    ) -> ExecutionResult:
+        # Unlike run_python (isolated temp dir), shell commands run in the
+        # caller's directory on the host so they can see the real project.
+        return self._exec(
+            ["sh", "-c", command],
+            workdir=cwd or os.getcwd(),
+            env=env,
+            timeout_s=timeout_s,
+            cancel_token=cancel_token,
+            what="run_shell",
+            launch_error="failed to launch shell",
+        )
 
-            try:
-                proc = subprocess.Popen(
-                    [self.python, script],
-                    cwd=workdir,
-                    env=child_env,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    text=True,
-                    start_new_session=True,
-                )
-            except OSError as exc:
-                return ExecutionResult(
-                    stdout="",
-                    stderr=f"failed to launch python: {exc}",
-                    exit_code=127,
-                )
+    def _exec(
+        self,
+        argv: list[str],
+        *,
+        workdir: str,
+        env: dict[str, str] | None,
+        timeout_s: int,
+        cancel_token: CancelToken | None,
+        what: str,
+        launch_error: str,
+    ) -> ExecutionResult:
+        child_env = {**os.environ, **(env or {})}
 
-            deadline = time.monotonic() + timeout_s
-            timed_out = False
-            cancelled = False
-            stdout, stderr = "", ""
-            try:
-                while True:
-                    try:
-                        stdout, stderr = proc.communicate(timeout=_POLL_INTERVAL_S)
-                        break
-                    except subprocess.TimeoutExpired:
-                        pass
-                    if cancel_token is not None and cancel_token.is_cancelled:
-                        cancelled = True
-                        _terminate_group(proc)
-                        stdout, stderr = _drain(proc)
-                        break
-                    if time.monotonic() >= deadline:
-                        timed_out = True
-                        _terminate_group(proc)
-                        stdout, stderr = _drain(proc)
-                        break
-            finally:
-                if proc.poll() is None:
+        if cancel_token is not None and cancel_token.is_cancelled:
+            raise AgentCancelled(f"cancelled before {what} started")
+
+        try:
+            proc = subprocess.Popen(
+                argv,
+                cwd=workdir,
+                env=child_env,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                start_new_session=True,
+            )
+        except OSError as exc:
+            return ExecutionResult(
+                stdout="",
+                stderr=f"{launch_error}: {exc}",
+                exit_code=127,
+            )
+
+        deadline = time.monotonic() + timeout_s
+        timed_out = False
+        cancelled = False
+        stdout, stderr = "", ""
+        try:
+            while True:
+                try:
+                    stdout, stderr = proc.communicate(timeout=_POLL_INTERVAL_S)
+                    break
+                except subprocess.TimeoutExpired:
+                    pass
+                if cancel_token is not None and cancel_token.is_cancelled:
+                    cancelled = True
                     _terminate_group(proc)
-                    _drain(proc)
+                    stdout, stderr = _drain(proc)
+                    break
+                if time.monotonic() >= deadline:
+                    timed_out = True
+                    _terminate_group(proc)
+                    stdout, stderr = _drain(proc)
+                    break
+        finally:
+            if proc.poll() is None:
+                _terminate_group(proc)
+                _drain(proc)
 
-            if cancelled:
-                raise AgentCancelled("run_python cancelled by user")
+        if cancelled:
+            raise AgentCancelled(f"{what} cancelled by user")
 
-            if timed_out:
-                return ExecutionResult(
-                    stdout=stdout or "",
-                    stderr=stderr or "",
-                    exit_code=124,
-                    timed_out=True,
-                )
+        if timed_out:
             return ExecutionResult(
                 stdout=stdout or "",
                 stderr=stderr or "",
-                exit_code=proc.returncode,
+                exit_code=124,
+                timed_out=True,
             )
+        return ExecutionResult(
+            stdout=stdout or "",
+            stderr=stderr or "",
+            exit_code=proc.returncode,
+        )
 
 
 def _terminate_group(proc: subprocess.Popen) -> None:

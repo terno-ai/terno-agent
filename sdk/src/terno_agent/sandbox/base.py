@@ -50,3 +50,12 @@ class Sandbox(Protocol):
         timeout_s: int = 30,
         env: dict[str, str] | None = None,
     ) -> ExecutionResult: ...
+
+    def run_shell(
+        self,
+        command: str,
+        *,
+        timeout_s: int = 30,
+        cwd: str | None = None,
+        env: dict[str, str] | None = None,
+    ) -> ExecutionResult: ...

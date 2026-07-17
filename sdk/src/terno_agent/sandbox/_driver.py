@@ -27,7 +27,7 @@ SENTINEL = "\x1e__TERNO_SANDBOX_RESPONSE__\x1e"
 # Sent verbatim into the container / subprocess as ``python -u -c``. Kept
 # as a module-level string so tests can also exec it locally.
 DRIVER_SOURCE = '''
-import sys, io, json, traceback, contextlib
+import sys, io, json, traceback, contextlib, subprocess
 
 SENTINEL = "\\x1e__TERNO_SANDBOX_RESPONSE__\\x1e"
 
@@ -37,6 +37,20 @@ ns = {"__name__": "__terno_sandbox__", "__builtins__": __builtins__}
 def _emit(response):
     sys.__stdout__.write(SENTINEL + json.dumps(response) + "\\n")
     sys.__stdout__.flush()
+
+
+def _run_shell(command):
+    try:
+        proc = subprocess.run(
+            ["sh", "-c", command], capture_output=True, text=True
+        )
+    except BaseException as exc:
+        return {"stdout": "", "stderr": "shell launch failed: " + str(exc), "exit_code": 1}
+    return {
+        "stdout": proc.stdout,
+        "stderr": proc.stderr,
+        "exit_code": proc.returncode,
+    }
 
 
 def _run_one(code):
@@ -75,6 +89,13 @@ def _loop():
             request = json.loads(line)
         except Exception as exc:
             _emit({"stdout": "", "stderr": f"driver protocol error: {exc}", "exit_code": 1})
+            continue
+        if "shell" in request:
+            command = request.get("shell", "")
+            if not isinstance(command, str):
+                _emit({"stdout": "", "stderr": "driver: 'shell' must be a string", "exit_code": 1})
+                continue
+            _emit(_run_shell(command))
             continue
         code = request.get("code", "")
         if not isinstance(code, str):

@@ -1,47 +1,55 @@
 """Shell-execution tool.
 
-Runs commands via the user's default shell so chains, redirection, and
-expansions work naturally. Output is combined stdout+stderr, truncated
-to a reasonable size to protect the LLM's context window. The tool
-runs in a fixed working directory, enforces a wall-clock timeout, and
-honours an optional `CancelToken` — when cancellation is signalled the
-whole process group is terminated (SIGTERM then SIGKILL).
+Runs commands through a `Sandbox`'s ``run_shell``. The default backend
+(`LocalSandbox`) executes the command directly on the host in the agent's
+working directory; a Docker-backed sandbox runs it inside the container
+instead. Either way the tool goes through the same ``run_shell`` entry
+point. Output is combined stdout+stderr, truncated to protect the LLM's
+context window; the sandbox enforces the wall-clock timeout and honours
+an optional `CancelToken`.
 """
 
 from __future__ import annotations
 
-import os
-import signal
-import subprocess
-import time
-from dataclasses import dataclass, field
+import inspect
 from pathlib import Path
 from typing import Any
 
 from terno_agent.core.cancel import CancelToken
 from terno_agent.core.exceptions import AgentCancelled, ToolError
 from terno_agent.core.tool import ToolSchema
+from terno_agent.sandbox.base import Sandbox
+from terno_agent.sandbox.local import LocalSandbox
 
 _MAX_OUTPUT_BYTES = 64_000
-_POLL_INTERVAL_S = 0.1
-_TERM_GRACE_S = 0.5
 
 
-@dataclass
 class BashTool:
-    workdir: Path
-    default_timeout_s: int = 120
-    cancel_token: CancelToken | None = field(default=None)
+    def __init__(
+        self,
+        *,
+        workdir: Path,
+        sandbox: Sandbox | None = None,
+        default_timeout_s: int = 120,
+        cancel_token: CancelToken | None = None,
+    ) -> None:
+        self.workdir = workdir
+        # Bash is always sandbox-backed. With no sandbox configured we run
+        # on the host via LocalSandbox (in `workdir`); a Docker sandbox runs
+        # the command inside its container.
+        self.sandbox: Sandbox = sandbox or LocalSandbox()
+        self.default_timeout_s = default_timeout_s
+        self.cancel_token = cancel_token
 
     @property
     def schema(self) -> ToolSchema:
         return ToolSchema(
             name="bash",
             description=(
-                "Run a shell command (POSIX `sh -c`) in the agent's working "
-                "directory. Returns combined stdout+stderr and the exit "
-                "code. Output is truncated if very large. Be careful with "
-                "destructive commands (rm -rf, force pushes, etc.)."
+                "Run a shell command (POSIX `sh -c`) and return combined "
+                "stdout+stderr and the exit code. Output is truncated if very "
+                "large. Be careful with destructive commands (rm -rf, force "
+                "pushes, etc.)."
             ),
             parameters={
                 "type": "object",
@@ -74,89 +82,26 @@ class BashTool:
         if token is not None and token.is_cancelled:
             raise AgentCancelled("cancelled before bash started")
 
-        try:
-            proc = subprocess.Popen(
-                ["sh", "-c", command],
-                cwd=str(self.workdir),
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                start_new_session=True,
-            )
-        except OSError as exc:
-            raise ToolError(f"Failed to launch shell: {exc}") from exc
+        run_shell = getattr(self.sandbox, "run_shell", None)
+        if run_shell is None:
+            raise ToolError("configured sandbox does not support shell commands.")
 
-        deadline = time.monotonic() + timeout
-        timed_out = False
-        cancelled = False
-        try:
-            while True:
-                try:
-                    stdout, stderr = proc.communicate(timeout=_POLL_INTERVAL_S)
-                    break
-                except subprocess.TimeoutExpired:
-                    pass
-                if token is not None and token.is_cancelled:
-                    cancelled = True
-                    _terminate_group(proc)
-                    stdout, stderr = _drain(proc)
-                    break
-                if time.monotonic() >= deadline:
-                    timed_out = True
-                    _terminate_group(proc)
-                    stdout, stderr = _drain(proc)
-                    break
-        finally:
-            if proc.poll() is None:
-                _terminate_group(proc)
-                _drain(proc)
+        # Forward `cwd`/`cancel_token` only if this sandbox's run_shell accepts
+        # them, so third-party sandboxes on an older signature don't break.
+        params = inspect.signature(run_shell).parameters
+        extra: dict[str, Any] = {}
+        if "cwd" in params:
+            extra["cwd"] = str(self.workdir)
+        if "cancel_token" in params and token is not None:
+            extra["cancel_token"] = token
 
-        if cancelled:
-            # Surface as a clean cancellation up to the agent loop.
-            raise AgentCancelled("bash cancelled by user")
-
-        exit_code = proc.returncode if not timed_out else 124
-        suffix = ""
-        if timed_out:
-            suffix = f"\n[timed out after {timeout}s]"
+        result = run_shell(command, timeout_s=timeout, **extra)
+        suffix = f"\n[timed out after {timeout}s]" if result.timed_out else ""
         return _format_output(
-            exit_code=exit_code,
-            stdout=stdout or "",
-            stderr=(stderr or "") + suffix,
+            exit_code=result.exit_code,
+            stdout=result.stdout,
+            stderr=result.stderr + suffix,
         )
-
-
-def _terminate_group(proc: subprocess.Popen) -> None:
-    """Send SIGTERM to the whole process group, then SIGKILL after a grace."""
-    try:
-        pgid = os.getpgid(proc.pid)
-    except OSError:
-        pgid = None
-    if pgid is not None:
-        try:
-            os.killpg(pgid, signal.SIGTERM)
-        except OSError:
-            pass
-    try:
-        proc.wait(timeout=_TERM_GRACE_S)
-    except subprocess.TimeoutExpired:
-        if pgid is not None:
-            try:
-                os.killpg(pgid, signal.SIGKILL)
-            except OSError:
-                pass
-        try:
-            proc.wait(timeout=_TERM_GRACE_S)
-        except subprocess.TimeoutExpired:
-            pass
-
-
-def _drain(proc: subprocess.Popen) -> tuple[str, str]:
-    """Drain stdout/stderr after termination without blocking forever."""
-    try:
-        return proc.communicate(timeout=_TERM_GRACE_S)
-    except subprocess.TimeoutExpired:
-        return ("", "")
 
 
 def _format_output(*, exit_code: int, stdout: str, stderr: str) -> str:

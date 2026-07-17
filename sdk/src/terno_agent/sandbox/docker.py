@@ -243,8 +243,44 @@ class DockerSandbox:
         env: dict[str, str] | None = None,
         cancel_token: CancelToken | None = None,
     ) -> ExecutionResult:
+        return self._exec(
+            {"code": code},
+            timeout_s=timeout_s,
+            cancel_token=cancel_token,
+            what="run_python",
+            timeout_msg=f"sandbox: snippet exceeded {timeout_s}s",
+        )
+
+    def run_shell(
+        self,
+        command: str,
+        *,
+        timeout_s: int = 30,
+        cwd: str | None = None,
+        env: dict[str, str] | None = None,
+        cancel_token: CancelToken | None = None,
+    ) -> ExecutionResult:
+        # `cwd` (a host path) is meaningless inside the container — the driver
+        # runs the command in the container's working dir (`/work`).
+        return self._exec(
+            {"shell": command},
+            timeout_s=timeout_s,
+            cancel_token=cancel_token,
+            what="run_shell",
+            timeout_msg=f"sandbox: command exceeded {timeout_s}s",
+        )
+
+    def _exec(
+        self,
+        request_payload: dict[str, str],
+        *,
+        timeout_s: int,
+        cancel_token: CancelToken | None,
+        what: str,
+        timeout_msg: str,
+    ) -> ExecutionResult:
         if cancel_token is not None and cancel_token.is_cancelled:
-            raise AgentCancelled("cancelled before run_python started")
+            raise AgentCancelled(f"cancelled before {what} started")
 
         # `env` is intentionally ignored: the long-running driver has
         # already inherited the container's environment at start time.
@@ -253,7 +289,7 @@ class DockerSandbox:
         # and let callers set TERNO_SANDBOX env up-front instead.
         with self._lock:
             self._ensure_session()
-            request = json.dumps({"code": code}) + "\n"
+            request = json.dumps(request_payload) + "\n"
             try:
                 self._sock.send(request.encode("utf-8"))
             except (BrokenPipeError, OSError) as exc:
@@ -269,12 +305,12 @@ class DockerSandbox:
             except _SandboxTimeout:
                 self._teardown(remove=not self.persist)
                 return ExecutionResult(
-                    stdout="", stderr=f"sandbox: snippet exceeded {timeout_s}s",
+                    stdout="", stderr=timeout_msg,
                     exit_code=124, timed_out=True,
                 )
             except _SandboxCancelled:
                 self._teardown(remove=not self.persist)
-                raise AgentCancelled("run_python cancelled by user")
+                raise AgentCancelled(f"{what} cancelled by user")
             except _SandboxDriverGone as exc:
                 self._teardown(remove=not self.persist)
                 raise SandboxError(str(exc)) from exc

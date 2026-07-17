@@ -36,6 +36,22 @@ def driver() -> Iterator[subprocess.Popen]:
                 proc.kill()
 
 
+def _send(driver: subprocess.Popen, request: dict, timeout: float = 5.0) -> dict:
+    driver.stdin.write(json.dumps(request) + "\n")
+    driver.stdin.flush()
+    deadline = time.monotonic() + timeout
+    while True:
+        if time.monotonic() > deadline:
+            raise AssertionError("driver did not respond in time")
+        line = driver.stdout.readline()
+        if not line:
+            raise AssertionError("driver closed stdout unexpectedly")
+        idx = line.find(SENTINEL)
+        if idx == -1:
+            continue
+        return json.loads(line[idx + len(SENTINEL):])
+
+
 def _call(driver: subprocess.Popen, code: str, timeout: float = 5.0) -> dict:
     driver.stdin.write(json.dumps({"code": code}) + "\n")
     driver.stdin.flush()
@@ -93,6 +109,38 @@ def test_system_exit_does_not_kill_driver(driver):
     # Next call still works.
     r2 = _call(driver, "print('ok')")
     assert r2["stdout"].strip() == "ok"
+
+
+def test_shell_command_runs(driver):
+    r = _send(driver, {"shell": "echo hello"})
+    assert r["stdout"].strip() == "hello"
+    assert r["exit_code"] == 0
+
+
+def test_shell_nonzero_exit_code(driver):
+    r = _send(driver, {"shell": "exit 3"})
+    assert r["exit_code"] == 3
+
+
+def test_shell_stderr_captured(driver):
+    r = _send(driver, {"shell": "echo oops 1>&2"})
+    assert r["stderr"].strip() == "oops"
+
+
+def test_shell_and_python_share_the_driver(driver):
+    # A shell command must not disturb the persistent Python namespace.
+    _call(driver, "x = 5")
+    _send(driver, {"shell": "true"})
+    r = _call(driver, "print(x)")
+    assert r["stdout"].strip() == "5"
+
+
+def test_shell_non_string_does_not_kill_driver(driver):
+    bad = _send(driver, {"shell": 123})
+    assert bad["exit_code"] == 1
+    assert "must be a string" in bad["stderr"]
+    ok = _send(driver, {"shell": "echo ok"})
+    assert ok["stdout"].strip() == "ok"
 
 
 def test_malformed_request_does_not_kill_driver(driver):

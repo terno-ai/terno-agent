@@ -144,6 +144,7 @@ class TernoAgent(BaseAgent):
                 workdir=self.workdir,
                 default_timeout_s=bash_timeout_s,
                 cancel_token=token,
+                sandbox=sandbox,
             ),
             MonitorTool(
                 workdir=self.workdir,
