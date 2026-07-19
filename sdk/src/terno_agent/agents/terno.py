@@ -135,11 +135,11 @@ class TernoAgent(BaseAgent):
         token = cancel_token or CancelToken()
 
         tools: list = [
-            ReadFileTool(workdir=self.workdir),
-            WriteFileTool(workdir=self.workdir),
-            EditFileTool(workdir=self.workdir),
-            GlobTool(workdir=self.workdir),
-            GrepTool(workdir=self.workdir),
+            ReadFileTool(workdir=self.workdir, sandbox=sandbox),
+            WriteFileTool(workdir=self.workdir, sandbox=sandbox),
+            EditFileTool(workdir=self.workdir, sandbox=sandbox),
+            GlobTool(workdir=self.workdir, sandbox=sandbox),
+            GrepTool(workdir=self.workdir, sandbox=sandbox),
             BashTool(
                 workdir=self.workdir,
                 default_timeout_s=bash_timeout_s,

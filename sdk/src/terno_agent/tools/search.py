@@ -1,11 +1,15 @@
 """Filesystem search tools: glob (file patterns) and grep (regex content).
 
 Both are read-only and scoped to the agent's working directory by
-default; callers can pass an explicit ``path`` to widen the search.
+default; callers can pass an explicit ``path`` to widen the search. When a
+``sandbox`` is also injected, a `path` argument outside the agent's local
+`workdir` is searched *inside the sandbox* instead — see `files.py` for why
+(the same container-mounted-directory reasoning applies here).
 """
 
 from __future__ import annotations
 
+import json
 import re
 import subprocess
 from dataclasses import dataclass
@@ -15,10 +19,12 @@ from typing import Any
 
 from terno_agent.core.exceptions import ToolError
 from terno_agent.core.tool import ToolSchema
+from terno_agent.sandbox.base import Sandbox
 
 _GLOB_DEFAULT_LIMIT = 200
 _GREP_DEFAULT_LIMIT = 200
 _GREP_TIMEOUT_S = 30
+_SANDBOX_TIMEOUT_S = 30
 
 
 def _resolve_root(root_arg: Any, workdir: Path) -> Path:
@@ -30,9 +36,37 @@ def _resolve_root(root_arg: Any, workdir: Path) -> Path:
     return path
 
 
+def _use_sandbox(path: Path, workdir: Path | None, sandbox: Sandbox | None) -> bool:
+    """See `files._use_sandbox` — same rule, duplicated to avoid a cross-file
+    dependency for two tools that already stand alone."""
+    if sandbox is None or not path.is_absolute():
+        return False
+    if workdir is not None:
+        try:
+            path.relative_to(workdir)
+            return False
+        except ValueError:
+            pass
+    return True
+
+
+def _run_json(sandbox: Sandbox, code_template: str, payload: dict) -> Any:
+    code = code_template % (json.dumps(payload),)
+    result = sandbox.run_python(code, timeout_s=_SANDBOX_TIMEOUT_S)
+    if result.exit_code != 0:
+        raise ToolError(f"sandbox operation failed: {result.stderr or result.stdout}")
+    try:
+        return json.loads(result.stdout)
+    except (json.JSONDecodeError, TypeError) as exc:
+        raise ToolError(
+            f"sandbox operation returned unparsable output: {result.stdout!r}"
+        ) from exc
+
+
 @dataclass
 class GlobTool:
     workdir: Path
+    sandbox: Sandbox | None = None
 
     @property
     def schema(self) -> ToolSchema:
@@ -77,37 +111,73 @@ class GlobTool:
         if not pattern:
             raise ToolError("glob requires a 'pattern'.")
         root = _resolve_root(kwargs.get("path"), self.workdir)
-        if not root.exists():
-            raise ToolError(f"Path not found: {root}")
-        if not root.is_dir():
-            raise ToolError(f"Path is not a directory: {root}")
         limit = int(kwargs.get("limit") or _GLOB_DEFAULT_LIMIT)
         if limit <= 0:
             raise ToolError("limit must be positive.")
 
-        try:
-            matches = [p for p in root.glob(pattern) if p.is_file()]
-        except (OSError, ValueError) as exc:
-            raise ToolError(f"glob failed: {exc}") from exc
+        if _use_sandbox(root, self.workdir, self.sandbox):
+            data = _run_json(
+                self.sandbox,
+                _GLOB_TEMPLATE,
+                {"root": str(root), "pattern": pattern, "limit": limit},
+            )
+            if "error" in data:
+                raise ToolError(data["error"])
+            matches, total = data["matches"], data["total"]
+        else:
+            if not root.exists():
+                raise ToolError(f"Path not found: {root}")
+            if not root.is_dir():
+                raise ToolError(f"Path is not a directory: {root}")
+            try:
+                found = [p for p in root.glob(pattern) if p.is_file()]
+            except (OSError, ValueError) as exc:
+                raise ToolError(f"glob failed: {exc}") from exc
+            try:
+                found.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+            except OSError:
+                found.sort()
+            total = len(found)
+            matches = [str(p) for p in found[:limit]]
 
         if not matches:
             return f"(no files matched {pattern!r} under {root})"
-
-        try:
-            matches.sort(key=lambda p: p.stat().st_mtime, reverse=True)
-        except OSError:
-            matches.sort()
-
-        shown = matches[:limit]
-        body = "\n".join(str(p) for p in shown)
-        if len(matches) > limit:
-            body += f"\n... ({len(matches) - limit} more matches truncated)"
+        body = "\n".join(matches)
+        if total > limit:
+            body += f"\n... ({total - limit} more matches truncated)"
         return body
+
+
+_GLOB_TEMPLATE = """
+import json, pathlib
+data = json.loads(%r)
+root = pathlib.Path(data["root"])
+pattern = data["pattern"]
+limit = data["limit"]
+if not root.exists():
+    print(json.dumps({"error": "Path not found: " + str(root)}))
+elif not root.is_dir():
+    print(json.dumps({"error": "Path is not a directory: " + str(root)}))
+else:
+    try:
+        found = [p for p in root.glob(pattern) if p.is_file()]
+    except (OSError, ValueError) as exc:
+        print(json.dumps({"error": "glob failed: " + str(exc)}))
+    else:
+        try:
+            found.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+        except OSError:
+            found.sort()
+        total = len(found)
+        shown = [str(p) for p in found[:limit]]
+        print(json.dumps({"matches": shown, "total": total}))
+"""
 
 
 @dataclass
 class GrepTool:
     workdir: Path
+    sandbox: Sandbox | None = None
 
     @property
     def schema(self) -> ToolSchema:
@@ -161,13 +231,36 @@ class GrepTool:
         if not pattern:
             raise ToolError("grep requires a 'pattern'.")
         root = _resolve_root(kwargs.get("path"), self.workdir)
-        if not root.exists():
-            raise ToolError(f"Path not found: {root}")
         glob_filter = kwargs.get("glob")
         case_insensitive = bool(kwargs.get("case_insensitive"))
         limit = int(kwargs.get("limit") or _GREP_DEFAULT_LIMIT)
         if limit <= 0:
             raise ToolError("limit must be positive.")
+
+        if _use_sandbox(root, self.workdir, self.sandbox):
+            data = _run_json(
+                self.sandbox,
+                _GREP_TEMPLATE,
+                {
+                    "root": str(root),
+                    "pattern": str(pattern),
+                    "glob_filter": glob_filter,
+                    "case_insensitive": case_insensitive,
+                    "limit": limit,
+                },
+            )
+            if "error" in data:
+                raise ToolError(data["error"])
+            matches, total = data["matches"], data["total"]
+            if not matches:
+                return f"(no matches for {pattern!r} under {root})"
+            body = "\n".join(matches)
+            if total > limit:
+                body += f"\n... ({total - limit} more matches truncated)"
+            return body
+
+        if not root.exists():
+            raise ToolError(f"Path not found: {root}")
 
         rg_result = _ripgrep_search(
             pattern=str(pattern),
@@ -185,6 +278,48 @@ class GrepTool:
             case_insensitive=case_insensitive,
             limit=limit,
         )
+
+
+_GREP_TEMPLATE = """
+import json, pathlib, re
+data = json.loads(%r)
+root = pathlib.Path(data["root"])
+pattern = data["pattern"]
+glob_filter = data["glob_filter"]
+flags = re.IGNORECASE if data["case_insensitive"] else 0
+limit = data["limit"]
+if not root.exists():
+    print(json.dumps({"error": "Path not found: " + str(root)}))
+else:
+    try:
+        rx = re.compile(pattern, flags)
+    except re.error as exc:
+        print(json.dumps({"error": "invalid regex: " + str(exc)}))
+    else:
+        if root.is_file():
+            candidates = [root]
+        elif glob_filter:
+            candidates = [p for p in root.rglob(glob_filter) if p.is_file()]
+        else:
+            candidates = [p for p in root.rglob("*") if p.is_file()]
+
+        matches = []
+        for f in candidates:
+            try:
+                with f.open("r", encoding="utf-8", errors="replace") as fh:
+                    for i, line in enumerate(fh, start=1):
+                        if rx.search(line):
+                            matches.append(str(f) + ":" + str(i) + ":" + line.rstrip())
+                            if len(matches) > limit:
+                                break
+            except OSError:
+                continue
+            if len(matches) > limit:
+                break
+
+        total = len(matches)
+        print(json.dumps({"matches": matches[:limit], "total": total}))
+"""
 
 
 def _ripgrep_search(
