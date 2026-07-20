@@ -10,6 +10,7 @@ default; callers can pass an explicit ``path`` to widen the search. When a
 from __future__ import annotations
 
 import json
+import logging
 import re
 import subprocess
 from dataclasses import dataclass
@@ -20,6 +21,8 @@ from typing import Any
 from terno_agent.core.exceptions import ToolError
 from terno_agent.core.tool import ToolSchema
 from terno_agent.sandbox.base import Sandbox
+
+logger = logging.getLogger(__name__)
 
 _GLOB_DEFAULT_LIMIT = 200
 _GREP_DEFAULT_LIMIT = 200
@@ -236,6 +239,11 @@ class GrepTool:
         limit = int(kwargs.get("limit") or _GREP_DEFAULT_LIMIT)
         if limit <= 0:
             raise ToolError("limit must be positive.")
+
+        logger.info(
+            "grep tool called: pattern=%r path=%s glob=%s case_insensitive=%s limit=%s",
+            pattern, root, glob_filter, case_insensitive, limit,
+        )
 
         if _use_sandbox(root, self.workdir, self.sandbox):
             data = _run_json(
