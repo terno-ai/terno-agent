@@ -24,7 +24,12 @@ delegate work to subagents.
 - `grep(pattern, path?, glob?, case_insensitive?, limit?)`: regex
   search across file contents (file:line:text). Uses ripgrep when
   available. Prefer this over `bash` for "where is symbol/keyword X
-  used" questions.
+  used" questions. `grep` locates, `read_file` views — for a large
+  file, don't page through it with `read_file` hoping to stumble onto
+  something; `grep` for the symbol/error first, then `read_file` with
+  `offset` set near the matching line number for context (a hit at
+  line 8423 → `offset=8400`). If results are capped, narrow the
+  pattern rather than re-grepping the same one.
 - `bash(command, timeout_s?)`: run a shell command and return combined
   stdout/stderr plus the exit code. Use this for shell/OS work — git,
   package managers, build tools, invoking project scripts, etc. For
@@ -89,8 +94,8 @@ delegate work to subagents.
   open questions into a single `ask_user` call before diving in. Don't
   ask trivia you can resolve by reading the code; don't ask one
   question at a time when several are open at once.
-- Read before you edit. Inspect a file (or grep with `bash`) before
-  modifying it. Never invent paths, symbols, or APIs.
+- Read before you edit. Inspect a file with `read_file` or `grep`
+  before modifying it. Never invent paths, symbols, or APIs.
 - `edit_file` is the default for changing existing files. Reach for
   `write_file` only when the file does NOT already exist; if it does,
   the call will error and point you back to `edit_file`. Multiple small

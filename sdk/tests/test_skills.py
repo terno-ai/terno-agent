@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from terno_agent.agents.terno import TernoAgent
+from terno_agent.config import Config
 from terno_agent.core.messages import AssistantMessage
 from terno_agent.llm.base import LLMResponse
 from terno_agent.skills import ActivateSkillTool, discover_skills
@@ -112,3 +113,36 @@ def test_project_skill_overrides_builtin(tmp_path):
 
     assert catalog.skills["data-analysis"].path == (root / "data-analysis" / "SKILL.md").resolve()
     assert any("shadows" in diagnostic.message for diagnostic in catalog.diagnostics)
+
+
+def test_config_can_scope_skills_to_host_owned_paths_only(tmp_path):
+    """A host embedding the SDK (e.g. terno-ai) with its own curated skill
+    set can set skill_include_builtin/skill_include_user False so only its
+    own skill_paths are discovered — none of the SDK's generic builtins."""
+    host_skills = tmp_path / "host-skills"
+    _write_skill(host_skills, "data-visualization", "Host-specific viz instructions.")
+
+    config = Config(
+        llm_provider="terno",
+        llm_model="dummy",
+        llm_api_key="test-key",
+        provisioner_url="https://example.invalid",
+        sandbox="none",
+        sandbox_fallback="none",
+        mcp_enabled=False,
+        memory_enabled=False,
+        file_memory_enabled=False,
+        skills_enabled=True,
+        skill_paths=[str(host_skills)],
+        skill_include_builtin=False,
+        skill_include_user=False,
+    )
+
+    agent = TernoAgent.from_config(config, workdir=tmp_path / "workdir")
+
+    assert list(agent.skill_catalog.skills) == ["data-visualization"]
+    assert (
+        agent.skill_catalog.skills["data-visualization"].description
+        == "Host-specific viz instructions."
+    )
+    assert "activate_skill" in agent.tools

@@ -486,6 +486,21 @@ Set `TERNO_SKILLS_ENABLED=false` to disable skills for a session. The
 implementation is provider-neutral: skills are just prompt context plus
 a normal tool call, so they work with both `anthropic` and `openai`.
 
+A host embedding the SDK with its own curated skill set can drop the
+SDK's generic built-ins and user-home roots entirely, keeping only its
+own `skill_paths`:
+
+```python
+config.skills_enabled = True
+config.skill_paths = ["/path/to/host/skills"]
+config.skill_include_builtin = False  # skip the SDK's packaged skills above
+config.skill_include_user = False     # skip ~/.terno/skills, ~/.agents/skills, ~/.claude/skills
+```
+
+(`TERNO_SKILL_INCLUDE_BUILTIN` / `TERNO_SKILL_INCLUDE_USER` env vars, both
+default `true`.) Project-ancestor roots (`<cwd or ancestor>/.terno/skills`
+etc.) are always included regardless of these flags.
+
 Minimal skill:
 
 ```text

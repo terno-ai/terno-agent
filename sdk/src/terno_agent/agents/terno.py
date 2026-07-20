@@ -389,6 +389,8 @@ class TernoAgent(BaseAgent):
         skill_catalog = (
             discover_skills(
                 resolved_workdir,
+                include_builtin=config.skill_include_builtin,
+                include_user=config.skill_include_user,
                 extra_roots=[Path(p) for p in config.skill_paths],
             )
             if config.skills_enabled

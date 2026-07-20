@@ -90,6 +90,13 @@ class Config:
     # ----- agent skills ---------------------------------------------------- #
     skills_enabled: bool = True
     skill_paths: list[str] = field(default_factory=list)
+    # Whether discovery includes the SDK's own bundled builtin skills
+    # (skills/builtin/*) and the user-home roots (~/.terno/skills etc).
+    # A host embedding the SDK with its own curated skill set (via
+    # skill_paths) can set these False to get *only* its own skills, without
+    # the SDK's generic builtins mixed in.
+    skill_include_builtin: bool = True
+    skill_include_user: bool = True
     # ----- memory ---------------------------------------------------------- #
     memory_enabled: bool = True
     memory_top_k: int = 5
@@ -156,6 +163,8 @@ class Config:
         memory_enabled_raw = os.getenv("TERNO_MEMORY_ENABLED", "true").lower()
         file_memory_enabled_raw = os.getenv("TERNO_FILE_MEMORY_ENABLED", "true").lower()
         skills_enabled_raw = os.getenv("TERNO_SKILLS_ENABLED", "true").lower()
+        skill_include_builtin_raw = os.getenv("TERNO_SKILL_INCLUDE_BUILTIN", "true").lower()
+        skill_include_user_raw = os.getenv("TERNO_SKILL_INCLUDE_USER", "true").lower()
         attachments_enabled_raw = os.getenv("TERNO_ATTACHMENTS_ENABLED", "true").lower()
         skill_paths_raw = os.getenv("TERNO_SKILL_PATHS", "")
         return cls(
@@ -183,6 +192,10 @@ class Config:
                 for path in skill_paths_raw.split(os.pathsep)
                 if path.strip()
             ],
+            skill_include_builtin=skill_include_builtin_raw
+            not in {"false", "0", "no", "off"},
+            skill_include_user=skill_include_user_raw
+            not in {"false", "0", "no", "off"},
             memory_enabled=memory_enabled_raw not in {"false", "0", "no", "off"},
             file_memory_enabled=file_memory_enabled_raw
             not in {"false", "0", "no", "off"},
@@ -282,6 +295,8 @@ class Config:
             f"mcp_config_path    = {self.mcp_config_path or '(auto-discover)'}\n"
             f"skills_enabled     = {self.skills_enabled}\n"
             f"skill_paths        = {os.pathsep.join(self.skill_paths) or '(auto-discover)'}\n"
+            f"skill_include_builtin = {self.skill_include_builtin}\n"
+            f"skill_include_user = {self.skill_include_user}\n"
             f"memory_enabled     = {self.memory_enabled}\n"
             f"memory_top_k       = {self.memory_top_k}\n"
             f"embedding_provider = {self.embedding_provider}\n"
