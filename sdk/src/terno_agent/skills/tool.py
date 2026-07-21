@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from typing import Any
 
 from terno_agent.core.exceptions import ToolError
 from terno_agent.core.tool import ToolSchema
 from terno_agent.skills.manager import Skill, SkillCatalog
+
+logger = logging.getLogger(__name__)
 
 
 class ActivateSkillTool:
@@ -43,6 +46,9 @@ class ActivateSkillTool:
         if skill is None:
             available = ", ".join(sorted(self.catalog.skills)) or "(none)"
             raise ToolError(f"Unknown skill: {name}. Available skills: {available}")
+
+        logger.info("activate_skill tool called: name=%r", name)
+
         return _format_skill_content(skill, max_resources=self.max_resources)
 
 
