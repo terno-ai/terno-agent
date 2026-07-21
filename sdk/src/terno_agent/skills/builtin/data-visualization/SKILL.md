@@ -1,18 +1,23 @@
 ---
 name: data-visualization
-description: Create or critique charts, dashboards, visual summaries, and exploratory plots. Use when the user asks for visualization or chart recommendations.
+description: Create charts and plots from query results. Use when the user asks for a chart, graph, plot, dashboard, or visual summary.
 ---
 
 # Data Visualization
 
-Choose the chart from the question: lines for time trends, bars for
-ranked categories, scatterplots for relationships, histograms or box
-plots for distributions, and tables for exact lookup.
+Use Plotly by default. Save charts as interactive HTML using the file
+naming convention from the File Saving Rules section:
 
-Label axes, units, time ranges, filters, and sample sizes. Avoid
-misleading scales, crowded legends, dual axes unless necessary, and
-decorative effects that obscure the data.
+```python
+fig.write_html(os.path.join(out_dir, "output_{file_suffix}.html"), include_plotlyjs="cdn")
+```
 
-For dashboards, organize by user workflow. Put the key metric and the
-most important comparison first, then supporting breakdowns and
-diagnostics.
+Use matplotlib only if:
+- The user explicitly asks for it
+- Plotly cannot generate the required format
+
+Save matplotlib plots a:
+`output_{file_suffix}.png`. 
+
+In case using matplotlib, we need to configure config directory before importing the module.
+Use appropriate scaling for axes.
