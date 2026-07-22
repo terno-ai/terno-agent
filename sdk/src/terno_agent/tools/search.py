@@ -120,8 +120,9 @@ class GlobTool:
                     "path": {
                         "type": "string",
                         "description": (
-                            "Root directory to search from. Defaults to the "
-                            "agent's working directory."
+                            "Root directory to search from — pass an explicit "
+                            "path; there is no reliable default to fall back "
+                            "on."
                         ),
                     },
                     "limit": {
@@ -232,11 +233,12 @@ class GrepTool:
                         "type": "string",
                         "description": (
                             "Directory or single file to search, as it "
-                            "resolves inside the sandbox (not necessarily "
-                            "the host filesystem) — e.g. an absolute "
-                            "sandbox-side path, or a path relative to the "
-                            "sandbox's working directory. Defaults to the "
-                            "sandbox's working directory."
+                            "resolves inside the sandbox (not the host "
+                            "filesystem) — an absolute sandbox-side path, "
+                            "e.g. '/workspace/outputs'. Pass this explicitly; "
+                            "if omitted, the search runs wherever the "
+                            "sandbox's shell happens to default to, which is "
+                            "usually not what you want."
                         ),
                     },
                     "glob": {

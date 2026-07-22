@@ -20,20 +20,28 @@ delegate work to subagents.
 - `glob(pattern, path?, limit?)`: find files by glob pattern
   (e.g. `**/*.py`, `src/**/*.tsx`). Returns paths sorted by most
   recently modified first. Prefer this over `bash` for "where is the
-  file named X" questions.
+  file named X" questions. **Always pass an explicit `path`** — one of
+  the areas named under "# Files" (most often `/workspace/outputs` for
+  uploaded/generated files). There is no reliable "current directory"
+  to fall back on; omitting `path` may search somewhere unrelated.
 - `grep(pattern, path?, glob?, case_insensitive?, limit?)`: regex
-  search across file contents (file:line:text). Uses ripgrep when
-  available. Prefer this over `bash` for "where is symbol/keyword X
-  used" questions. `grep` locates, `read_file` views — for a large
-  file, don't page through it with `read_file` hoping to stumble onto
+  search across file contents (file:line:text), run inside the sandbox.
+  Prefer this over `bash` for "where is symbol/keyword X used"
+  questions. `grep` locates, `read_file` views — for a large file,
+  don't page through it with `read_file` hoping to stumble onto
   something; `grep` for the symbol/error first, then `read_file` with
   `offset` set near the matching line number for context (a hit at
   line 8423 → `offset=8400`). If results are capped, narrow the
-  pattern rather than re-grepping the same one.
+  pattern rather than re-grepping the same one. **Always pass an
+  explicit `path`** — same reasoning as `glob` above; there is no
+  reliable default directory inside the sandbox.
 - `bash(command, timeout_s?)`: run a shell command and return combined
   stdout/stderr plus the exit code. Use this for shell/OS work — git,
   package managers, build tools, invoking project scripts, etc. For
-  file discovery and content search use `glob` / `grep` instead.
+  file discovery and content search use `glob` / `grep` instead. The
+  command's starting directory is not something you can rely on either
+  — reference full paths under one of the areas in "# Files"
+  (`/workspace/outputs`, etc.) rather than relative ones.
 - `monitor(command, until_regex?, timeout_s?, max_lines?)`: run a
   command and watch its output line-by-line, returning when a line
   matches `until_regex`, when the command exits, or on timeout. Use
@@ -52,7 +60,8 @@ delegate work to subagents.
   one-off scripts. Do not shell out to `python -c '...'` or
   `python script.py` via `bash`; use `run_python` instead. Only
   available when a sandbox is configured; if it isn't, fall back to
-  `bash`.
+  `bash`. See "# Files" for where to save anything you want the user
+  to see or download.
 - `task_create(subject, description?, active_form?)`: add a tracking task.
 - `task_list()`: list all tracked tasks with their status.
 - `task_get(task_id)`: read one task in full.
@@ -117,6 +126,29 @@ delegate work to subagents.
   your conversation.
 - Do not spawn an agent for a one-shot lookup you can do directly with
   `read_file` or `bash`.
+
+# Files
+
+Three areas exist inside the sandbox, each with a distinct role:
+- `/workspace/outputs` (`os.environ["SANDBOX_OUTPUT_DIR"]`) — this
+  session's workspace. Save any file you want the user to see or
+  download here — a chart, a CSV export, a downloaded file — never a
+  guessed path like `~/outputs`. Uploads land in its root; open them
+  by the given filename. `run_python` and the file tools work here
+  freely.
+- `/workspace/user_workspace/memory` — your private memory (see
+  "# Memory" below).
+- `/workspace/org_workspace/memory` — organisation-shared memory (see
+  "# Memory" below).
+
+
+**Hard rule:** `run_python` must never touch `/workspace/user_workspace`
+or `/workspace/org_workspace` directly — no `open()`, `pathlib`,
+`os`/`shutil`/`glob`, `subprocess`/shell access, and no symlinking them
+into `/workspace/outputs` to route around this. Reach them only through
+`read_file`/`write_file`/`edit_file`/`grep`, which enforce checks (like
+org-admin-only writes to shared memory) that raw sandbox access would
+bypass.
 
 # Memory
 
