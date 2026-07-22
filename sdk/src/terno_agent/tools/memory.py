@@ -64,7 +64,8 @@ class MemoryContextProvider:
 
         user_index = read_memory_index(self.user_root)
         sections.append(
-            f"Your private memory (read/write) lives in `{self.user_root}`.\n"
+            "Your private memory (read/write) lives in "
+            "`/workspace/user_workspace/memory` inside the sandbox.\n"
             "Its MEMORY.md index:\n\n"
             + (user_index or "(empty — no memories saved yet)")
         )
@@ -72,7 +73,8 @@ class MemoryContextProvider:
         if self.org_root is not None:
             org_index = read_memory_index(self.org_root)
             sections.append(
-                f"Organisation-shared memory lives in `{self.org_root}` "
+                "Organisation-shared memory lives in "
+                "`/workspace/org_workspace/memory` inside the sandbox "
                 "(read-only unless you are an org admin).\n"
                 "Its MEMORY.md index:\n\n"
                 + (org_index or "(empty — no shared memories yet)")
