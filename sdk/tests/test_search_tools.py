@@ -77,9 +77,7 @@ def test_grep_no_match(tmp_path: Path):
     assert "no matches" in out
 
 
-def test_grep_invalid_regex_python_fallback(tmp_path: Path, monkeypatch):
-    # Force the Python fallback by hiding rg, then send an invalid regex.
-    monkeypatch.setattr("terno_agent.tools.search.which", lambda _name: None)
+def test_grep_invalid_regex(tmp_path: Path):
     _seed(tmp_path)
     with pytest.raises(ToolError, match="invalid regex"):
         GrepTool(workdir=tmp_path).run(pattern="(")
