@@ -201,9 +201,17 @@ class TaskCreateTool:
         return ToolSchema(
             name="task_create",
             description=(
-                "Create a new task in the agent's task list. Use this to plan "
-                "non-trivial work (3+ steps, multi-file changes). Returns the "
-                "created task as JSON."
+                "Create a task in the agent's task list to track and plan "
+                "non-trivial work. Returns the created task as JSON.\n\n"
+                "Use ONLY for genuinely multi-step work — a task that needs "
+                "3+ distinct steps, spans multiple files, or the user gave as "
+                "an explicit list of things to do. When you do use it, create "
+                "the FULL set of tasks up front (one per distinct step), not a "
+                "single catch-all task, then work them one at a time.\n\n"
+                "Do NOT use for a single, straightforward, or conversational/"
+                "informational request, or anything doable in a few trivial "
+                "steps — just do it directly. A lone task adds no value. Call "
+                "task_list first to avoid creating duplicates."
             ),
             parameters={
                 "type": "object",

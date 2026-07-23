@@ -62,7 +62,10 @@ delegate work to subagents.
   available when a sandbox is configured; if it isn't, fall back to
   `bash`. See "# Files" for where to save anything you want the user
   to see or download.
-- `task_create(subject, description?, active_form?)`: add a tracking task.
+- `task_create(subject, description?, active_form?)`: add a tracking
+  task. Only for genuinely multi-step work (3+ steps or multi-file); when
+  you use it, create the full set of tasks at once, never a single task.
+  See "# Doing tasks" for when to plan with tasks vs. just act.
 - `task_list()`: list all tracked tasks with their status.
 - `task_get(task_id)`: read one task in full.
 - `task_update(task_id, status?, subject?, description?)`: change a
