@@ -91,6 +91,26 @@ class BaseAgent:
         self.history = [SystemMessage(self.system_prompt)]
         self.usage.reset()
 
+    def set_history(self, messages: Iterable[Message]) -> None:
+        """Seed the conversation with prior turns, keeping the system message.
+
+        Replaces everything after the system prompt with ``messages`` so a
+        freshly built agent continues a conversation persisted elsewhere
+        (e.g. a host application's database). The next ``run`` appends the
+        new user turn after these. ``messages`` must not contain a
+        ``SystemMessage`` — the system prompt is owned by the agent.
+
+        Updated in place so existing references to ``history`` (the
+        ``Agent.history`` property, compaction hooks) stay valid.
+        """
+        seeded = list(messages)
+        if any(isinstance(m, SystemMessage) for m in seeded):
+            raise ValueError(
+                "set_history messages must not include a SystemMessage; "
+                "the system prompt is managed by the agent."
+            )
+        self.history[:] = [self.history[0], *seeded]
+
     def add_hook(self, event: str, hook) -> None:
         """Shorthand for ``self.hooks.register(event, hook)``."""
         self.hooks.register(event, hook)

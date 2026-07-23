@@ -212,6 +212,19 @@ class Agent:
         """Reset the conversation to just the system message and zero usage."""
         self._agent.clear_history()
 
+    def set_history(self, messages: list[Message]) -> None:
+        """Seed the conversation with prior turns before the next ``run``.
+
+        Keeps the agent's system prompt and replaces any existing
+        conversation with ``messages`` — SDK
+        :class:`~terno_agent.core.messages.Message` objects such as
+        ``UserMessage`` / ``AssistantMessage``. A host that persists chat
+        history externally (e.g. terno-ai's ``ChatMessage`` rows) uses this
+        to give a freshly constructed ``Agent`` its multi-turn context, so
+        ``run`` continues the conversation instead of starting cold.
+        """
+        self._agent.set_history(messages)
+
     # ----- Permissions ------------------------------------------------------ #
 
     @property
