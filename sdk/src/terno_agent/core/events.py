@@ -7,17 +7,25 @@ library subscriber pattern is simply ``Callable[[AgentEvent], None]``.
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from typing import Any
 
 from terno_agent.core.messages import AssistantMessage, ToolCall, ToolResult
 
 
 @dataclass(slots=True)
 class IterationStart:
-    """The agent is about to call the LLM again."""
+    """The agent is about to call the LLM again.
+
+    ``messages`` carries the full prompt (the serialized message history) that
+    is about to be sent to the LLM, so a subscriber can surface it — e.g. an
+    app host's "view prompt" panel. It is populated only when the agent has an
+    event subscriber; otherwise it is left empty to avoid needless work.
+    """
 
     agent: str
     iteration: int
+    messages: list[dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass(slots=True)

@@ -46,6 +46,7 @@ from terno_agent.core.messages import (
     ToolResult,
     ToolResultMessage,
     UserMessage,
+    to_display_messages,
 )
 from terno_agent.core.tool import Tool
 from terno_agent.llm.base import LLMClient
@@ -147,7 +148,16 @@ class BaseAgent:
             for i in range(1, self.max_iterations + 1):
                 last_iteration = i
                 self.cancel_token.check()
-                self._emit(IterationStart(agent=self.name, iteration=i))
+                prompt_snapshot = (
+                    to_display_messages(self.history)
+                    if self.on_event is not None
+                    else []
+                )
+                self._emit(
+                    IterationStart(
+                        agent=self.name, iteration=i, messages=prompt_snapshot
+                    )
+                )
 
                 response = self.llm.complete(
                     self.history,
