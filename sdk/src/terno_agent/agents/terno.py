@@ -66,7 +66,7 @@ from terno_agent.tools.web import WebFetchTool, WebSearchTool
 
 class TernoAgent(BaseAgent):
     name = "terno"
-    max_iterations = 32
+    max_iterations = 100
 
     def __init__(
         self,
