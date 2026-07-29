@@ -78,14 +78,21 @@ def discover_skills(
     include_builtin: bool = True,
     include_user: bool = True,
     extra_roots: list[Path] | None = None,
+    allowlist: list[str] | set[str] | None = None,
 ) -> SkillCatalog:
     """Discover skills from built-in, user, project, and configured roots.
 
     Later roots override earlier roots, so project skills naturally shadow
     built-in and user skills with the same name.
+
+    If ``allowlist`` is provided (a non-empty collection of skill names), only
+    skills whose name appears in it are kept; every other discovered skill is
+    dropped so it never reaches the model. An empty/``None`` allowlist keeps all
+    discovered skills.
     """
     diagnostics: list[SkillDiagnostic] = []
     skills: dict[str, Skill] = {}
+    allowed = {name for name in (allowlist or ()) if name}
 
     for root in _ordered_skill_roots(
         workdir,
@@ -99,6 +106,8 @@ def discover_skills(
             parsed = _parse_skill_file(skill_file)
             if isinstance(parsed, SkillDiagnostic):
                 diagnostics.append(parsed)
+                continue
+            if allowed and parsed.name not in allowed:
                 continue
             if parsed.name in skills:
                 diagnostics.append(

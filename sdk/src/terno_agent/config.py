@@ -97,6 +97,10 @@ class Config:
     # the SDK's generic builtins mixed in.
     skill_include_builtin: bool = True
     skill_include_user: bool = True
+    # Optional allowlist of skill names. When non-empty, only these skills are
+    # discovered/exposed to the model; every other skill is dropped. Empty means
+    # "expose all discovered skills".
+    skill_allowlist: list[str] = field(default_factory=lambda: ["data-visualization"])
     # ----- memory ---------------------------------------------------------- #
     memory_enabled: bool = True
     memory_top_k: int = 5
@@ -167,6 +171,7 @@ class Config:
         skill_include_user_raw = os.getenv("TERNO_SKILL_INCLUDE_USER", "true").lower()
         attachments_enabled_raw = os.getenv("TERNO_ATTACHMENTS_ENABLED", "true").lower()
         skill_paths_raw = os.getenv("TERNO_SKILL_PATHS", "")
+        skill_allowlist_raw = os.getenv("TERNO_SKILL_ALLOWLIST", "data-visualization")
         return cls(
             llm_provider=provider,
             llm_model=model,
@@ -196,6 +201,11 @@ class Config:
             not in {"false", "0", "no", "off"},
             skill_include_user=skill_include_user_raw
             not in {"false", "0", "no", "off"},
+            skill_allowlist=[
+                name.strip()
+                for name in skill_allowlist_raw.split(",")
+                if name.strip()
+            ],
             memory_enabled=memory_enabled_raw not in {"false", "0", "no", "off"},
             file_memory_enabled=file_memory_enabled_raw
             not in {"false", "0", "no", "off"},
@@ -297,6 +307,7 @@ class Config:
             f"skill_paths        = {os.pathsep.join(self.skill_paths) or '(auto-discover)'}\n"
             f"skill_include_builtin = {self.skill_include_builtin}\n"
             f"skill_include_user = {self.skill_include_user}\n"
+            f"skill_allowlist    = {', '.join(self.skill_allowlist) or '(all)'}\n"
             f"memory_enabled     = {self.memory_enabled}\n"
             f"memory_top_k       = {self.memory_top_k}\n"
             f"embedding_provider = {self.embedding_provider}\n"
