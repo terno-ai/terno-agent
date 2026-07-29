@@ -63,15 +63,20 @@ class AskUserTool:
         return ToolSchema(
             name="ask_user",
             description=(
-                "Ask the user one or more multiple-choice questions and "
-                "block until they answer. Use for clarifications that "
-                "materially change what you'll do (ambiguous requirements, "
-                "risky/destructive choices, missing inputs). Provide 2–4 "
-                "options per question; an 'Other (custom text)' option is "
-                "appended automatically so the user can supply free text. "
-                "Returns JSON: {\"answers\": [{\"question\", \"selected\": "
-                "[labels], \"other_text\": str|null}]}. Do NOT use for "
-                "trivia you can answer yourself by reading code."
+                "Use this tool when you need to ask the user questions "
+                "during execution. This allows you to:\n"
+                "1. Gather user preferences or requirements\n"
+                "2. Clarify ambiguous instructions\n"
+                "3. Get decisions on implementation choices as you work\n"
+                "4. Offer choices to the user about what direction to take.\n\n"
+                "Usage notes:\n"
+                "- Users will always be able to select \"Other\" to provide "
+                "custom text input\n"
+                "- Use multiSelect: true to allow multiple answers to be "
+                "selected for a question\n"
+                "- If you recommend a specific option, make that the first "
+                "option in the list and add \"(Recommended)\" at the end of "
+                "the label"
             ),
             parameters={
                 "type": "object",
