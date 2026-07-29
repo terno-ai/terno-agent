@@ -5,8 +5,9 @@ description: Create charts and plots from query results. Use when the user asks 
 
 # Data Visualization
 
-Use Plotly by default. Save charts as interactive HTML using the file
-naming convention from the File Saving Rules section:
+Use Plotly by default. Follow the File Saving Rules section for the
+directory (`out_dir`) and the `output_{file_suffix}.<ext>` naming
+convention — save charts as interactive HTML:
 
 ```python
 fig.write_html(os.path.join(out_dir, "output_{file_suffix}.html"), include_plotlyjs="cdn")
@@ -16,8 +17,6 @@ Use matplotlib only if:
 - The user explicitly asks for it
 - Plotly cannot generate the required format
 
-Save matplotlib plots a:
-`output_{file_suffix}.png`. 
-
-In case using matplotlib, we need to configure config directory before importing the module.
-Use appropriate scaling for axes.
+Save matplotlib plots as `output_{file_suffix}.png`. Configure
+`MPLCONFIGDIR` before importing matplotlib (see the File Saving Rules
+section). Use appropriate scaling for axes.
