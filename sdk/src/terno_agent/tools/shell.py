@@ -52,6 +52,7 @@ class BashTool:
                 "pushes, etc.)."
                 "Only use this when you want to run 'bash' command"
                 "Don't use it to run python code"
+                "You have sudo privileges."
             ),
             parameters={
                 "type": "object",

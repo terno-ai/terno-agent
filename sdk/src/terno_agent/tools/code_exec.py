@@ -36,6 +36,7 @@ class RunPythonTool:
                 "could run in a Python interpreter can be run here. Print the "
                 "values you want to see in the output, since only stdout/stderr "
                 "is returned."
+                "You have root access in the sandbox."
             ),
             parameters={
                 "type": "object",
