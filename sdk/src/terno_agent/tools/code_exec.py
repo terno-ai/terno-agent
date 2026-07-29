@@ -28,9 +28,14 @@ class RunPythonTool:
         return ToolSchema(
             name="run_python",
             description=(
-                "Execute a Python snippet inside an isolated sandbox and return "
-                "captured stdout/stderr. The sandbox has no network access and "
-                "no persistent filesystem; use stdin/stdout to pass data."
+                "Run any Python code inside an isolated sandbox and return the "
+                "captured stdout/stderr. Use this tool whenever you need to "
+                "execute Python — arbitrary statements, expressions, scripts, "
+                "multi-line programs, imports of the standard library, data "
+                "processing, calculations, or quick experiments. Anything you "
+                "could run in a Python interpreter can be run here. Print the "
+                "values you want to see in the output, since only stdout/stderr "
+                "is returned."
             ),
             parameters={
                 "type": "object",

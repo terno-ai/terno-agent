@@ -50,6 +50,8 @@ class BashTool:
                 "stdout+stderr and the exit code. Output is truncated if very "
                 "large. Be careful with destructive commands (rm -rf, force "
                 "pushes, etc.)."
+                "Only use this when you want to run 'bash' command"
+                "Don't use it to run python code"
             ),
             parameters={
                 "type": "object",
