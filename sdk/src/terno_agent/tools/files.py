@@ -7,6 +7,20 @@ sandbox* instead of failing with "not found" on the host — this is how
 these tools reach paths that only exist in a mounted container directory
 (an attachments folder, say), the same way ``run_python``/``bash`` already
 do.
+
+By default a sandbox path is handled by running a small generated snippet
+through ``sandbox.run_python`` and parsing the JSON it prints from stdout
+(see ``_run_json`` and the ``_*_TEMPLATE`` snippets). That works for any
+bare ``run_python`` sandbox, but it is only as reliable as the sandbox's
+stdout capture: a sandbox whose code executes yet loses the printed output
+(e.g. a Jupyter kernel that dropped an IOPub stream message) turns a
+*successful* file operation into an "unparsable output" error. A sandbox
+that can perform file operations directly — over a dedicated request/reply
+channel rather than code-plus-stdout — may therefore implement the optional
+``read_file``/``write_file``/``edit_file`` methods described by
+:class:`terno_agent.sandbox.base.FileOpSandbox`. When present, the tools
+prefer them (see ``_native_result``); when absent, they fall back to the
+``run_python`` template path unchanged.
 """
 
 from __future__ import annotations
@@ -63,6 +77,25 @@ def _run_json(sandbox: Sandbox, code_template: str, payload: dict) -> Any:
         ) from exc
 
 
+def _native_result(data: Any) -> str:
+    """Unwrap a native sandbox file-op result into the tool's output string.
+
+    A sandbox that implements the optional file-op methods (see
+    :class:`terno_agent.sandbox.base.FileOpSandbox`) returns
+    ``{"ok": True, "output": <str>}`` on success or
+    ``{"ok": False, "error": <str>}`` on failure. Unlike the ``run_python``
+    template path, this does not depend on stdout capture, so a lost stream
+    message can't turn a successful op into an "unparsable output" error.
+    """
+    if not isinstance(data, dict):
+        raise ToolError(
+            f"sandbox file operation returned unexpected result: {data!r}"
+        )
+    if data.get("ok"):
+        return data.get("output") or ""
+    raise ToolError(data.get("error") or "sandbox file operation failed.")
+
+
 @dataclass
 class ReadFileTool:
     workdir: Path | None = None
@@ -105,6 +138,14 @@ class ReadFileTool:
             raise ToolError("limit must be positive.")
 
         if _use_sandbox(path, self.workdir, self.sandbox):
+            native = getattr(self.sandbox, "read_file", None)
+            if callable(native):
+                # The native op applies offset/limit and formats the result
+                # (line numbers, directory listing, truncation notes) itself,
+                # so return it verbatim rather than re-numbering below.
+                return _native_result(
+                    native(str(path), offset=offset, limit=limit)
+                )
             data = _run_json(self.sandbox, _READ_FILE_TEMPLATE, {"path": str(path)})
             if "error" in data:
                 raise ToolError(data["error"])
@@ -187,6 +228,11 @@ class WriteFileTool:
         overwrite = bool(kwargs.get("overwrite", False))
 
         if _use_sandbox(path, self.workdir, self.sandbox):
+            native = getattr(self.sandbox, "write_file", None)
+            if callable(native):
+                return _native_result(
+                    native(str(path), content, overwrite=overwrite)
+                )
             data = _run_json(
                 self.sandbox,
                 _WRITE_FILE_TEMPLATE,
@@ -270,6 +316,11 @@ class EditFileTool:
         replace_all = bool(kwargs.get("replace_all"))
 
         if _use_sandbox(path, self.workdir, self.sandbox):
+            native = getattr(self.sandbox, "edit_file", None)
+            if callable(native):
+                return _native_result(
+                    native(str(path), old, new, replace_all=replace_all)
+                )
             data = _run_json(
                 self.sandbox,
                 _EDIT_FILE_TEMPLATE,
