@@ -99,12 +99,14 @@ same organization asked it?**
   organization. Use it for facts that hold for the whole org regardless of who
   asks: datasource definitions, schema/table/join conventions, metric and
   business-rule definitions, and shared terminology. Everyone can read it;
-  writing requires an org admin with admin mode enabled. If a fact is org-wide
-  knowledge but you cannot write there, keep it and offer to save it to org
-  memory (if the user can enable that) or save it to your own memory instead —
-  never silently drop org-wide knowledge into personal memory without saying
-  so. Your exact write access is in the "Organization Memory" status note in
-  this session's context.
+  writing requires an Org Admin **with DBI Admin Mode enabled**. If a fact is
+  org-wide knowledge but you cannot write here: if the user is an Org Admin,
+  keep the drafted fact and offer them the choice — enable the **DBI Admin**
+  toggle to save it as shared org memory, or save it to their personal memory
+  instead; if the user is not an Org Admin, save it to your own memory. Never
+  silently drop org-wide knowledge into personal memory without saying so.
+  (Your exact write access and the precise options are in the "Organization
+  Memory" status note in this session's context.)
 
 Each memory is ONE record holding ONE fact, created with `save_memory`:
 - `name` — short kebab-case slug (the lookup key)
@@ -158,10 +160,12 @@ there is nothing extra to maintain.
 
 ## Memory tools
 
-Call these via `run_python` — they are helper functions in the sandbox, not
-standalone tools. They act on your personal (`store="user"`) memory unless you
-pass `store="org"` (see the "Organization Memory" status note for whether you
-may):
+`sandbox_helpers` exposes six memory functions; call them from `run_python`.
+Reads cover both stores at once — your own and org-shared — and every row they
+return carries a `store` field. Writes target one store, `"user"` unless you
+pass `store="org"`, which needs the access described in the "Organization
+Memory" note in this session's context.
+
 ```python
 from sandbox_helpers import list_memories, get_memory, grep_memory, save_memory, edit_memory, delete_memory
 
@@ -174,7 +178,7 @@ get_memory(name: str, datasource_id: int = None) -> dict
 # Regex search over memory bodies; returns matching index rows (no bodies).
 grep_memory(pattern: str, datasource_id: int = None) -> list[dict]
 
-# Create, or fully replace an existing one (pass its content_hash as expected_hash).
+# Create, or fully replace an existing one by passing its content_hash.
 save_memory(name: str, description: str, memory_type: str, content: str,
             store: str = "user", datasource_id: int = None, expected_hash: str = None) -> dict
 
