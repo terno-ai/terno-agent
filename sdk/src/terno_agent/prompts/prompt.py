@@ -57,8 +57,9 @@ Create the directory first:
 out_dir = os.path.join(os.environ["SANDBOX_OUTPUT_DIR"], "{session_dir}")
 os.makedirs(out_dir, exist_ok=True)
 
-Every file you create must be named output_{file_suffix}.<ext>, e.g.:
-df.to_csv(os.path.join(out_dir, "output_{file_suffix}.csv"), index=False)
+Give each file a short, descriptive name and append the suffix for
+uniqueness — `<name>__{file_suffix}.<ext>`. Example:
+df.to_csv(os.path.join(out_dir, "result__{file_suffix}.csv"), index=False)
 
 If using matplotlib configure first:
 os.environ['MPLCONFIGDIR'] = os.path.join(os.environ["SANDBOX_OUTPUT_DIR"], ".mplconfig")

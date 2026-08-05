@@ -129,6 +129,15 @@ class Config:
     is_org_admin: bool = False
     # Stamped into memory frontmatter as ``originSessionId``.
     session_id: str = ""
+    # ----- output-file naming (formatted into the system prompt) ----------- #
+    # ``session_dir`` is this session's output subfolder (e.g. its creation
+    # date "2026-08-05"); ``file_suffix`` is the suffix appended to generated
+    # filenames. Both are substituted into the "# Files" rules of the default
+    # system prompt via ``str.format``. The host (terno-ai) computes them; when
+    # left empty the prompt still renders, just without a dated subfolder or
+    # suffix.
+    session_dir: str = ""
+    file_suffix: str = ""
     # ----- compaction ------------------------------------------------------ #
     compaction_enabled: bool = True
     compaction_threshold_tokens: int = 80_000

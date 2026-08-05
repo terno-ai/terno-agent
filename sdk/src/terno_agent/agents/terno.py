@@ -73,6 +73,8 @@ class TernoAgent(BaseAgent):
         llm: LLMClient,
         *,
         system_prompt: str | None = None,
+        session_dir: str = "",
+        file_suffix: str = "",
         workdir: Path | None = None,
         task_store: TaskStore | None = None,
         wire_task_events: bool = True,
@@ -202,9 +204,18 @@ class TernoAgent(BaseAgent):
         if self.permission_hook is not None:
             hooks.register(HookEvent.PRE_TOOL_USE, self.permission_hook)
 
+        # Only the default prompt carries ``{session_dir}``/``{file_suffix}``
+        # placeholders, so format it here; a caller-supplied ``system_prompt``
+        # is used verbatim (it may legitimately contain literal braces).
+        base_prompt = (
+            system_prompt
+            if system_prompt is not None
+            else SYSTEM_PROMPT.format(session_dir=session_dir, file_suffix=file_suffix)
+        )
+
         super().__init__(
             llm,
-            _with_skill_catalog(system_prompt or SYSTEM_PROMPT, self.skill_catalog),
+            _with_skill_catalog(base_prompt, self.skill_catalog),
             tools,
             on_event=on_event,
             hook_manager=hooks,
@@ -407,6 +418,8 @@ class TernoAgent(BaseAgent):
             )
         return cls(
             llm,
+            session_dir=config.session_dir,
+            file_suffix=config.file_suffix,
             workdir=resolved_workdir,
             task_store=task_store,
             sandbox=sandbox,
