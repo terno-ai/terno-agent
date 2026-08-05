@@ -22,6 +22,7 @@ from __future__ import annotations
 import sys
 from dataclasses import dataclass
 
+from terno_agent.core.events import CompactionEvent
 from terno_agent.core.hooks import HookContext
 from terno_agent.core.messages import (
     AssistantMessage,
@@ -48,6 +49,16 @@ _SUMMARY_PROMPT = (
 _SUMMARY_HEADER = "Conversation summary (older turns compacted):"
 
 
+def _log(message: str) -> None:
+    """Emit a compaction trace line.
+
+    Printed to stderr (like the module's failure warnings) so it shows up in a
+    host's console — e.g. the Django runserver output — without depending on
+    any logging configuration.
+    """
+    print(f"[compaction] {message}", file=sys.stderr)
+
+
 @dataclass(slots=True)
 class CompactionHook:
     """Summarize older history once `last_input_tokens` exceeds the threshold."""
@@ -71,11 +82,29 @@ class CompactionHook:
         if summary is None:
             return
 
+        before = len(ctx.history)
         # Rewrite in place so the agent's `self.history` reference stays valid.
         ctx.history[:] = [system_msg, SystemMessage(f"{_SUMMARY_HEADER}\n{summary}"), *tail]
         # Zero out `last_input_tokens` so the next no-op call doesn't re-trigger
         # before the LLM has reported actual usage on the smaller context.
         ctx.usage.last_input_tokens = 0
+        _log(
+            f"done: history {before} -> {len(ctx.history)} messages; "
+            f"summary is {len(summary)} chars"
+        )
+
+        # Notify the host so it can persist the summary and keep compaction
+        # durable across turns (e.g. terno-ai writes a `Summary` chat message).
+        # `_emit` no-ops when there is no event subscriber and never raises, so
+        # standalone SDK usage is unaffected.
+        if ctx.agent is not None:
+            ctx.agent._emit(
+                CompactionEvent(
+                    agent=ctx.agent.name,
+                    summary=summary,
+                    preserved_turns=self.keep_last_turns,
+                )
+            )
 
     # ----- internals ---------------------------------------------------- #
 

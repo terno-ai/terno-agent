@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from terno_agent.agents.base import BaseAgent
 from terno_agent.core.compaction import CompactionHook
+from terno_agent.core.events import CompactionEvent
 from terno_agent.core.hooks import HookContext, HookEvent, HookManager, UsageMeter
 from terno_agent.core.messages import (
     AssistantMessage,
@@ -212,6 +213,56 @@ def test_compaction_summarizes_above_threshold():
     assert ctx.history[2].content == "q4"
     assert isinstance(ctx.history[4], UserMessage)
     assert ctx.history[4].content == "q5"
+
+
+class _RecordingAgent:
+    """Minimal agent stub exposing the surface CompactionHook.__call__ uses."""
+
+    name = "terno"
+
+    def __init__(self) -> None:
+        self.events: list[object] = []
+
+    def _emit(self, event: object) -> None:
+        self.events.append(event)
+
+
+def test_compaction_emits_event_for_host_persistence():
+    summarizer = _ScriptedLLM([_final("SUMMARY OF OLD TURNS")])
+    hook = CompactionHook(
+        llm=summarizer,
+        threshold_input_tokens=1000,
+        keep_last_turns=2,
+    )
+    agent = _RecordingAgent()
+    ctx = HookContext(
+        event=HookEvent.CHAT_END,
+        agent=agent,  # type: ignore[arg-type]
+        history=_build_history(6),
+        usage=UsageMeter(last_input_tokens=5000),
+    )
+    hook(ctx)
+    # Exactly one CompactionEvent carrying the summary + preserved window.
+    compaction_events = [e for e in agent.events if isinstance(e, CompactionEvent)]
+    assert len(compaction_events) == 1
+    ev = compaction_events[0]
+    assert ev.agent == "terno"
+    assert "SUMMARY OF OLD TURNS" in ev.summary
+    assert ev.preserved_turns == 2
+
+
+def test_compaction_below_threshold_emits_nothing():
+    summarizer = _ScriptedLLM([_final("SUMMARY")])
+    hook = CompactionHook(llm=summarizer, threshold_input_tokens=1_000_000)
+    agent = _RecordingAgent()
+    ctx = HookContext(
+        event=HookEvent.CHAT_END,
+        agent=agent,  # type: ignore[arg-type]
+        history=_build_history(5),
+        usage=UsageMeter(last_input_tokens=100),
+    )
+    hook(ctx)
+    assert agent.events == []
 
 
 def test_compaction_safe_when_summarizer_fails():

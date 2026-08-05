@@ -61,6 +61,23 @@ class TurnEnd:
 
 
 @dataclass(slots=True)
+class CompactionEvent:
+    """History was compacted: older turns were replaced by a summary.
+
+    Emitted once, right after :class:`~terno_agent.core.compaction.CompactionHook`
+    rewrites the in-memory history. A host can persist ``summary`` so the
+    condensed context survives across turns (e.g. terno-ai stores it as a
+    ``Summary`` chat message). ``preserved_turns`` is how many of the most
+    recent user turns were kept verbatim after the summary — the count a host
+    needs to reconstruct the same window when it rebuilds history.
+    """
+
+    agent: str
+    summary: str
+    preserved_turns: int
+
+
+@dataclass(slots=True)
 class TaskListUpdate:
     """The agent's task/todo list changed.
 
@@ -82,12 +99,14 @@ AgentEvent = (
     | ToolResultEvent
     | TurnEnd
     | TaskListUpdate
+    | CompactionEvent
 )
 EventHook = Callable[[AgentEvent], None]
 
 
 __all__ = [
     "AgentEvent",
+    "CompactionEvent",
     "EventHook",
     "IterationStart",
     "TaskListUpdate",
