@@ -87,6 +87,7 @@ class Config:
     # over ``mcp_config_path`` so callers can inject server configs
     # without writing credentials to disk.
     mcp_servers: dict | None = None
+    mcp_require_sandbox: bool = False
     # ----- agent skills ---------------------------------------------------- #
     skills_enabled: bool = True
     skill_paths: list[str] = field(default_factory=list)

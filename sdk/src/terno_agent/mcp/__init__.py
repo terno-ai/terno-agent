@@ -15,6 +15,11 @@ from terno_agent.mcp.config import (
     load_mcp_config,
 )
 from terno_agent.mcp.manager import McpManager
+from terno_agent.mcp.sandbox_session import (
+    SandboxMcpSession,
+    sandbox_mcp_session_factory,
+    sandbox_mcp_supported,
+)
 from terno_agent.mcp.tool import McpTool
 
 __all__ = [
@@ -22,6 +27,9 @@ __all__ = [
     "McpManager",
     "McpServerConfig",
     "McpTool",
+    "SandboxMcpSession",
     "StdioServerConfig",
     "load_mcp_config",
+    "sandbox_mcp_session_factory",
+    "sandbox_mcp_supported",
 ]

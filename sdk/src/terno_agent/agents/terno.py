@@ -34,6 +34,10 @@ from terno_agent.core.permissions import (
 from terno_agent.llm.base import LLMClient
 from terno_agent.llm.factory import create_llm_client
 from terno_agent.mcp.manager import McpManager
+from terno_agent.mcp.sandbox_session import (
+    sandbox_mcp_session_factory,
+    sandbox_mcp_supported,
+)
 from terno_agent.memory.extractor import ExtractionCallback, MemoryExtractor
 from terno_agent.memory.retriever import MemoryRetriever
 from terno_agent.memory.store import MemoryStore
@@ -379,11 +383,26 @@ class TernoAgent(BaseAgent):
 
         mcp_manager: McpManager | None = None
         if config.mcp_enabled:
-            if config.mcp_servers:
-                mcp_manager = McpManager.start_from_dict(config.mcp_servers)
+            session_factory = _select_mcp_session_factory(config, sandbox)
+            # In require-sandbox mode with no usable sandbox, _select returns
+            # None *and* we must NOT start the manager at all — a None factory
+            # would otherwise default to the host stdio/HTTP path, which is
+            # exactly what this mode forbids. Skip MCP entirely instead.
+            skip_mcp = config.mcp_require_sandbox and session_factory is None
+            if skip_mcp:
+                _warn(
+                    "mcp_require_sandbox is set but no sandbox is available to "
+                    "host MCP; MCP tools are disabled for this session "
+                    "(MCP is never started on the host in this mode)."
+                )
+            elif config.mcp_servers:
+                mcp_manager = McpManager.start_from_dict(
+                    config.mcp_servers, session_factory=session_factory
+                )
             else:
                 mcp_manager = McpManager.start_from_path(
-                    config.mcp_config_path or None
+                    config.mcp_config_path or None,
+                    session_factory=session_factory,
                 )
             if mcp_manager is not None:
                 atexit.register(mcp_manager.shutdown)
@@ -625,6 +644,35 @@ def _sandbox_options(config: Config, kind: str) -> dict[str, object]:
         if config.sandbox_container_name:
             opts.setdefault("container_name", config.sandbox_container_name)
     return opts
+
+
+def _select_mcp_session_factory(config: Config, sandbox: Sandbox | None):
+    """Decide how MCP sessions are created: in-sandbox, host, or nothing.
+
+    ``require_sandbox`` (multi-tenant hosts like terno-ai): MCP may run *only*
+    inside the sandbox and never on the host — not even as a fallback. So when
+    a sandbox is present we always return the in-sandbox factory (no capability
+    probe, so a slow/failed probe can never silently route to the host); if the
+    sandbox can't actually host MCP, that surfaces later as a per-server connect
+    failure and the server is skipped — execution never leaks onto the host.
+    When no sandbox is present we return ``None``, and the caller disables MCP
+    entirely rather than falling back to the host.
+
+    Otherwise (standalone SDK default): use the in-sandbox factory when the
+    sandbox is probed capable, else ``None`` so :class:`McpManager` uses its
+    default host stdio/HTTP session factory.
+    """
+    if config.mcp_require_sandbox:
+        if sandbox is None:
+            return None
+        return sandbox_mcp_session_factory(sandbox)
+    if sandbox_mcp_supported(sandbox):
+        return sandbox_mcp_session_factory(sandbox)
+    return None
+
+
+def _warn(message: str) -> None:
+    print(f"warning: {message}", file=sys.stderr)
 
 
 def _init_sandbox(config: Config) -> Sandbox | None:
