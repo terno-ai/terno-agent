@@ -201,17 +201,27 @@ class TaskCreateTool:
         return ToolSchema(
             name="task_create",
             description=(
-                "Create a task in the agent's task list to track and plan "
-                "non-trivial work. Returns the created task as JSON.\n\n"
-                "Use ONLY for genuinely multi-step work — a task that needs "
-                "3+ distinct steps, spans multiple files, or the user gave as "
-                "an explicit list of things to do. When you do use it, create "
-                "the FULL set of tasks up front (one per distinct step), not a "
-                "single catch-all task, then work them one at a time.\n\n"
-                "Do NOT use for a single, straightforward, or conversational/"
-                "informational request, or anything doable in a few trivial "
-                "steps — just do it directly. A lone task adds no value. Call "
-                "task_list first to avoid creating duplicates."
+                "Create a task in the agent's task list to plan non-trivial "
+                "work and show the user your progress. Returns the created "
+                "task as JSON.\n\n"
+                "## When to use\n"
+                "- Multi-step work — a task needing 3+ distinct steps, "
+                "spanning multiple files, or requiring careful planning.\n"
+                "- The user gave an explicit list of things to do (numbered "
+                "or comma-separated), or directly asked for a task list.\n"
+                "- New instructions just arrived — capture the requirements "
+                "as tasks before you start.\n\n"
+                "When you do use it, create the FULL set of tasks up front "
+                "(one per distinct step), not a single catch-all. Then work "
+                "them one at a time: `task_update` a task to `in_progress` "
+                "BEFORE you start it and to `completed` the moment it's done, "
+                "keeping exactly one `in_progress`. Add follow-up tasks with "
+                "`task_create` as new work emerges.\n\n"
+                "## When NOT to use\n"
+                "- A single, straightforward task, or anything doable in a "
+                "few trivial steps — just do it directly; a lone task adds no "
+                "value.\n"
+                "- A purely conversational or informational request."
             ),
             parameters={
                 "type": "object",
