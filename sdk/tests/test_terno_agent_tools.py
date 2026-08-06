@@ -19,15 +19,15 @@ def test_run_python_omitted_without_sandbox():
     assert "run_python" not in agent.tools
     # Core tools are always present:
     for name in (
-        "read_file",
-        "write_file",
-        "edit_file",
-        "bash",
-        "task_create",
-        "task_list",
-        "task_get",
-        "task_update",
-        "spawn_agent",
+        "Read",
+        "Write",
+        "Edit",
+        "Bash",
+        "TaskCreate",
+        "TaskList",
+        "TaskGet",
+        "TaskUpdate",
+        "Agent",
     ):
         assert name in agent.tools
 

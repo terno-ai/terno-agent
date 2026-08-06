@@ -30,7 +30,7 @@ def test_terno_agent_registers_mcp_tools():
         assert "mcp__srv__alpha" in agent.tools
         assert "mcp__srv__beta" in agent.tools
         # Built-in tools still present:
-        assert "read_file" in agent.tools
+        assert "Read" in agent.tools
     finally:
         manager.shutdown()
 
@@ -41,7 +41,7 @@ def test_subagent_shares_parent_manager():
     manager = _manager_with_tools(["echo"])
     try:
         agent = TernoAgent(_DummyLLM(), mcp_manager=manager)
-        spawn = agent.tools["spawn_agent"]
+        spawn = agent.tools["Agent"]
         assert getattr(spawn, "mcp_manager", None) is manager
     finally:
         manager.shutdown()

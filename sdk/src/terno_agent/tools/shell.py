@@ -36,12 +36,33 @@ class BashTool:
     @property
     def schema(self) -> ToolSchema:
         return ToolSchema(
-            name="bash",
+            name="Bash",
+            # Ported from the reference harness. Omits its `run_in_background`
+            # and sandbox bullets — Terno has neither — and its commit trailers
+            # name Terno rather than Claude.
             description=(
-                "Run a shell command (POSIX `sh -c`) in the agent's working "
-                "directory. Returns combined stdout+stderr and the exit "
-                "code. Output is truncated if very large. Be careful with "
-                "destructive commands (rm -rf, force pushes, etc.)."
+                "Executes a bash command and returns its output.\n"
+                "\n"
+                "- Working directory persists between calls, but prefer absolute"
+                " paths — `cd` in a compound command can trigger a permission"
+                " prompt.\n"
+                "- IMPORTANT: Avoid using this tool to run `cat`, `head`,"
+                " `tail`, `sed`, `awk`, or `echo` commands, unless explicitly"
+                " instructed or after you have verified that a dedicated tool"
+                " cannot accomplish your task. Instead, use the appropriate"
+                " dedicated tool as this will provide a much better experience"
+                " for the user.\n"
+                "- Command output is displayed to you, not reliably to the"
+                " user.\n"
+                "- Use `monitor` to wait on a condition rather than a foreground"
+                " `sleep`.\n"
+                "\n"
+                "# Git\n"
+                "- Interactive flags (`-i`, e.g. `git rebase -i`, `git add -i`)"
+                " are not supported in this environment.\n"
+                "- Use the `gh` CLI for GitHub operations (PRs, issues, API).\n"
+                "- Commit or push only when the user asks. If on the default"
+                " branch, branch first."
             ),
             parameters={
                 "type": "object",

@@ -40,6 +40,7 @@ from terno_agent.core.hooks import (
 from terno_agent.core.messages import (
     ContentPart,
     Message,
+    SystemBlock,
     SystemMessage,
     TextPart,
     ToolCall,
@@ -71,24 +72,30 @@ class BaseAgent:
         system_prompt: str,
         tools: Iterable[Tool] = (),
         *,
+        system_blocks: list[SystemBlock] | None = None,
         on_event: EventHook | None = None,
         hook_manager: HookManager | None = None,
         cancel_token: CancelToken | None = None,
     ) -> None:
         self.llm = llm
         self.system_prompt = system_prompt
+        # Carries the cache breakpoints; `system_prompt` stays as the flat form.
+        self.system_blocks = system_blocks
         self.tools: dict[str, Tool] = {t.schema.name: t for t in tools}
         self.on_event = on_event
         self.hooks = hook_manager or HookManager()
         self.cancel_token = cancel_token or CancelToken()
         self.usage = UsageMeter()
-        self.history: Trace = [SystemMessage(system_prompt)]
+        self.history: Trace = [self._system_message()]
+
+    def _system_message(self) -> SystemMessage:
+        return SystemMessage(self.system_prompt, blocks=self.system_blocks)
 
     # ----- public history controls -------------------------------------- #
 
     def clear_history(self) -> None:
         """Drop the current conversation; keep the system message."""
-        self.history = [SystemMessage(self.system_prompt)]
+        self.history = [self._system_message()]
         self.usage.reset()
 
     def add_hook(self, event: str, hook) -> None:

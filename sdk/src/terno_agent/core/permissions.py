@@ -35,18 +35,18 @@ if TYPE_CHECKING:
 # the set via ``PermissionPolicy(always_allow_tools=...)``.
 DEFAULT_ALWAYS_ALLOW_TOOLS: frozenset[str] = frozenset(
     {
-        "read_file",
+        "Read",
         "glob",
         "grep",
-        "task_list",
-        "task_get",
-        "task_create",
-        "task_update",
+        "TaskList",
+        "TaskGet",
+        "TaskCreate",
+        "TaskUpdate",
         "search_memory",
-        "web_fetch",
-        "web_search",
-        "ask_user",
-        "activate_skill",
+        "WebFetch",
+        "WebSearch",
+        "AskUserQuestion",
+        "Skill",
     }
 )
 

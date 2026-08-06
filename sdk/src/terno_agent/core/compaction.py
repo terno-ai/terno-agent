@@ -19,33 +19,27 @@ stderr and leaves history untouched.
 
 from __future__ import annotations
 
+import json
 import sys
+from collections.abc import Callable
 from dataclasses import dataclass
+from pathlib import Path
 
 from terno_agent.core.hooks import HookContext
 from terno_agent.core.messages import (
     AssistantMessage,
-    AttachmentManifestPart,
-    FilePart,
-    ImagePart,
     Message,
     SystemMessage,
-    TextPart,
     ToolResultMessage,
     UserMessage,
 )
 from terno_agent.llm.base import LLMClient
-
-_SUMMARY_PROMPT = (
-    "You are compacting an in-progress coding-agent conversation so the "
-    "agent can keep working with less context. Produce a tight, faithful "
-    "summary of what the user asked for, what was done, what was decided, "
-    "and any open threads or pending tasks. Preserve file paths, function "
-    "names, and exact error strings. Do NOT add commentary or apologize for "
-    "missing detail. Output plain prose, no markdown headings."
+from terno_agent.prompts.compaction import (
+    extract_summary,
+    render_read_replay,
+    with_instructions,
+    wrap_summary,
 )
-
-_SUMMARY_HEADER = "Conversation summary (older turns compacted):"
 
 
 @dataclass(slots=True)
@@ -55,7 +49,24 @@ class CompactionHook:
     llm: LLMClient
     threshold_input_tokens: int = 80_000
     keep_last_turns: int = 4
-    max_summary_tokens: int = 1024
+    # The reference summary is ~1.4k tokens of structured output, and the
+    # <analysis> block is generated before it and then discarded — so this
+    # needs real headroom. Truncation here silently loses the tail sections
+    # (Pending Tasks, Current Work), which are the ones worth keeping.
+    max_summary_tokens: int = 8192
+    # Project-specific summarisation guidance, e.g. "focus on test output and
+    # code changes". The prompt already tells the model to honour instructions
+    # "provided in the included context"; this is what provides them.
+    extra_instructions: str = ""
+    # Re-read files that were Read in the compacted turns and carry their current
+    # contents across the boundary. Without this the agent remembers only THAT it
+    # read a file, not what the file said — the summary rarely preserves whole
+    # files. Only reads are replayed: Edit/Bash output is transient, and the
+    # reference harness replays reads alone (verified in the capture).
+    replay_file_reads: bool = True
+    max_replay_chars: int = 20_000
+    # Injected for testing; defaults to a plain UTF-8 read.
+    file_reader: Callable[[str], str | None] | None = None
 
     def __call__(self, ctx: HookContext) -> None:
         if ctx.usage.last_input_tokens < self.threshold_input_tokens:
@@ -71,8 +82,17 @@ class CompactionHook:
         if summary is None:
             return
 
+        replay = self._read_replay(head) if self.replay_file_reads else ""
+
         # Rewrite in place so the agent's `self.history` reference stays valid.
-        ctx.history[:] = [system_msg, SystemMessage(f"{_SUMMARY_HEADER}\n{summary}"), *tail]
+        # The summary comes back as a USER message, matching the reference
+        # harness — a system message would read as a standing instruction
+        # rather than as recovered conversation.
+        ctx.history[:] = [
+            system_msg,
+            UserMessage(wrap_summary(summary, replay)),
+            *tail,
+        ]
         # Zero out `last_input_tokens` so the next no-op call doesn't re-trigger
         # before the LLM has reported actual usage on the smaller context.
         ctx.usage.last_input_tokens = 0
@@ -80,32 +100,89 @@ class CompactionHook:
     # ----- internals ---------------------------------------------------- #
 
     def _summarize(self, system_msg: SystemMessage, head: list[Message]) -> str | None:
-        transcript = _render_for_summary(head)
+        # Ask in-conversation, the way the reference harness does: replay the
+        # turns being compacted and append the request as a trailing user
+        # message, so the model summarises what it can already see rather than a
+        # transcript we flatten for it. `tools=None` makes a tool call
+        # impossible rather than merely forbidden.
         prompt_messages: list[Message] = [
-            SystemMessage(_SUMMARY_PROMPT),
-            UserMessage(
-                "Conversation so far (verbatim, oldest first):\n\n"
-                f"{transcript}\n\n"
-                "Write the summary now."
-            ),
+            system_msg,
+            *head,
+            UserMessage(with_instructions(self.extra_instructions)),
         ]
         try:
             response = self.llm.complete(
                 prompt_messages,
                 tools=None,
                 max_tokens=self.max_summary_tokens,
-                temperature=0.2,
             )
         except Exception as exc:
             print(f"warning: compaction summarization failed: {exc}", file=sys.stderr)
             return None
-        text = (response.message.content or "").strip()
+        text = extract_summary(response.message.content or "")
         return text or None
+
+    def _read_replay(self, head: list[Message]) -> str:
+        """Re-read every file the compacted turns Read, newest path order last.
+
+        Paths are deduplicated — a file read three times is carried once — and
+        the whole block is capped, because the point of compaction is to shrink
+        the context, not to smuggle the whole repo back in.
+        """
+        paths = _read_paths(head)
+        if not paths:
+            return ""
+
+        reader = self.file_reader or _read_text
+        entries: list[tuple[str, str]] = []
+        budget = self.max_replay_chars
+        for path in paths:
+            content = reader(path)
+            if content is None:
+                continue  # deleted, renamed, or unreadable since it was read
+            numbered = _number_lines(content)
+            if len(numbered) > budget:
+                break  # keep whole files only; a truncated file is misleading
+            budget -= len(numbered)
+            entries.append((json.dumps({"file_path": path}), numbered))
+        return render_read_replay(entries)
 
 
 # --------------------------------------------------------------------------- #
 # History slicing
 # --------------------------------------------------------------------------- #
+
+
+def _read_paths(messages: list[Message]) -> list[str]:
+    """`file_path` args of every successful Read call, in first-seen order."""
+    failed: set[str] = set()
+    for m in messages:
+        if isinstance(m, ToolResultMessage):
+            failed.update(r.call_id for r in m.results if r.is_error)
+
+    seen: dict[str, None] = {}
+    for m in messages:
+        if not isinstance(m, AssistantMessage):
+            continue
+        for tc in m.tool_calls or ():
+            if tc.name != "Read" or tc.id in failed:
+                continue
+            path = (tc.arguments or {}).get("file_path")
+            if isinstance(path, str) and path:
+                seen.setdefault(path, None)
+    return list(seen)
+
+
+def _read_text(path: str) -> str | None:
+    try:
+        return Path(path).read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+
+
+def _number_lines(text: str) -> str:
+    """`cat -n` style, matching what the Read tool returns."""
+    return "\n".join(f"{i}\t{line}" for i, line in enumerate(text.splitlines(), start=1))
 
 
 def _split_history(
@@ -128,51 +205,6 @@ def _split_history(
         return system_msg, [], body
     boundary = user_idxs[-keep_last_turns]
     return system_msg, body[:boundary], body[boundary:]
-
-
-def _render_for_summary(messages: list[Message]) -> str:
-    parts: list[str] = []
-    for m in messages:
-        if isinstance(m, UserMessage):
-            parts.append(f"USER:\n{_render_user_content(m.content)}")
-        elif isinstance(m, AssistantMessage):
-            line = f"ASSISTANT:\n{m.content}" if m.content else "ASSISTANT:"
-            if m.tool_calls:
-                names = ", ".join(f"{tc.name}" for tc in m.tool_calls)
-                line += f"\n[tool_calls: {names}]"
-            parts.append(line)
-        elif isinstance(m, ToolResultMessage):
-            for r in m.results:
-                marker = "ERROR" if r.is_error else "ok"
-                parts.append(f"TOOL_RESULT [{marker}]:\n{r.content}")
-        elif isinstance(m, SystemMessage):
-            parts.append(f"SYSTEM_NOTE:\n{m.content}")
-    return "\n\n".join(parts)
-
-
-def _render_user_content(content) -> str:
-    if isinstance(content, str):
-        return content
-    rendered: list[str] = []
-    for part in content:
-        if isinstance(part, TextPart):
-            rendered.append(part.text)
-        elif isinstance(part, AttachmentManifestPart):
-            rendered.append(part.text)
-        elif isinstance(part, ImagePart):
-            rendered.append(
-                f"[image attachment id={part.attachment_id} "
-                f"name={part.filename} mime={part.mime_type}]"
-            )
-        elif isinstance(part, FilePart):
-            rendered.append(
-                f"[file attachment id={part.attachment_id} name={part.filename} "
-                f"mime={part.mime_type} size={part.size_bytes} sha256={part.sha256}; "
-                "contents omitted from compaction transcript]"
-            )
-        else:  # pragma: no cover - defensive
-            rendered.append(str(part))
-    return "\n\n".join(rendered)
 
 
 __all__ = ["CompactionHook"]

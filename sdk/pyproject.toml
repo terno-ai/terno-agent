@@ -32,14 +32,19 @@ postgres = ["psycopg[binary]>=3.1"]
 mysql = ["pymysql>=1.1"]
 mcp = ["mcp>=1.2", "anyio>=4.4"]
 milvus = ["pymilvus>=2.4"]
+# The benchmark harnesses are 3.12+ only, while the SDK itself supports 3.10.
+# Without these markers the universal lock is unsatisfiable: uv has to resolve
+# every extra on every supported Python, and harbor/terminal-bench publish no
+# 3.10 or 3.11 wheels. Installing this extra on 3.10/3.11 gets you the parts
+# that work rather than a hard resolution failure.
 benchmarks = [
     "anthropic>=0.39",
     "datasets>=2.19",
     "docker>=7.0",
-    "harbor>=0.1.32",
     "openai>=1.40",
-    "swebench",
-    "terminal-bench",
+    "harbor>=0.1.32; python_version >= '3.12'",
+    "swebench; python_version >= '3.12'",
+    "terminal-bench; python_version >= '3.12'",
 ]
 all = [
     "anthropic>=0.39",
@@ -87,6 +92,12 @@ target-version = "py312"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "B", "UP", "N"]
+
+[tool.ruff.lint.per-file-ignores]
+# System-prompt text is reproduced byte-for-byte from captured requests; its
+# paragraphs are single long lines and rewrapping them would change the bytes.
+"src/terno_agent/prompts/blocks.py" = ["E501"]
+"src/terno_agent/prompts/compaction.py" = ["E501"]
 
 [tool.mypy]
 python_version = "3.12"

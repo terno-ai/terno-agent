@@ -66,8 +66,24 @@ UserContent = str | list[ContentPart]
 
 
 @dataclass(slots=True)
+class SystemBlock:
+    """One system-prompt segment, with an optional cache breakpoint.
+
+    Splitting the system prompt lets the stable parts be cached independently of
+    the session-specific parts. `cache_control` is passed through to providers
+    that understand it and ignored by those that don't.
+    """
+
+    text: str
+    cache_control: dict[str, Any] | None = None
+
+
+@dataclass(slots=True)
 class SystemMessage:
     content: str
+    # When set, the provider sends these blocks instead of `content`. `content`
+    # is kept in sync as the flattened form, for providers that take one string.
+    blocks: list[SystemBlock] | None = None
     role: Literal[Role.SYSTEM] = field(default=Role.SYSTEM, init=False)
 
 

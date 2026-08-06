@@ -12,13 +12,13 @@ any [Model Context Protocol (MCP)][mcp] servers you configure.
 - **One agent, one prompt.** No multi-agent orchestration — a single
   `TernoAgent` powered by Anthropic Claude or OpenAI.
 - **Built-in tools:**
-  `read_file`, `write_file`, `edit_file`, `bash`, `run_python`,
-  `task_create` / `task_list` / `task_get` / `task_update`, `spawn_agent`,
-  `ask_user`, `search_memory`.
-- **Edits show coloured diffs.** Every `edit_file` call renders as a
+  `Read`, `Write`, `Edit`, `Bash`, `run_python`,
+  `task_create` / `task_list` / `task_get` / `task_update`, `Agent`,
+  `AskUserQuestion`, `search_memory`.
+- **Edits show coloured diffs.** Every `Edit` call renders as a
   unified diff in the CLI (red removals, green additions, cyan hunk
-  headers). `write_file` refuses to clobber existing files unless you
-  pass `overwrite=true` — and when you do, the panel shows the diff
+  headers). `Write` refuses to clobber an existing file you haven't
+  read this conversation — once you have, the panel shows the diff
   between the on-disk content and the proposed rewrite. Edits become
   hard to miss; surprise overwrites become impossible.
 - **Permission prompts for tool use.** A `pre_tool_use` hook gates
@@ -26,8 +26,8 @@ any [Model Context Protocol (MCP)][mcp] servers you configure.
   *allow once*, *allow this tool for the rest of the session*, or
   *deny and tell the agent what to do instead* (your reason goes
   straight back to the LLM as a tool-result error). Read-only helpers
-  (`read_file`, `task_*`, `search_memory`, `ask_user`) skip the prompt.
-- **Human-in-the-loop questions.** `ask_user` lets the agent pause and
+  (`Read`, `task_*`, `search_memory`, `AskUserQuestion`) skip the prompt.
+- **Human-in-the-loop questions.** `AskUserQuestion` lets the agent pause and
   pose 1–4 multiple-choice questions when the request is genuinely
   ambiguous. Each question gets 2–4 options plus an automatic
   *"Other (custom text)"* choice, single- or multi-select. The CLI
@@ -46,8 +46,8 @@ any [Model Context Protocol (MCP)][mcp] servers you configure.
   and general-purpose work, and you can add `SKILL.md`-based skills in
   `.terno/skills/`, `.agents/skills/`, or `.claude/skills/`. Either
   Anthropic or OpenAI models load full instructions through
-  `activate_skill` only when needed.
-- **Subagent spawner.** `spawn_agent` recursively launches a fresh
+  `Skill` only when needed.
+- **Subagent spawner.** `Agent` recursively launches a fresh
   `TernoAgent` with a caller-supplied system prompt — useful for isolating
   focused subtasks from your main context.
 - **Persistent memory.** After each turn a background extractor mines
@@ -81,15 +81,15 @@ any [Model Context Protocol (MCP)][mcp] servers you configure.
                                  │
        ┌─────────────────────────┼─────────────────────────┐
        ▼                         ▼                         ▼
-  built-in tools           spawn_agent                MCP tools
-  read_file                (fresh TernoAgent,         (loaded from
-  write_file (gated)        shares manager +           .terno/mcp.json,
-  edit_file (diff'd)        task store)                via uvx /
+  built-in tools           Agent                      MCP tools
+  Read                     (fresh TernoAgent,         (loaded from
+  Write (gated)             shares manager +           .terno/mcp.json,
+  Edit (diff'd)             task store)                via uvx /
   bash                                                 npx / docker
   run_python (sandbox)                                 / HTTP / SSE)
-  ask_user (HITL)
+  AskUserQuestion
   search_memory
-  activate_skill
+  Skill
   task_* (in-memory)
 
   every tool call passes through a pre_tool_use hook
@@ -242,8 +242,8 @@ python -m terno_agent ask "..."
 
 ### What you'll see in chat
 
-The first time the agent reaches for any side-effecting tool (`bash`,
-`edit_file`, `write_file`, `run_python`, `spawn_agent`, MCP tools…)
+The first time the agent reaches for any side-effecting tool (`Bash`,
+`Edit`, `Write`, `run_python`, `Agent`, MCP tools…)
 you'll get a permission prompt:
 
 ```
@@ -262,14 +262,14 @@ permission> 2
 Picking *(2)* skips future prompts for that tool name in this session.
 *(3)* asks for a free-text reason that's sent back to the agent as a
 tool-result error — the model adapts instead of being silently blocked.
-Read-only tools (`read_file`, `task_*`, `search_memory`, `ask_user`)
+Read-only tools (`Read`, `task_*`, `search_memory`, `AskUserQuestion`)
 skip the prompt entirely.
 
 When the agent edits a file you get a coloured unified diff in place
 of the raw arguments:
 
 ```
-╭─ [terno] → edit_file ──────────────────────────╮
+╭─ [terno] → Edit ──────────────────────────╮
 │ path: src/utils.py                             │
 │ --- a/src/utils.py                             │
 │ +++ b/src/utils.py                             │
@@ -280,7 +280,7 @@ of the raw arguments:
 ╰────────────────────────────────────────────────╯
 ```
 
-If the agent needs a decision from you it can call `ask_user`, which
+If the agent needs a decision from you it can call `AskUserQuestion`, which
 walks through one or more multiple-choice questions:
 
 ```
@@ -448,7 +448,7 @@ is a directory containing a required `SKILL.md` file with YAML
 frontmatter (`name` and `description`) followed by Markdown
 instructions. At startup, Terno loads only each skill's metadata into the
 system prompt. When the model decides a skill is relevant, it calls
-`activate_skill(name)` to load the full instructions and a capped list of
+`Skill(name)` to load the full instructions and a capped list of
 bundled resources.
 
 Built-in skills are available by default:
@@ -839,7 +839,7 @@ warning and keeps running without memory.
 src/terno_agent/
   __init__.py          # public re-exports
   cli.py               # argparse entry, rich renderer, CliPrompter
-                       # (ask_user), CliPermissionPrompter (pre_tool_use),
+                       # (AskUserQuestion), CliPermissionPrompter (pre_tool_use),
                        # coloured unified-diff renderer for edits
   config.py            # env + .env-driven Config
   core/                # message / tool / event / hook / exception types
@@ -847,10 +847,10 @@ src/terno_agent/
   llm/                 # LLMClient protocol + Anthropic + OpenAI (streaming)
   agents/              # BaseAgent + the single TernoAgent
   prompts/             # the single SYSTEM_PROMPT
-  tools/               # read_file, write_file (overwrite-gated),
-                       # edit_file, bash, run_python, tasks,
-                       # spawn_agent, ask_user, activate_skill
-  skills/              # SKILL.md discovery + activate_skill adapter
+  tools/               # Read, Write (read-before-write),
+                       # Edit, Bash, run_python, tasks,
+                       # Agent, AskUserQuestion, Skill
+  skills/              # SKILL.md discovery + Skill adapter
   sandbox/             # Docker + local subprocess runners (for run_python)
   mcp/                 # .terno/mcp.json parser, runner resolver, async bridge,
                        # session manager, sync Tool adapter

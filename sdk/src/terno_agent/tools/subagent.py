@@ -44,15 +44,32 @@ class SpawnAgentTool:
     @property
     def schema(self) -> ToolSchema:
         return ToolSchema(
-            name="spawn_agent",
+            name="Agent",
+            # Ported from the reference harness, keeping its "When to use"
+            # guidance verbatim. Dropped: agent-type registry / subagent_type,
+            # SendMessage continuation, worktree+remote isolation, per-call model
+            # and effort overrides, and background execution with notifications —
+            # Terno has none of those, and every one of them named a tool or
+            # parameter that does not exist here.
             description=(
-                "Spawn a fresh Terno subagent with a caller-supplied system "
-                "prompt and run it on a task. The subagent has the same tools "
-                "you do (recursively) and returns its final answer as a "
-                "string. Use this to parallelize independent work or to "
-                "isolate a focused subtask from your context — the subagent "
-                "does not see your messages, so the prompt + task must be "
-                "self-contained."
+                "Launch a new agent to handle complex, multi-step tasks. The"
+                " agent gets a system prompt you write and the same tools you"
+                " have (recursively), and returns its final answer as a string."
+                " It runs synchronously.\n"
+                "\n"
+                "## When to use\n"
+                "\n"
+                "Reach for this when you have independent work to run in"
+                " parallel, or when answering would mean reading across several"
+                " files — delegate it and you keep the conclusion, not the file"
+                " dumps. For a single-fact lookup where you already know the"
+                " file, symbol, or value, search directly. Once you've delegated"
+                " a search, don't also run it yourself — wait for the result.\n"
+                "\n"
+                "- The agent's final report is not shown to the user — relay what"
+                " matters.\n"
+                "- The agent does not see your conversation, so `prompt` and"
+                " `task` must be self-contained."
             ),
             parameters={
                 "type": "object",

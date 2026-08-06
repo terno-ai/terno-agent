@@ -13,6 +13,7 @@ from terno_agent.core.messages import (
     ImagePart,
     Message,
     Role,
+    SystemBlock,
     SystemMessage,
     TextPart,
     ToolCall,
@@ -26,7 +27,22 @@ from terno_agent.llm.base import LLMResponse, TextDeltaCallback
 class AnthropicClient:
     """Wraps `anthropic.Anthropic` and translates to/from neutral messages."""
 
-    def __init__(self, *, api_key: str | None = None, model: str) -> None:
+    def __init__(
+        self,
+        *,
+        api_key: str | None = None,
+        model: str,
+        effort: str | None = None,
+        thinking: str | None = None,
+        clear_thinking: bool = False,
+    ) -> None:
+        """
+        `effort`, `thinking` and `clear_thinking` mirror knobs the reference
+        harness sends on every request (`effort="medium"`,
+        `thinking="adaptive"`, `clear_thinking=True`). They are beta features
+        that a given account or API version may reject, so all three default to
+        off — opt in once you've confirmed your account accepts them.
+        """
         try:
             from anthropic import Anthropic
         except ImportError as exc:
@@ -36,6 +52,9 @@ class AnthropicClient:
             ) from exc
         self._client = Anthropic(api_key=api_key) if api_key else Anthropic()
         self.model = model
+        self.effort = effort
+        self.thinking = thinking
+        self.clear_thinking = clear_thinking
 
     def complete(
         self,
@@ -43,17 +62,29 @@ class AnthropicClient:
         tools: list[ToolSchema] | None = None,
         *,
         max_tokens: int = 4096,
-        temperature: float = 0.2,
+        temperature: float | None = None,
         on_text_delta: TextDeltaCallback | None = None,
     ) -> LLMResponse:
         system, history = _split_system(messages)
         kwargs: dict[str, Any] = {
             "model": self.model,
             "max_tokens": max_tokens,
-            "temperature": temperature,
             "system": system or "",
             "messages": [_to_anthropic(m) for m in history],
         }
+        # The reference harness sends no sampling params at all, letting the
+        # model default apply. Only send one if a caller explicitly asked.
+        if temperature is not None:
+            kwargs["temperature"] = temperature
+        if self.thinking:
+            kwargs["thinking"] = {"type": self.thinking}
+        if self.effort:
+            kwargs["output_config"] = {"effort": self.effort}
+        if self.clear_thinking:
+            # Drop earlier thinking blocks server-side so they don't accumulate.
+            kwargs["context_management"] = {
+                "edits": [{"type": "clear_thinking_20251015", "keep": "all"}]
+            }
         tool_schemas = [_tool_to_anthropic(t) for t in (tools or [])]
         if tool_schemas:
             kwargs["tools"] = tool_schemas
@@ -81,15 +112,36 @@ class AnthropicClient:
         return _from_anthropic(final)
 
 
-def _split_system(messages: list[Message]) -> tuple[str, list[Message]]:
-    system_chunks: list[str] = []
+def system_block_to_anthropic(block: SystemBlock) -> dict[str, Any]:
+    """Render one system block, carrying its cache breakpoint if it has one."""
+    out: dict[str, Any] = {"type": "text", "text": block.text}
+    if block.cache_control is not None:
+        out["cache_control"] = dict(block.cache_control)
+    return out
+
+
+def _split_system(
+    messages: list[Message],
+) -> tuple[str | list[dict[str, Any]], list[Message]]:
+    """Pull system messages out of the trace.
+
+    Returns a block list when any system message carries structured blocks — the
+    only way to express per-block cache breakpoints — and a plain joined string
+    otherwise.
+    """
+    chunks: list[str] = []
+    blocks: list[SystemBlock] = []
     rest: list[Message] = []
     for m in messages:
         if isinstance(m, SystemMessage):
-            system_chunks.append(m.content)
+            chunks.append(m.content)
+            blocks.extend(m.blocks or [SystemBlock(m.content)])
         else:
             rest.append(m)
-    return "\n\n".join(system_chunks), rest
+
+    if any(b.cache_control is not None for b in blocks):
+        return [system_block_to_anthropic(b) for b in blocks], rest
+    return "\n\n".join(chunks), rest
 
 
 def _to_anthropic(msg: Message) -> dict[str, Any]:

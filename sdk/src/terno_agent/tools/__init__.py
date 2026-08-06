@@ -8,7 +8,6 @@ from terno_agent.tools.ask_user import (
 from terno_agent.tools.code_exec import RunPythonTool
 from terno_agent.tools.files import EditFileTool, ReadFileTool, WriteFileTool
 from terno_agent.tools.monitor import MonitorTool
-from terno_agent.tools.search import GlobTool, GrepTool
 from terno_agent.tools.shell import BashTool
 from terno_agent.tools.subagent import SpawnAgentTool
 from terno_agent.tools.tasks import (
@@ -27,8 +26,6 @@ __all__ = [
     "AskUserTool",
     "BashTool",
     "EditFileTool",
-    "GlobTool",
-    "GrepTool",
     "MonitorTool",
     "Question",
     "QuestionOption",

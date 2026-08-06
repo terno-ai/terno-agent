@@ -177,7 +177,7 @@ def test_terno_agent_cancel_propagates_to_subagent():
             raise AssertionError("not invoked here")
 
     agent = TernoAgent(_DummyLLM())
-    spawn = agent.tools["spawn_agent"]
+    spawn = agent.tools["Agent"]
     # The token attached to the agent must be the one SpawnAgentTool holds.
     assert spawn.cancel_token is agent.cancel_token
 

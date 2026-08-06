@@ -3,6 +3,7 @@ from __future__ import annotations
 import gzip
 import io
 from typing import Any
+from urllib.parse import quote
 
 import pytest
 
@@ -155,3 +156,57 @@ def test_web_fetch_unknown_encoding_falls_through(stub_urlopen):
     stub_urlopen(b"plain text body", content_encoding="br", content_type="text/plain")
     out = web.WebFetchTool().run(url="https://example.com")
     assert "plain text body" in out
+
+
+def _ddg_results(*urls: str) -> bytes:
+    """A DuckDuckGo HTML page linking to each URL, in order."""
+    parts = [b"<html><body>"]
+    for i, u in enumerate(urls, start=1):
+        quoted = quote(u, safe="")
+        parts.append(
+            f'<a class="result__a" href="//duckduckgo.com/l/?uddg={quoted}">'
+            f"Result {i}</a><a class=\"result__snippet\">Snippet {i}.</a>".encode()
+        )
+    parts.append(b"</body></html>")
+    return b"".join(parts)
+
+
+def test_web_search_allowed_domains_filters_results(stub_urlopen):
+    stub_urlopen(_ddg_results("https://good.com/a", "https://bad.com/b"))
+    out = web.WebSearchTool().run(query="q", allowed_domains=["good.com"])
+    assert "good.com/a" in out
+    assert "bad.com" not in out
+
+
+def test_web_search_blocked_domains_filters_results(stub_urlopen):
+    stub_urlopen(_ddg_results("https://good.com/a", "https://bad.com/b"))
+    out = web.WebSearchTool().run(query="q", blocked_domains=["bad.com"])
+    assert "good.com/a" in out
+    assert "bad.com" not in out
+
+
+def test_domain_filters_cover_subdomains(stub_urlopen):
+    # `example.com` should match `docs.example.com`, but not `notexample.com`.
+    stub_urlopen(
+        _ddg_results(
+            "https://docs.example.com/a",
+            "https://notexample.com/b",
+        )
+    )
+    out = web.WebSearchTool().run(query="q", allowed_domains=["example.com"])
+    assert "docs.example.com/a" in out
+    assert "notexample.com" not in out
+
+
+def test_web_search_filtering_everything_reports_no_results(stub_urlopen):
+    stub_urlopen(_ddg_results("https://bad.com/a"))
+    out = web.WebSearchTool().run(query="q", blocked_domains=["bad.com"])
+    assert "no results" in out
+
+
+def test_ported_tool_names_and_params():
+    # Names and parameter spellings come from the captured schemas.
+    assert web.WebSearchTool().schema.name == "WebSearch"
+    assert web.WebFetchTool().schema.name == "WebFetch"
+    search_props = web.WebSearchTool().schema.parameters["properties"]
+    assert {"query", "allowed_domains", "blocked_domains"} <= set(search_props)

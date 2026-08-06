@@ -50,6 +50,38 @@ _BROWSER_HEADERS: dict[str, str] = {
 _MAX_RESPONSE_BYTES = 2_000_000
 _REQUEST_TIMEOUT_S = 30
 _FETCH_DEFAULT_MAX_CHARS = 20_000
+def _current_month() -> str:
+    """e.g. "August 2026" — injected so the model isn't told a stale date."""
+    from datetime import date
+
+    return date.today().strftime("%B %Y")
+
+
+def _domain_list(value: Any) -> list[str]:
+    if not value:
+        return []
+    if isinstance(value, str):
+        value = [value]
+    return [d.strip().lower().lstrip(".") for d in value if str(d).strip()]
+
+
+def _domain_allowed(url: str, allowed: list[str], blocked: list[str]) -> bool:
+    """Match on the host, and on any parent domain so `example.com` covers
+    `docs.example.com`."""
+    host = (urlparse(url).hostname or "").lower()
+    if not host:
+        return False
+
+    def matches(patterns: list[str]) -> bool:
+        return any(host == p or host.endswith(f".{p}") for p in patterns)
+
+    if blocked and matches(blocked):
+        return False
+    if allowed and not matches(allowed):
+        return False
+    return True
+
+
 _SEARCH_DEFAULT_LIMIT = 5
 _SEARCH_MAX_LIMIT = 20
 
@@ -175,13 +207,19 @@ class WebFetchTool:
     @property
     def schema(self) -> ToolSchema:
         return ToolSchema(
-            name="web_fetch",
+            name="WebFetch",
+            # The reference tool answers a `prompt` against the page using a
+            # small model; this one returns the text itself, so the description
+            # says that instead of promising an answer it can't produce.
             description=(
-                "Fetch the content at an http(s) URL and return it as text. "
-                "HTML is stripped to its visible text; other content types "
-                "are returned as-is (text decoded as UTF-8 with replacement). "
-                "Response bodies are capped at ~2 MB and the returned text "
-                "is further trimmed to `max_chars` (default 20 000)."
+                "Fetches a URL and returns the page as text.\n"
+                "\n"
+                "- HTML is stripped to its visible text; other content types are"
+                " returned as-is (decoded as UTF-8 with replacement).\n"
+                "- Fails on authenticated/private URLs — use an authenticated MCP"
+                " tool or `gh` for those instead.\n"
+                "- Response bodies are capped at ~2 MB and the returned text is"
+                " further trimmed to `max_chars` (default 20 000)."
             ),
             parameters={
                 "type": "object",
@@ -205,7 +243,7 @@ class WebFetchTool:
     def run(self, **kwargs: Any) -> str:
         url = (kwargs.get("url") or "").strip()
         if not url:
-            raise ToolError("web_fetch requires a 'url'.")
+            raise ToolError("WebFetch requires a 'url'.")
         max_chars = int(kwargs.get("max_chars") or _FETCH_DEFAULT_MAX_CHARS)
         if max_chars <= 0:
             raise ToolError("max_chars must be positive.")
@@ -223,19 +261,36 @@ class WebSearchTool:
     @property
     def schema(self) -> ToolSchema:
         return ToolSchema(
-            name="web_search",
+            name="WebSearch",
+            # Ported from the reference harness. Its "US-only" note is dropped
+            # (DuckDuckGo's HTML endpoint isn't region-locked the same way) and
+            # the current month is computed rather than baked in, since a stale
+            # date actively misleads the model about what "recent" means.
             description=(
-                "Search the web for current information using DuckDuckGo's "
-                "HTML endpoint (no API key required). Returns a numbered "
-                "list of results as 'title / URL / snippet'. For deeper "
-                "content on a specific result, follow up with `web_fetch`."
+                "Search the web. Returns result blocks with titles and URLs.\n"
+                "\n"
+                f"- The current month is {_current_month()} — use this when"
+                " searching for recent information.\n"
+                "- `allowed_domains` / `blocked_domains` filter results.\n"
+                "- After answering from results, end with a \"Sources:\" list of"
+                " the URLs you used as markdown links."
             ),
             parameters={
                 "type": "object",
                 "properties": {
                     "query": {
                         "type": "string",
-                        "description": "Free-form search query.",
+                        "description": "The search query to use",
+                    },
+                    "allowed_domains": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Only include results from these domains",
+                    },
+                    "blocked_domains": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Never include results from these domains",
                     },
                     "limit": {
                         "type": "integer",
@@ -253,13 +308,21 @@ class WebSearchTool:
     def run(self, **kwargs: Any) -> str:
         query = (kwargs.get("query") or "").strip()
         if not query:
-            raise ToolError("web_search requires a non-empty 'query'.")
+            raise ToolError("WebSearch requires a non-empty 'query'.")
         limit_raw = int(kwargs.get("limit") or _SEARCH_DEFAULT_LIMIT)
         limit = max(1, min(limit_raw, _SEARCH_MAX_LIMIT))
+        allowed = _domain_list(kwargs.get("allowed_domains"))
+        blocked = _domain_list(kwargs.get("blocked_domains"))
 
         url = f"https://html.duckduckgo.com/html/?q={quote_plus(query)}"
         body, _ctype = _fetch(url)
-        results = _parse_ddg(body, limit=limit)
+        # Over-fetch when filtering, so the filters don't starve the result list.
+        raw_limit = limit * 5 if (allowed or blocked) else limit
+        results = _parse_ddg(body, limit=min(raw_limit, _SEARCH_MAX_LIMIT * 5))
+        if allowed or blocked:
+            results = [
+                r for r in results if _domain_allowed(r["url"], allowed, blocked)
+            ][:limit]
         if not results:
             return f"(no results for {query!r})"
 

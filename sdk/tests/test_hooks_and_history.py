@@ -205,8 +205,11 @@ def test_compaction_summarizes_above_threshold():
     assert len(ctx.history) == 6
     assert isinstance(ctx.history[0], SystemMessage)
     assert ctx.history[0].content == "sys"
-    assert isinstance(ctx.history[1], SystemMessage)
+    # The summary returns as a USER message, matching the reference harness — as
+    # a system message it would read as a standing instruction.
+    assert isinstance(ctx.history[1], UserMessage)
     assert "SUMMARY OF OLD TURNS" in ctx.history[1].content
+    assert ctx.history[1].content.startswith("This session is being continued")
     # Last two user turns must be kept verbatim.
     assert isinstance(ctx.history[2], UserMessage)
     assert ctx.history[2].content == "q4"
@@ -267,3 +270,295 @@ def test_compaction_keeps_tool_result_pairing():
     assert ctx.history[2].content == "q1"
     # ToolResultMessage must be preserved in the tail.
     assert any(isinstance(m, ToolResultMessage) for m in ctx.history)
+
+
+# ----- compaction prompt fidelity ----------------------------------------- #
+
+
+def test_extract_summary_keeps_only_the_summary_block():
+    from terno_agent.prompts.compaction import extract_summary
+
+    response = (
+        "<analysis>\nthinking out loud, should be dropped\n</analysis>\n"
+        "<summary>\n1. Primary Request and Intent:\n   Do the thing.\n</summary>"
+    )
+    out = extract_summary(response)
+
+    assert out.startswith("1. Primary Request and Intent:")
+    assert "thinking out loud" not in out
+
+
+def test_extract_summary_falls_back_to_the_whole_response():
+    from terno_agent.prompts.compaction import extract_summary
+
+    # A model that ignores the format should still yield something usable.
+    assert extract_summary("  just prose, no tags  ") == "just prose, no tags"
+
+
+def test_extract_summary_tolerates_a_missing_closing_tag():
+    from terno_agent.prompts.compaction import extract_summary
+
+    assert extract_summary("<summary>\ntruncated mid-stream") == "truncated mid-stream"
+
+
+def test_wrap_summary_brackets_the_summary_for_replay():
+    from terno_agent.prompts.compaction import wrap_summary
+
+    out = wrap_summary("1. Primary Request and Intent:\n   Do the thing.")
+
+    assert out.startswith("This session is being continued from a previous")
+    assert "1. Primary Request and Intent:" in out
+    # The "resume without acknowledging" tail is what stops a visible
+    # get-back-up-to-speed turn after compaction.
+    assert "do not acknowledge the summary" in out
+
+
+def test_summary_request_forbids_tool_use_and_asks_for_nine_sections():
+    from terno_agent.prompts.compaction import SUMMARY_REQUEST
+
+    assert SUMMARY_REQUEST.startswith("CRITICAL: Respond with TEXT ONLY.")
+    for section in (
+        "1. Primary Request and Intent",
+        "6. All user messages",
+        "8. Current Work",
+        "9. Optional Next Step",
+    ):
+        assert section in SUMMARY_REQUEST
+    # Terno has no Grep/Glob; the tool list must name tools that exist here.
+    assert "Grep" not in SUMMARY_REQUEST
+    assert "Glob" not in SUMMARY_REQUEST
+
+
+def test_compaction_asks_in_conversation_without_tools():
+    """The turns being compacted are replayed, not flattened into a transcript."""
+    from terno_agent.core.compaction import CompactionHook
+    from terno_agent.prompts.compaction import SUMMARY_REQUEST
+
+    seen = {}
+
+    class _LLM:
+        model = "dummy"
+
+        def complete(self, messages, tools=None, **kwargs):
+            seen["messages"] = messages
+            seen["tools"] = tools
+            seen["max_tokens"] = kwargs.get("max_tokens")
+            seen["temperature"] = kwargs.get("temperature")
+            return LLMResponse(
+                message=AssistantMessage(content="<summary>ok</summary>"),
+                stop_reason="stop",
+            )
+
+    hook = CompactionHook(llm=_LLM(), threshold_input_tokens=1, keep_last_turns=2)
+    ctx = HookContext(
+        event=HookEvent.CHAT_END,
+        agent=None,  # type: ignore[arg-type]
+        history=_build_history(6),
+        usage=UsageMeter(last_input_tokens=5000),
+    )
+    hook(ctx)
+
+    msgs = seen["messages"]
+    assert seen["tools"] is None  # a tool call must be impossible, not just banned
+    assert seen["temperature"] is None  # no sampling params, per the capture
+    assert seen["max_tokens"] >= 8192  # the structured summary needs headroom
+    # System prompt first, replayed turns next, request appended last.
+    assert isinstance(msgs[0], SystemMessage)
+    assert isinstance(msgs[-1], UserMessage)
+    assert msgs[-1].content == SUMMARY_REQUEST
+    assert len(msgs) > 2
+
+
+def test_summary_request_is_byte_exact_apart_from_the_tool_list():
+    """The only permitted deviation is the CRITICAL block's tool list."""
+    import difflib
+    from pathlib import Path
+
+    from terno_agent.prompts.compaction import SUMMARY_REQUEST
+
+    captured = Path("/Users/navin/terno/cc-corpus/replay/compaction-request.md")
+    if not captured.exists():
+        return  # corpus not present on this machine
+
+    changed = [
+        line[1:]
+        for line in difflib.unified_diff(
+            captured.read_text().splitlines(), SUMMARY_REQUEST.splitlines(), n=0
+        )
+        if line[:1] in "+-" and line[:3] not in ("---", "+++")
+    ]
+    assert len(changed) == 2, f"unexpected deviations: {changed}"
+    assert all("or ANY other tool." in line for line in changed)
+
+
+def test_extra_instructions_are_appended_under_the_expected_header():
+    from terno_agent.prompts.compaction import (
+        INSTRUCTIONS_HEADER,
+        SUMMARY_REQUEST,
+        with_instructions,
+    )
+
+    # No instructions -> the prompt is untouched.
+    assert with_instructions("") is SUMMARY_REQUEST
+    assert with_instructions(None) is SUMMARY_REQUEST
+    assert with_instructions("   ") is SUMMARY_REQUEST
+
+    out = with_instructions("Focus on SQL changes.")
+    assert out.startswith(SUMMARY_REQUEST)
+    assert out.endswith(f"{INSTRUCTIONS_HEADER}\nFocus on SQL changes.")
+
+
+def test_hook_forwards_extra_instructions_to_the_prompt():
+    from terno_agent.core.compaction import CompactionHook
+
+    seen = {}
+
+    class _LLM:
+        model = "dummy"
+
+        def complete(self, messages, tools=None, **kwargs):
+            seen["last"] = messages[-1].content
+            return LLMResponse(
+                message=AssistantMessage(content="<summary>ok</summary>"),
+                stop_reason="stop",
+            )
+
+    hook = CompactionHook(
+        llm=_LLM(),
+        threshold_input_tokens=1,
+        keep_last_turns=2,
+        extra_instructions="Focus on SQL changes.",
+    )
+    hook(
+        HookContext(
+            event=HookEvent.CHAT_END,
+            agent=None,  # type: ignore[arg-type]
+            history=_build_history(6),
+            usage=UsageMeter(last_input_tokens=5000),
+        )
+    )
+    assert "## Compact Instructions\nFocus on SQL changes." in seen["last"]
+
+
+# ----- file-state replay across the compaction boundary -------------------- #
+
+
+def _history_with_read(path: str, *, is_error: bool = False, tool: str = "Read"):
+    """6 turns, with a tool call on the first so it lands in the compacted head."""
+    from terno_agent.core.messages import ToolCall
+
+    history: list[Message] = [SystemMessage("sys")]
+    history.append(UserMessage("q0"))
+    history.append(
+        AssistantMessage(
+            content="",
+            tool_calls=[ToolCall(id="c1", name=tool, arguments={"file_path": path})],
+        )
+    )
+    history.append(
+        ToolResultMessage(results=[ToolResult(call_id="c1", content="old", is_error=is_error)])
+    )
+    for i in range(1, 6):
+        history.append(UserMessage(f"q{i}"))
+        history.append(AssistantMessage(content=f"a{i}"))
+    return history
+
+
+def _compact(history, **kwargs) -> str:
+    """Run the hook with a stub LLM; return the resulting summary message body."""
+    from terno_agent.core.compaction import CompactionHook
+
+    class _LLM:
+        model = "dummy"
+
+        def complete(self, messages, tools=None, **_kw):
+            return LLMResponse(
+                message=AssistantMessage(content="<summary>S</summary>"),
+                stop_reason="stop",
+            )
+
+    hook = CompactionHook(
+        llm=_LLM(), threshold_input_tokens=1, keep_last_turns=2, **kwargs
+    )
+    ctx = HookContext(
+        event=HookEvent.CHAT_END,
+        agent=None,  # type: ignore[arg-type]
+        history=history,
+        usage=UsageMeter(last_input_tokens=5000),
+    )
+    hook(ctx)
+    return ctx.history[1].content
+
+
+def test_replay_carries_current_file_contents_not_the_original_output():
+    # The capture showed a file edited after being read coming back POST-edit,
+    # so the replay must re-read from disk rather than replay stale tool output.
+    body = _compact(
+        _history_with_read("/x/a.py"),
+        file_reader=lambda p: "line one\nline two\n",
+    )
+
+    assert "Called the Read tool with the following input:" in body
+    assert '"file_path": "/x/a.py"' in body
+    assert "1\tline one" in body and "2\tline two" in body
+    assert "old" not in body  # the stale tool output must not survive
+
+
+def test_replay_deduplicates_repeated_reads_of_one_file():
+    from terno_agent.core.messages import ToolCall
+
+    history = _history_with_read("/x/a.py")
+    history[2].tool_calls.append(
+        ToolCall(id="c2", name="Read", arguments={"file_path": "/x/a.py"})
+    )
+    body = _compact(history, file_reader=lambda p: "content\n")
+
+    assert body.count("Called the Read tool") == 1
+
+
+def test_replay_skips_failed_reads_and_non_read_tools():
+    assert "Called the Read tool" not in _compact(
+        _history_with_read("/x/a.py", is_error=True), file_reader=lambda p: "c\n"
+    )
+    # Edit/Bash output is transient; only reads are replayed.
+    assert "Called the Read tool" not in _compact(
+        _history_with_read("/x/a.py", tool="Edit"), file_reader=lambda p: "c\n"
+    )
+
+
+def test_replay_skips_files_that_no_longer_read():
+    # Deleted or renamed since it was read — omit it rather than inventing text.
+    body = _compact(_history_with_read("/x/gone.py"), file_reader=lambda p: None)
+    assert "Called the Read tool" not in body
+    assert "S" in body  # the summary itself still lands
+
+
+def test_replay_respects_its_budget_and_never_truncates_a_file():
+    big = "x" * 500
+    body = _compact(
+        _history_with_read("/x/a.py"),
+        file_reader=lambda p: big,
+        max_replay_chars=10,
+    )
+    # A half-file would misrepresent its contents, so it is dropped entirely.
+    assert "Called the Read tool" not in body
+
+
+def test_replay_can_be_switched_off():
+    body = _compact(
+        _history_with_read("/x/a.py"),
+        replay_file_reads=False,
+        file_reader=lambda p: "c\n",
+    )
+    assert "Called the Read tool" not in body
+
+
+def test_resume_instruction_stays_last_after_the_replay():
+    body = _compact(_history_with_read("/x/a.py"), file_reader=lambda p: "c\n")
+
+    # "continue from where you left off" must be the final instruction, or the
+    # file dump becomes the model's most recent instruction instead.
+    assert body.index("Called the Read tool") < body.index(
+        "Continue the conversation from where it left off"
+    )
+    assert body.strip().endswith("as if the break never happened.")

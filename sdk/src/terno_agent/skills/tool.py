@@ -19,26 +19,49 @@ class ActivateSkillTool:
     def schema(self) -> ToolSchema:
         names = sorted(self.catalog.skills)
         return ToolSchema(
-            name="activate_skill",
+            name="Skill",
+            # Ported from the reference harness. Dropped: plugin (`plugin:skill`)
+            # and directory-scoped (`apps/web:deploy`) name forms, skills that run
+            # in a subagent and return asynchronously, the `args` passthrough, and
+            # the `<command-name>` block check — Terno has none of these. The
+            # `enum` of known names is kept, which is stricter than the reference
+            # tool and makes "do not guess names" enforceable rather than advisory.
             description=(
-                "Load full instructions for an available Agent Skill. Use this when "
-                "the user's task matches a skill description from the system prompt."
+                "Invoke a skill.\n"
+                "\n"
+                "A skill is a packaged set of instructions the user or project has"
+                " set up for a particular kind of task (deploy steps, a review"
+                " checklist, a repo-specific workflow). Available skills appear in"
+                " the system prompt with one-line descriptions. When the task at"
+                " hand is one a listed skill covers, call this tool first — the"
+                " skill's instructions load into the turn for you to follow in"
+                " place of your default approach. Users may also ask for one by"
+                ' name (`/<name>`, or "slash command"); that\'s a request to'
+                " invoke it.\n"
+                "\n"
+                "- `skill`: exact name from the listing, no leading slash.\n"
+                "\n"
+                "Only names from the listing (or that the user typed explicitly)"
+                " are valid."
             ),
             parameters={
                 "type": "object",
                 "properties": {
-                    "name": {
+                    "skill": {
                         "type": "string",
-                        "description": "Name of the skill to activate.",
+                        "description": (
+                            "The name of a skill from the available-skills list."
+                            " Do not guess names."
+                        ),
                         "enum": names,
                     }
                 },
-                "required": ["name"],
+                "required": ["skill"],
             },
         )
 
     def run(self, **kwargs: Any) -> str:
-        name = str(kwargs.get("name") or "").strip()
+        name = str(kwargs.get("skill") or "").strip()
         skill = self.catalog.skills.get(name)
         if skill is None:
             available = ", ".join(sorted(self.catalog.skills)) or "(none)"

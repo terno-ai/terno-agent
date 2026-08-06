@@ -61,17 +61,33 @@ class AskUserTool:
     @property
     def schema(self) -> ToolSchema:
         return ToolSchema(
-            name="ask_user",
+            name="AskUserQuestion",
+            # Ported from the reference harness. Dropped: the plan-mode
+            # paragraph (no EnterPlanMode/ExitPlanMode here) and the whole
+            # `preview` feature, which needs a side-by-side rendering UI the
+            # terminal prompter doesn't have. The return-shape sentence is kept —
+            # it is Terno-specific and the model needs it to read the result.
             description=(
-                "Ask the user one or more multiple-choice questions and "
-                "block until they answer. Use for clarifications that "
-                "materially change what you'll do (ambiguous requirements, "
-                "risky/destructive choices, missing inputs). Provide 2–4 "
-                "options per question; an 'Other (custom text)' option is "
-                "appended automatically so the user can supply free text. "
-                "Returns JSON: {\"answers\": [{\"question\", \"selected\": "
-                "[labels], \"other_text\": str|null}]}. Do NOT use for "
-                "trivia you can answer yourself by reading code."
+                "Use this tool only when you are blocked on a decision that is"
+                " genuinely the user's to make: one you cannot resolve from the"
+                " request, the code, or sensible defaults.\n"
+                "\n"
+                "Usage notes:\n"
+                '- Users will always be able to select "Other" to provide custom'
+                " text input\n"
+                "- Use multiSelect: true to allow multiple answers to be selected"
+                " for a question\n"
+                "- If you recommend a specific option, make that the first option"
+                ' in the list and add "(Recommended)" at the end of the label\n'
+                "\n"
+                "Reserve this for decisions where the user's answer changes what"
+                " you do next — not for choices with a conventional default or"
+                " facts you can verify in the codebase yourself. In those cases"
+                " pick the obvious option, mention it in your response, and"
+                " proceed.\n"
+                "\n"
+                'Returns JSON: {"answers": [{"question", "selected": [labels],'
+                ' "other_text": str|null}]}.'
             ),
             parameters={
                 "type": "object",
@@ -91,7 +107,7 @@ class AskUserTool:
                                         "End with a question mark."
                                     ),
                                 },
-                                "multi_select": {
+                                "multiSelect": {
                                     "type": "boolean",
                                     "default": False,
                                     "description": (
@@ -203,7 +219,7 @@ def _parse_questions(raw: Any) -> list[Question]:
             Question(
                 question=text,
                 options=options,
-                multi_select=bool(item.get("multi_select", False)),
+                multi_select=bool(item.get("multiSelect", False)),
             )
         )
     return questions

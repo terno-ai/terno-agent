@@ -42,6 +42,6 @@ class LLMClient(Protocol):
         tools: list[ToolSchema] | None = None,
         *,
         max_tokens: int = 4096,
-        temperature: float = 0.2,
+        temperature: float | None = None,
         on_text_delta: TextDeltaCallback | None = None,
     ) -> LLMResponse: ...

@@ -59,7 +59,7 @@ def test_activate_skill_returns_wrapped_body_and_resources(tmp_path):
     (root / "docs" / "references" / "style.md").write_text("Style", encoding="utf-8")
     catalog = discover_skills(tmp_path, include_builtin=False, include_user=False)
 
-    result = ActivateSkillTool(catalog).run(name="docs")
+    result = ActivateSkillTool(catalog).run(skill="docs")
 
     assert '<skill_content name="docs">' in result
     assert "Prefer examples." in result
@@ -77,11 +77,11 @@ def test_terno_agent_exposes_skill_catalog_and_tool(tmp_path):
     result = agent.run("please fix the tests")
 
     assert result.answer == "done"
-    assert "activate_skill" in agent.tools
+    assert "Skill" in agent.tools
     system_prompt = llm.messages[0].content
     assert "<available_skills>" in system_prompt
     assert "<name>testing</name>" in system_prompt
-    assert any(tool.name == "activate_skill" for tool in llm.tools)
+    assert any(tool.name == "Skill" for tool in llm.tools)
 
 
 def test_builtin_skills_are_available_by_default(tmp_path):
@@ -112,3 +112,17 @@ def test_project_skill_overrides_builtin(tmp_path):
 
     assert catalog.skills["data-analysis"].path == (root / "data-analysis" / "SKILL.md").resolve()
     assert any("shadows" in diagnostic.message for diagnostic in catalog.diagnostics)
+
+
+def test_skill_tool_matches_the_captured_schema(tmp_path):
+    _write_skill(tmp_path / ".agents" / "skills", "docs", "Write documentation.")
+    catalog = discover_skills(tmp_path, include_user=False)
+    schema = ActivateSkillTool(catalog).schema
+
+    assert schema.name == "Skill"
+    # Param is `skill`, per the capture — not Terno's old `name`.
+    assert schema.parameters["required"] == ["skill"]
+    # Kept from Terno: the enum makes "do not guess names" enforceable. Built-in
+    # skills are discovered alongside the project one, so just check membership.
+    assert "docs" in schema.parameters["properties"]["skill"]["enum"]
+    assert schema.description.startswith("Invoke a skill.")

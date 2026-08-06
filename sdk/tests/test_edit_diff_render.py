@@ -23,9 +23,9 @@ def _render(text: Text) -> str:
 
 def test_edit_call_body_renders_unified_diff() -> None:
     body = _format_call_body(
-        "edit_file",
+        "Edit",
         {
-            "path": "src/foo.py",
+            "file_path": "src/foo.py",
             "old_string": "def add(a, b):\n    return a+b\n",
             "new_string": "def add(a, b):\n    return a + b\n",
         },
@@ -81,8 +81,8 @@ def test_diff_shows_path_when_missing() -> None:
 def test_write_body_renders_syntax_for_new_file(tmp_path) -> None:
     target = tmp_path / "fresh.py"
     body = _format_call_body(
-        "write_file",
-        {"path": str(target), "content": "def hello():\n    return 1\n"},
+        "Write",
+        {"file_path": str(target), "content": "def hello():\n    return 1\n"},
     )
     # New file → Syntax-highlighted content, not a diff.
     assert not isinstance(body, Text)
@@ -92,9 +92,9 @@ def test_write_body_renders_diff_when_overwriting_existing_file(tmp_path) -> Non
     target = tmp_path / "regen.py"
     target.write_text("def hello():\n    return 1\n")
     body = _format_call_body(
-        "write_file",
+        "Write",
         {
-            "path": str(target),
+            "file_path": str(target),
             "content": "def hello():\n    return 2\n",
             "overwrite": True,
         },

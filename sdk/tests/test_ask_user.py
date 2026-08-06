@@ -25,7 +25,7 @@ from terno_agent.tools.ask_user import (
 def test_schema_advertises_questions_array() -> None:
     tool = AskUserTool()
     schema = tool.schema
-    assert schema.name == "ask_user"
+    assert schema.name == "AskUserQuestion"
     questions_field = schema.parameters["properties"]["questions"]
     assert questions_field["type"] == "array"
     assert questions_field["minItems"] == 1
@@ -242,13 +242,13 @@ class _ScriptedLLM:
 def test_terno_agent_registers_ask_user_when_callback_provided() -> None:
     llm = _ScriptedLLM([])
     agent = TernoAgent(llm, ask_callback=lambda qs: [Answer(q.question) for q in qs])
-    assert "ask_user" in agent.tools
+    assert "AskUserQuestion" in agent.tools
 
 
 def test_terno_agent_omits_ask_user_when_no_callback() -> None:
     llm = _ScriptedLLM([])
     agent = TernoAgent(llm)
-    assert "ask_user" not in agent.tools
+    assert "AskUserQuestion" not in agent.tools
 
 
 def test_terno_agent_routes_ask_user_calls_to_callback() -> None:
@@ -266,7 +266,7 @@ def test_terno_agent_routes_ask_user_calls_to_callback() -> None:
                     tool_calls=[
                         ToolCall(
                             id="call-1",
-                            name="ask_user",
+                            name="AskUserQuestion",
                             arguments={
                                 "questions": [
                                     {

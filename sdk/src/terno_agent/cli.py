@@ -474,7 +474,7 @@ class AgentRenderer:
         call = event.call
         # The CliPrompter prints questions itself; skip the JSON args panel
         # so the user sees a clean question-by-question flow.
-        if call.name == "ask_user":
+        if call.name == "AskUserQuestion":
             count = len(call.arguments.get("questions") or [])
             self.console.print(
                 Text(f"[{event.agent}] asking the user {count} question(s)…", style=_AGENT_STYLE)
@@ -508,22 +508,22 @@ class AgentRenderer:
 
 
 def _format_call_body(name: str, args: dict) -> object:
-    if name == "bash" and isinstance(args.get("command"), str):
+    if name == "Bash" and isinstance(args.get("command"), str):
         return Syntax(args["command"], "bash", theme="ansi_dark", word_wrap=True)
-    if name == "write_file" and isinstance(args.get("content"), str):
+    if name == "Write" and isinstance(args.get("content"), str):
         return _format_write_body(
-            path=str(args.get("path", "")),
+            path=str(args.get("file_path", "")),
             content=args["content"],
             overwrite=bool(args.get("overwrite", False)),
         )
-    if name == "edit_file":
+    if name == "Edit":
         return _format_edit_diff(
-            path=str(args.get("path", "")),
+            path=str(args.get("file_path", "")),
             old=str(args.get("old_string", "")),
             new=str(args.get("new_string", "")),
             replace_all=bool(args.get("replace_all", False)),
         )
-    if name == "spawn_agent":
+    if name == "Agent":
         body = Text("prompt:\n", style="bold")
         body.append(_truncate(str(args.get("prompt", "")), 800))
         if args.get("task"):
@@ -607,7 +607,7 @@ def _read_existing(path: str) -> str | None:
 
 
 def _format_edit_diff(*, path: str, old: str, new: str, replace_all: bool) -> Text:
-    """Colour a unified diff of an ``edit_file`` call's old → new strings."""
+    """Colour a unified diff of an ``Edit`` call's old → new strings."""
     label = path or "(unspecified)"
     diff_lines = list(
         difflib.unified_diff(

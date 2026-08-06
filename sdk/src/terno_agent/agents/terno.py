@@ -43,7 +43,9 @@ from terno_agent.memory.extractor import ExtractionCallback, MemoryExtractor
 from terno_agent.memory.retriever import MemoryRetriever
 from terno_agent.memory.store import MemoryStore
 from terno_agent.memory.tools import SearchMemoryTool
-from terno_agent.prompts.prompt import SYSTEM_PROMPT
+from terno_agent.prompts.builder import SystemPrompt, build_system_prompt
+from terno_agent.prompts.context import PromptContext
+from terno_agent.prompts.prompt import TOOL_GUIDE
 from terno_agent.rag.embeddings import create_embedding_client
 from terno_agent.rag.vector_store import create_vector_store
 from terno_agent.sandbox.base import Sandbox
@@ -51,9 +53,13 @@ from terno_agent.sandbox.factory import create_sandbox
 from terno_agent.skills import ActivateSkillTool, SkillCatalog, discover_skills
 from terno_agent.tools.ask_user import AskCallback, AskUserTool
 from terno_agent.tools.code_exec import RunPythonTool
-from terno_agent.tools.files import EditFileTool, ReadFileTool, WriteFileTool
+from terno_agent.tools.files import (
+    EditFileTool,
+    FileStateTracker,
+    ReadFileTool,
+    WriteFileTool,
+)
 from terno_agent.tools.monitor import MonitorTool
-from terno_agent.tools.search import GlobTool, GrepTool
 from terno_agent.tools.shell import BashTool
 from terno_agent.tools.subagent import SpawnAgentTool
 from terno_agent.tools.tasks import (
@@ -131,13 +137,13 @@ class TernoAgent(BaseAgent):
         self.permission_hook: PreToolUseHook | None = resolved
 
         token = cancel_token or CancelToken()
+        file_state = FileStateTracker()
 
         tools: list = [
-            ReadFileTool(workdir=self.workdir),
-            WriteFileTool(workdir=self.workdir),
-            EditFileTool(workdir=self.workdir),
-            GlobTool(workdir=self.workdir),
-            GrepTool(workdir=self.workdir),
+            # One tracker for all three: Read marks, Edit/Write enforce.
+            ReadFileTool(workdir=self.workdir, tracker=file_state),
+            WriteFileTool(workdir=self.workdir, tracker=file_state),
+            EditFileTool(workdir=self.workdir, tracker=file_state),
             BashTool(
                 workdir=self.workdir,
                 default_timeout_s=bash_timeout_s,
@@ -196,10 +202,29 @@ class TernoAgent(BaseAgent):
         if self.permission_hook is not None:
             hooks.register(HookEvent.PRE_TOOL_USE, self.permission_hook)
 
+        prompt_blocks: SystemPrompt | None = None
+        if system_prompt is not None:
+            # An explicit prompt (subagent brief, memory extractor) is used
+            # verbatim — it isn't a session prompt and shouldn't be wrapped.
+            resolved_prompt = _with_skill_catalog(system_prompt, self.skill_catalog)
+        else:
+            prompt_blocks = build_system_prompt(
+                PromptContext.detect(
+                    self.workdir,
+                    model_name=getattr(llm, "model", ""),
+                    model_id=getattr(llm, "model", ""),
+                    has_agent_tool=any(t.schema.name == "Agent" for t in tools),
+                ),
+                skill_section=self.skill_catalog.prompt_section() or None,
+                extra=TOOL_GUIDE,
+            )
+            resolved_prompt = prompt_blocks.render()
+
         super().__init__(
             llm,
-            _with_skill_catalog(system_prompt or SYSTEM_PROMPT, self.skill_catalog),
+            resolved_prompt,
             tools,
+            system_blocks=prompt_blocks.blocks if prompt_blocks else None,
             on_event=on_event,
             hook_manager=hooks,
             cancel_token=token,
