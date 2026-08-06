@@ -1,6 +1,6 @@
 [project]
 name = "terno-agent"
-version = "0.2.0"
+version = "0.3.0"
 description = "Multi-agent CLI that answers questions about your database and runs code in a sandbox."
 readme = "README.md"
 requires-python = ">=3.10"
