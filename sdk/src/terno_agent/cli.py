@@ -31,6 +31,7 @@ from terno_agent.core.events import (
     TurnEnd,
 )
 from terno_agent.core.exceptions import TernoError, ToolError
+from terno_agent.core.messages import ContentPart
 from terno_agent.core.permissions import (
     PermissionDecision,
     PermissionMode,
@@ -39,6 +40,7 @@ from terno_agent.core.permissions import (
 )
 from terno_agent.knowledge.cli import run_knowledge_extraction
 from terno_agent.memory.extractor import ExtractionResult
+from terno_agent.skills.slash import resolve as slash_resolve
 from terno_agent.tools.ask_user import Answer, Question
 
 _DOUBLE_CTRLC_WINDOW_S = 2.0
@@ -220,11 +222,17 @@ def _cmd_chat(args: argparse.Namespace) -> int:
 
             turn_attachments: list[AttachmentInput] = list(pending_attachments)
             pending_attachments = []
+            # Skill-backed slash command: inject the body straight into the turn
+            # with no Skill tool call — the reference harness's second invocation
+            # path. Resolved here, after the built-in commands above, so an
+            # unknown `/foo` still reaches the model as ordinary text.
+            slash_parts = slash_resolve(line, agent.skill_catalog)
             result, exc = _run_turn_with_cancel(
                 agent,
                 line,
                 console,
                 attachments=turn_attachments,
+                content_parts=slash_parts,
             )
             if exc is not None:
                 if isinstance(exc, TernoError):
@@ -252,6 +260,7 @@ def _run_turn_with_cancel(
     console: Console,
     *,
     attachments: list[AttachmentInput] | None = None,
+    content_parts: list[ContentPart] | None = None,
 ) -> tuple[AgentRun | None, BaseException | None]:
     """Run one agent turn on a worker thread with Ctrl-C → cancel wired up.
 
@@ -262,7 +271,10 @@ def _run_turn_with_cancel(
 
     def _worker() -> None:
         try:
-            holder["result"] = agent.run(task, attachments=attachments)
+            if content_parts is not None:
+                holder["result"] = agent.run(task, content_parts=content_parts)
+            else:
+                holder["result"] = agent.run(task, attachments=attachments)
         except BaseException as exc:
             holder["exc"] = exc
 

@@ -175,7 +175,10 @@ def test_system_blocks_reach_the_request(client) -> None:
     )
 
     assert isinstance(captured["system"], list)
-    assert captured["system"][1]["cache_control"]["scope"] == "global"
+    # `ttl` and `scope` are beta-gated; without the opt-in they are stripped, or
+    # the API 400s the whole request.
+    assert captured["system"][1]["cache_control"] == {"type": "ephemeral"}
+    assert "extra_headers" not in captured
 
 
 def test_agent_sends_its_blocks(client) -> None:
@@ -188,8 +191,139 @@ def test_agent_sends_its_blocks(client) -> None:
 
     system = captured["system"]
     assert isinstance(system, list)
-    # identity / core / session / tool-guide, with two breakpoints.
-    assert len(system) == 4
+    # identity / core / session / tool-guide / deferred-tool roster. The roster
+    # is a system message, and without `mid_conversation_system` it hoists into
+    # the system param as a trailing uncached block.
+    assert len(system) == 5
+    assert "deferred tools" in system[-1]["text"]
     assert sum("cache_control" in b for b in system) == 2
-    assert system[1]["cache_control"]["scope"] == "global"
-    assert "scope" not in system[2]["cache_control"]
+    # Breakpoints survive; only the beta-gated fields are dropped.
+    assert system[1]["cache_control"] == {"type": "ephemeral"}
+
+
+# ----- mid-conversation system turns --------------------------------------- #
+
+
+def test_later_system_messages_are_hoisted_by_default() -> None:
+    # Portable behaviour: everything merges into the top-level `system` param.
+    system, rest = _split_system(
+        [SystemMessage("prompt"), UserMessage("hi"), SystemMessage("mid-run note")]
+    )
+
+    assert system == "prompt\n\nmid-run note"
+    assert [type(m) for m in rest] == [UserMessage]
+
+
+def test_keep_mid_conversation_preserves_position() -> None:
+    system, rest = _split_system(
+        [SystemMessage("prompt"), UserMessage("hi"), SystemMessage("mid-run note")],
+        keep_mid_conversation=True,
+    )
+
+    # Only the leading system message is hoisted.
+    assert system == "prompt"
+    assert [type(m) for m in rest] == [UserMessage, SystemMessage]
+    assert rest[-1].content == "mid-run note"
+
+
+def test_a_leading_run_of_system_messages_still_hoists() -> None:
+    # Two system messages before any turn are both part of the prompt.
+    system, rest = _split_system(
+        [SystemMessage("a"), SystemMessage("b"), UserMessage("hi")],
+        keep_mid_conversation=True,
+    )
+
+    assert system == "a\n\nb"
+    assert [type(m) for m in rest] == [UserMessage]
+
+
+def test_mid_conversation_system_turn_serialises_with_the_system_role(client) -> None:
+    llm, captured = client(mid_conversation_system=True)
+    llm.complete(
+        [SystemMessage("prompt"), UserMessage("hi"), SystemMessage("mid-run note")]
+    )
+
+    roles = [m["role"] for m in captured["messages"]]
+    assert roles == ["user", "system"]
+    assert captured["messages"][-1]["content"] == [
+        {"type": "text", "text": "mid-run note"}
+    ]
+    # The shape needs a beta opt-in, or the API rejects it.
+    assert "mid-conversation-system" in captured["extra_headers"]["anthropic-beta"]
+
+
+def test_the_beta_header_is_absent_unless_opted_in(client) -> None:
+    llm, captured = client()
+    llm.complete([SystemMessage("prompt"), UserMessage("hi")])
+
+    assert "extra_headers" not in captured
+
+
+# ----- beta-gated cache fields --------------------------------------------- #
+
+
+def test_cache_ttl_and_scope_are_stripped_by_default(client) -> None:
+    """Sending either without its beta 400s the whole request — verified live."""
+    llm, captured = client()
+    llm.complete(
+        [
+            SystemMessage(
+                "prompt",
+                blocks=[
+                    SystemBlock(
+                        "core",
+                        cache_control={
+                            "type": "ephemeral",
+                            "ttl": "1h",
+                            "scope": "global",
+                        },
+                    )
+                ],
+            ),
+            UserMessage("u"),
+        ]
+    )
+
+    assert captured["system"][0]["cache_control"] == {"type": "ephemeral"}
+    assert "extra_headers" not in captured
+
+
+def test_opting_in_restores_the_fields_and_sends_the_betas(client) -> None:
+    llm, captured = client(extended_cache_ttl=True, cache_scope=True)
+    llm.complete(
+        [
+            SystemMessage(
+                "prompt",
+                blocks=[
+                    SystemBlock(
+                        "core",
+                        cache_control={
+                            "type": "ephemeral",
+                            "ttl": "1h",
+                            "scope": "global",
+                        },
+                    )
+                ],
+            ),
+            UserMessage("u"),
+        ]
+    )
+
+    assert captured["system"][0]["cache_control"] == {
+        "type": "ephemeral",
+        "ttl": "1h",
+        "scope": "global",
+    }
+    header = captured["extra_headers"]["anthropic-beta"]
+    assert "extended-cache-ttl-2025-04-11" in header
+    assert "prompt-caching-scope-2026-01-05" in header
+
+
+def test_betas_combine_into_one_header(client) -> None:
+    llm, captured = client(mid_conversation_system=True, cache_scope=True)
+    llm.complete([SystemMessage("p"), UserMessage("u")])
+
+    assert captured["extra_headers"]["anthropic-beta"].split(",") == [
+        "mid-conversation-system-2026-04-07",
+        "prompt-caching-scope-2026-01-05",
+    ]

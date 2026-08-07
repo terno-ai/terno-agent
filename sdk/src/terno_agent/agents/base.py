@@ -73,6 +73,7 @@ class BaseAgent:
         tools: Iterable[Tool] = (),
         *,
         system_blocks: list[SystemBlock] | None = None,
+        pending_system_notes: list[str] | None = None,
         on_event: EventHook | None = None,
         hook_manager: HookManager | None = None,
         cancel_token: CancelToken | None = None,
@@ -81,6 +82,10 @@ class BaseAgent:
         self.system_prompt = system_prompt
         # Carries the cache breakpoints; `system_prompt` stays as the flat form.
         self.system_blocks = system_blocks
+        # Emitted as system turns straight after the first user message, which is
+        # where the reference harness puts session rosters (deferred tools, agent
+        # types, skills). Drained on first use — they are not repeated per turn.
+        self._pending_system_notes = list(pending_system_notes or ())
         self.tools: dict[str, Tool] = {t.schema.name: t for t in tools}
         self.on_event = on_event
         self.hooks = hook_manager or HookManager()
@@ -126,6 +131,8 @@ class BaseAgent:
             if extra_context:
                 user_content = f"<context>\n{extra_context}\n</context>\n\n{task}"
         self.history.append(UserMessage(user_content))
+        while self._pending_system_notes:
+            self.history.append(SystemMessage(self._pending_system_notes.pop(0)))
 
         last_iteration = 0
         run_start = len(self.history) - 1  # index of the UserMessage we just appended
@@ -198,7 +205,17 @@ class BaseAgent:
             return ToolResult(call_id=tc.id, content=f"Unknown tool: {tc.name}", is_error=True)
         try:
             output = tool.run(**tc.arguments)
-            return ToolResult(call_id=tc.id, content=output, is_error=False)
+            # A tool may want content in the turn that isn't its result — see
+            # `ToolResult.followup_text`. Draining is the tool's job, so a
+            # failed run leaves nothing stale behind.
+            take = getattr(tool, "take_pending_context", None)
+            followup = take() if callable(take) else ""
+            return ToolResult(
+                call_id=tc.id,
+                content=output,
+                is_error=False,
+                followup_text=followup or "",
+            )
         except AgentCancelled:
             raise
         except ToolError as exc:

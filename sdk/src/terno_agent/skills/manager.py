@@ -53,7 +53,7 @@ class SkillCatalog:
             "# Agent Skills",
             "",
             "The following skills provide specialized instructions for specific tasks.",
-            "When a task matches a skill's description, call `activate_skill` with the",
+            "When a task matches a skill's description, call `Skill` with the",
             "skill name before proceeding. After activation, follow the skill instructions",
             "and load any referenced files only when needed.",
             "",

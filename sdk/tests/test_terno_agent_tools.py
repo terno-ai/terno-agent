@@ -17,19 +17,14 @@ class _DummyLLM:
 def test_run_python_omitted_without_sandbox():
     agent = TernoAgent(_DummyLLM())
     assert "run_python" not in agent.tools
-    # Core tools are always present:
-    for name in (
-        "Read",
-        "Write",
-        "Edit",
-        "Bash",
-        "TaskCreate",
-        "TaskList",
-        "TaskGet",
-        "TaskUpdate",
-        "Agent",
-    ):
+    # Core tools are sent eagerly:
+    for name in ("Read", "Write", "Edit", "Bash", "Agent"):
         assert name in agent.tools
+    # Task tools are deferred by default — advertised, loaded via ToolSearch.
+    assert "ToolSearch" in agent.tools
+    for name in ("TaskCreate", "TaskList", "TaskGet", "TaskUpdate"):
+        assert name not in agent.tools
+        assert name in agent.tool_registry.names
 
 
 def test_run_python_registered_with_sandbox():

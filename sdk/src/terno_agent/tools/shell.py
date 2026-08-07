@@ -32,14 +32,17 @@ class BashTool:
     workdir: Path
     default_timeout_s: int = 120
     cancel_token: CancelToken | None = field(default=None)
+    # Absent when the session has no background support; `run_in_background`
+    # then errors rather than silently running in the foreground.
+    background: object | None = None
 
     @property
     def schema(self) -> ToolSchema:
         return ToolSchema(
             name="Bash",
-            # Ported from the reference harness. Omits its `run_in_background`
-            # and sandbox bullets — Terno has neither — and its commit trailers
-            # name Terno rather than Claude.
+            # Ported from the reference harness. Omits its sandbox bullet
+            # (Terno has no per-command sandbox flag) and its commit trailers name
+            # Terno rather than Claude.
             description=(
                 "Executes a bash command and returns its output.\n"
                 "\n"
@@ -54,6 +57,10 @@ class BashTool:
                 " for the user.\n"
                 "- Command output is displayed to you, not reliably to the"
                 " user.\n"
+                "- `run_in_background` runs the command detached: it keeps"
+                " running across turns and streams its combined output to a file"
+                " whose path is returned. No `&` needed. Read that file to see"
+                " progress, and use TaskStop to end it early.\n"
                 "- Use `monitor` to wait on a condition rather than a foreground"
                 " `sleep`.\n"
                 "\n"
@@ -71,6 +78,13 @@ class BashTool:
                         "type": "string",
                         "description": "Shell command to execute.",
                     },
+                    "run_in_background": {
+                        "type": "boolean",
+                        "description": (
+                            "Run the command detached and return its task id and"
+                            " output file path immediately."
+                        ),
+                    },
                     "timeout_s": {
                         "type": "integer",
                         "description": (
@@ -86,7 +100,27 @@ class BashTool:
     def run(self, **kwargs: Any) -> str:
         command = (kwargs.get("command") or "").strip()
         if not command:
-            raise ToolError("bash requires a 'command' argument.")
+            raise ToolError("Bash requires a 'command' argument.")
+
+        if kwargs.get("run_in_background"):
+            if self.background is None:
+                raise ToolError(
+                    "Background execution is not available in this session; run "
+                    "the command in the foreground instead."
+                )
+            try:
+                task = self.background.launch_shell(
+                    command, description=str(kwargs.get("description") or "")
+                )
+            except RuntimeError as exc:
+                raise ToolError(str(exc)) from exc
+            # The path matters more than the id: the model is meant to Read it
+            # rather than poll TaskOutput.
+            return (
+                f"Started background task {task.id}.\n"
+                f"output file: {task.output_path}\n"
+                "Read that file for progress; TaskStop stops the task."
+            )
         timeout = int(kwargs.get("timeout_s") or self.default_timeout_s)
         if timeout <= 0:
             raise ToolError("timeout_s must be positive.")

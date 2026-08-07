@@ -4,8 +4,9 @@ Names, parameters and descriptions are ported from the reference harness so the
 model sees the surface it was trained against. Two deliberate deviations, both
 because a verbatim description would promise behaviour Terno doesn't have:
 
-* `Read` drops the bullet about images, PDFs and notebooks — Terno reads UTF-8
-  text only, so the `pages` parameter is omitted too.
+* `Read` drops the bullet about images and PDFs — Terno reads UTF-8 text only,
+  so the `pages` parameter is omitted too. Notebooks ARE supported (see
+  `tools/notebook.py`), so that half of the bullet is kept.
 * `Read` drops the bullet about the harness tracking file state for you; Terno's
   tracking is `FileStateTracker` below, which is per-agent rather than global.
 
@@ -75,6 +76,7 @@ class ReadFileTool:
                 " read that part. This can be important for larger files.\n"
                 "- Results are returned using cat -n format, with line numbers"
                 " starting at 1\n"
+                "- Reads Jupyter notebooks (.ipynb) as cells with outputs.\n"
                 "- Reading a directory, a missing file, or an empty file returns"
                 " an error rather than content.\n"
                 "- Do NOT re-read a file you just edited to verify — Edit/Write"
@@ -117,6 +119,15 @@ class ReadFileTool:
         limit = int(kwargs.get("limit") or 2000)
         if limit <= 0:
             raise ToolError("limit must be positive.")
+
+        if path.suffix == ".ipynb":
+            # Notebooks are rendered as cells, not numbered lines: NotebookEdit
+            # addresses cells by the id shown here, so line numbers are useless.
+            from terno_agent.tools.notebook import load_notebook, render_notebook
+
+            rendered = render_notebook(load_notebook(path))
+            self.tracker.mark_read(path)
+            return rendered
 
         try:
             text = path.read_text(encoding="utf-8", errors="replace")

@@ -21,6 +21,7 @@ from terno_agent.attachments import (
     AttachmentStore,
 )
 from terno_agent.config import Config
+from terno_agent.core.background import BackgroundTaskRegistry
 from terno_agent.core.cancel import CancelToken
 from terno_agent.core.compaction import CompactionHook
 from terno_agent.core.exceptions import ConfigError, SandboxError
@@ -52,6 +53,7 @@ from terno_agent.sandbox.base import Sandbox
 from terno_agent.sandbox.factory import create_sandbox
 from terno_agent.skills import ActivateSkillTool, SkillCatalog, discover_skills
 from terno_agent.tools.ask_user import AskCallback, AskUserTool
+from terno_agent.tools.background_tasks import TaskOutputTool, TaskStopTool
 from terno_agent.tools.code_exec import RunPythonTool
 from terno_agent.tools.files import (
     EditFileTool,
@@ -60,6 +62,9 @@ from terno_agent.tools.files import (
     WriteFileTool,
 )
 from terno_agent.tools.monitor import MonitorTool
+from terno_agent.tools.notebook import NotebookEditTool
+from terno_agent.tools.plan_mode import EnterPlanModeTool, ExitPlanModeTool
+from terno_agent.tools.report_findings import FindingsCallback, ReportFindingsTool
 from terno_agent.tools.shell import BashTool
 from terno_agent.tools.subagent import SpawnAgentTool
 from terno_agent.tools.tasks import (
@@ -69,7 +74,34 @@ from terno_agent.tools.tasks import (
     TaskStore,
     TaskUpdateTool,
 )
+from terno_agent.tools.tool_search import (
+    DeferredToolPlaceholderTool,
+    DeferredToolRegistry,
+    ToolSearchTool,
+    roster_text,
+)
 from terno_agent.tools.web import WebFetchTool, WebSearchTool
+
+# Mirrors which of Terno's tools the reference harness sends eagerly: Read,
+# Write, Edit, Bash, Agent, AskUserQuestion and Skill are always present there,
+# so everything else starts deferred. Pass `defer_tools=()` to send them all
+# eagerly, or an explicit set to choose.
+DEFAULT_DEFERRED_TOOLS: frozenset[str] = frozenset(
+    {
+        "NotebookEdit",
+        "WebFetch",
+        "WebSearch",
+        "monitor",
+        "TaskCreate",
+        "TaskGet",
+        "TaskList",
+        "TaskUpdate",
+        "EnterPlanMode",
+        "ExitPlanMode",
+        "TaskStop",
+        "TaskOutput",
+    }
+)
 
 
 class TernoAgent(BaseAgent):
@@ -95,6 +127,9 @@ class TernoAgent(BaseAgent):
         memory_extractor: MemoryExtractor | None = None,
         attachment_manager: AttachmentManager | None = None,
         ask_callback: AskCallback | None = None,
+        on_plan_approval=None,
+        on_findings: FindingsCallback | None = None,
+        defer_tools: object = None,
         permission_hook: PreToolUseHook | None = None,
         permission_policy: PermissionPolicy | None = None,
         permission_mode: PermissionMode | str | None = None,
@@ -138,17 +173,23 @@ class TernoAgent(BaseAgent):
 
         token = cancel_token or CancelToken()
         file_state = FileStateTracker()
+        self.background_tasks = BackgroundTaskRegistry(self.workdir)
 
         tools: list = [
             # One tracker for all three: Read marks, Edit/Write enforce.
             ReadFileTool(workdir=self.workdir, tracker=file_state),
             WriteFileTool(workdir=self.workdir, tracker=file_state),
             EditFileTool(workdir=self.workdir, tracker=file_state),
+            NotebookEditTool(workdir=self.workdir, tracker=file_state),
             BashTool(
                 workdir=self.workdir,
                 default_timeout_s=bash_timeout_s,
                 cancel_token=token,
+                background=self.background_tasks,
             ),
+            ReportFindingsTool(on_findings=on_findings),
+            TaskStopTool(registry=self.background_tasks),
+            TaskOutputTool(registry=self.background_tasks),
             MonitorTool(
                 workdir=self.workdir,
                 cancel_token=token,
@@ -182,6 +223,20 @@ class TernoAgent(BaseAgent):
                     sandbox,
                     timeout_s=run_python_timeout_s,
                     cancel_token=token,
+                )
+            )
+        # Plan mode needs a mutable policy to flip, so it is unavailable when
+        # the caller wired a raw PreToolUseHook and manages state themselves.
+        if self.permissions is not None:
+            tools.append(
+                EnterPlanModeTool(policy=self.permissions, workdir=self.workdir)
+            )
+            tools.append(
+                ExitPlanModeTool(
+                    policy=self.permissions,
+                    workdir=self.workdir,
+                    on_approval=on_plan_approval,
+                    approved_mode=self.permissions.mode,
                 )
             )
         if self.skill_catalog.skills:
@@ -220,15 +275,37 @@ class TernoAgent(BaseAgent):
             )
             resolved_prompt = prompt_blocks.render()
 
+        # Deferred tools: advertised by name, schema fetched via ToolSearch. The
+        # split mirrors the reference harness's own eager set — the tools it
+        # always sends are the ones it considers core.
+        deferred_names = (
+            set(DEFAULT_DEFERRED_TOOLS) if defer_tools is None else set(defer_tools)
+        )
+        by_name = {t.schema.name: t for t in tools}
+        deferred = {n: by_name[n] for n in sorted(deferred_names) if n in by_name}
+        notes: list[str] = []
+        if deferred:
+            self.tool_registry = DeferredToolRegistry(deferred=deferred)
+            tools = [t for t in tools if t.schema.name not in deferred]
+            tools.append(DeferredToolPlaceholderTool())
+            tools.append(ToolSearchTool(registry=self.tool_registry))
+            notes.append(roster_text(self.tool_registry.names))
+        else:
+            self.tool_registry = None
+
         super().__init__(
             llm,
             resolved_prompt,
             tools,
+            pending_system_notes=notes,
             system_blocks=prompt_blocks.blocks if prompt_blocks else None,
             on_event=on_event,
             hook_manager=hooks,
             cancel_token=token,
         )
+
+        if self.tool_registry is not None:
+            self.tool_registry.active = self.tools
 
     # ----- Cancellation -------------------------------------------------- #
 

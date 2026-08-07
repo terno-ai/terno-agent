@@ -5,8 +5,13 @@ of context, the hook asks the LLM to summarize the older portion of the
 conversation. The agent's `history` is rewritten in place as::
 
     [SystemMessage(original prompt),
-     SystemMessage("Conversation summary so far: …"),
+     UserMessage("This session is being continued … <summary> … <file state>"),
      <last `keep_last_turns` user/assistant rounds verbatim>]
+
+The summary arrives as a *user* message, not a system one: as a system message
+it would read as a standing instruction rather than as recovered conversation
+(and Terno's Anthropic client hoists system messages into the top-level
+`system` param, so it would land in the cached system prompt).
 
 `keep_last_turns` counts user turns (one user message + everything
 between it and the next user message). Tool-result messages immediately
@@ -20,6 +25,7 @@ stderr and leaves history untouched.
 from __future__ import annotations
 
 import json
+import re
 import sys
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -30,6 +36,7 @@ from terno_agent.core.messages import (
     AssistantMessage,
     Message,
     SystemMessage,
+    TextPart,
     ToolResultMessage,
     UserMessage,
 )
@@ -64,6 +71,12 @@ class CompactionHook:
     # files. Only reads are replayed: Edit/Bash output is transient, and the
     # reference harness replays reads alone (verified in the capture).
     replay_file_reads: bool = True
+    # When the client keeps mid-conversation system turns in place (see
+    # `AnthropicClient(mid_conversation_system=True)`), deliver the replayed file
+    # state as its own trailing system message — that is the captured shape.
+    # Otherwise it is folded into the summary's user message, because a hoisted
+    # system message would land in the cached system prompt instead.
+    replay_as_system_message: bool = False
     max_replay_chars: int = 20_000
     # Injected for testing; defaults to a plain UTF-8 read.
     file_reader: Callable[[str], str | None] | None = None
@@ -83,16 +96,29 @@ class CompactionHook:
             return
 
         replay = self._read_replay(head) if self.replay_file_reads else ""
+        # Skill bodies are instructions the agent is mid-way through following.
+        # A summary rarely reproduces them faithfully, so carry them verbatim.
+        skills = _skill_replay(head)
+        if skills:
+            replay = f"{skills}\n\n{replay}" if replay else skills
 
         # Rewrite in place so the agent's `self.history` reference stays valid.
         # The summary comes back as a USER message, matching the reference
         # harness — a system message would read as a standing instruction
         # rather than as recovered conversation.
-        ctx.history[:] = [
-            system_msg,
-            UserMessage(wrap_summary(summary, replay)),
-            *tail,
-        ]
+        if replay and self.replay_as_system_message:
+            ctx.history[:] = [
+                system_msg,
+                UserMessage(wrap_summary(summary)),
+                *tail,
+                SystemMessage(replay),
+            ]
+        else:
+            ctx.history[:] = [
+                system_msg,
+                UserMessage(wrap_summary(summary, replay)),
+                *tail,
+            ]
         # Zero out `last_input_tokens` so the next no-op call doesn't re-trigger
         # before the LLM has reported actual usage on the smaller context.
         ctx.usage.last_input_tokens = 0
@@ -151,6 +177,33 @@ class CompactionHook:
 # --------------------------------------------------------------------------- #
 # History slicing
 # --------------------------------------------------------------------------- #
+
+
+_SKILL_BLOCK = re.compile(
+    r"<skill_content name=\"([^\"]+)\">.*?</skill_content>", re.S
+)
+
+
+def _skill_replay(messages: list[Message]) -> str:
+    """Verbatim bodies of skills activated in the turns being compacted.
+
+    Keyed by skill name so a skill activated twice is carried once, keeping the
+    latest copy. Without this the agent loses instructions it is still meant to
+    be following, and — because the loss is silent — simply stops following them.
+    """
+    found: dict[str, str] = {}
+    for m in messages:
+        texts: list[str] = []
+        if isinstance(m, UserMessage) and isinstance(m.content, str):
+            texts.append(m.content)
+        elif isinstance(m, UserMessage):
+            texts.extend(p.text for p in m.content if isinstance(p, TextPart))
+        elif isinstance(m, ToolResultMessage):
+            texts.extend(r.followup_text for r in m.results if r.followup_text)
+        for text in texts:
+            for match in _SKILL_BLOCK.finditer(text):
+                found[match.group(1)] = match.group(0)
+    return "\n\n".join(found.values())
 
 
 def _read_paths(messages: list[Message]) -> list[str]:

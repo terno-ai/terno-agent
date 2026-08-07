@@ -23,7 +23,7 @@ from terno_agent.attachments import AttachmentInput
 from terno_agent.config import Config
 from terno_agent.core.events import EventHook
 from terno_agent.core.hooks import Hook, HookEvent, UsageMeter
-from terno_agent.core.messages import Message
+from terno_agent.core.messages import ContentPart, Message
 from terno_agent.core.permissions import (
     PermissionCallback,
     PermissionDecision,
@@ -140,8 +140,16 @@ class Agent:
         task: str,
         *,
         attachments: list[AttachmentInput] | None = None,
+        content_parts: list[ContentPart] | None = None,
     ) -> AgentRun:
-        """Run the agent on a task and return the result."""
+        """Run the agent on a task and return the result.
+
+        `content_parts` replaces `task` with explicit turn parts — used for
+        slash invocation, where the turn is a command wrapper plus a skill body
+        rather than plain text.
+        """
+        if content_parts is not None:
+            return self._agent.run(task, content_parts=content_parts)
         if attachments is None:
             return self._agent.run(task)
         return self._agent.run(task, attachments=attachments)
@@ -218,6 +226,14 @@ class Agent:
         if self._closed:
             return
         self._closed = True
+        # Background tasks are detached process groups: without this they keep
+        # running after the session ends.
+        background = getattr(self._agent, "background_tasks", None)
+        if background is not None:
+            try:
+                background.stop_all()
+            except Exception:  # pragma: no cover - best effort on shutdown
+                pass
         sandbox = getattr(self._agent, "sandbox", None)
         if sandbox is not None:
             closer = getattr(sandbox, "close", None)

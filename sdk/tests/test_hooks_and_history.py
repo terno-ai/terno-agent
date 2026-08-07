@@ -562,3 +562,100 @@ def test_resume_instruction_stays_last_after_the_replay():
         "Continue the conversation from where it left off"
     )
     assert body.strip().endswith("as if the break never happened.")
+
+
+def test_replay_can_ride_a_trailing_system_message_when_supported():
+    """The captured shape: file state as its own mid-conversation system turn."""
+    body_history = _history_with_read("/x/a.py")
+    from terno_agent.core.compaction import CompactionHook
+
+    class _LLM:
+        model = "dummy"
+
+        def complete(self, messages, tools=None, **_kw):
+            return LLMResponse(
+                message=AssistantMessage(content="<summary>S</summary>"),
+                stop_reason="stop",
+            )
+
+    ctx = HookContext(
+        event=HookEvent.CHAT_END,
+        agent=None,  # type: ignore[arg-type]
+        history=body_history,
+        usage=UsageMeter(last_input_tokens=5000),
+    )
+    CompactionHook(
+        llm=_LLM(),
+        threshold_input_tokens=1,
+        keep_last_turns=2,
+        replay_as_system_message=True,
+        file_reader=lambda _p: "c\n",
+    )(ctx)
+
+    # Summary stays a user message; the file state trails as a system turn.
+    assert isinstance(ctx.history[1], UserMessage)
+    assert "Called the Read tool" not in ctx.history[1].content
+    assert isinstance(ctx.history[-1], SystemMessage)
+    assert "Called the Read tool" in ctx.history[-1].content
+
+
+def test_skill_bodies_survive_compaction():
+    """A skill body in the compacted head must be carried verbatim.
+
+    It is instructions the agent is mid-way through following; a summary rarely
+    reproduces them, and because the loss is silent the agent just stops
+    obeying them.
+    """
+    from terno_agent.core.compaction import CompactionHook
+    from terno_agent.core.messages import ToolCall, ToolResult, ToolResultMessage
+
+    body = '<skill_content name="docs">Always cite sources.</skill_content>'
+    history: list[Message] = [SystemMessage("sys"), UserMessage("q0")]
+    history.append(
+        AssistantMessage(
+            content="", tool_calls=[ToolCall(id="c1", name="Skill", arguments={"skill": "docs"})]
+        )
+    )
+    history.append(
+        ToolResultMessage(
+            results=[
+                ToolResult(call_id="c1", content="Launching skill: docs", followup_text=body)
+            ]
+        )
+    )
+    for i in range(1, 6):
+        history += [UserMessage(f"q{i}"), AssistantMessage(content=f"a{i}")]
+
+    class _LLM:
+        model = "dummy"
+
+        def complete(self, messages, tools=None, **_kw):
+            return LLMResponse(
+                message=AssistantMessage(content="<summary>S</summary>"), stop_reason="stop"
+            )
+
+    ctx = HookContext(
+        event=HookEvent.CHAT_END,
+        agent=None,  # type: ignore[arg-type]
+        history=history,
+        usage=UsageMeter(last_input_tokens=5000),
+    )
+    CompactionHook(llm=_LLM(), threshold_input_tokens=1, keep_last_turns=2)(ctx)
+
+    assert "Always cite sources." in ctx.history[1].content
+
+
+def test_a_skill_activated_twice_is_carried_once():
+    from terno_agent.core.compaction import _skill_replay
+    from terno_agent.core.messages import ToolResult, ToolResultMessage
+
+    old = '<skill_content name="docs">v1</skill_content>'
+    new = '<skill_content name="docs">v2</skill_content>'
+    head = [
+        ToolResultMessage(results=[ToolResult(call_id="a", content="", followup_text=old)]),
+        ToolResultMessage(results=[ToolResult(call_id="b", content="", followup_text=new)]),
+    ]
+
+    out = _skill_replay(head)
+    assert out.count("skill_content") == 2  # one open + one close tag
+    assert "v2" in out and "v1" not in out  # the latest copy wins

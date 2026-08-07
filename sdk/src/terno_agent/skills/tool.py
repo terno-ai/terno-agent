@@ -14,6 +14,9 @@ class ActivateSkillTool:
     def __init__(self, catalog: SkillCatalog, *, max_resources: int = 50) -> None:
         self.catalog = catalog
         self.max_resources = max_resources
+        # Body of the most recently activated skill, awaiting pickup by the run
+        # loop via `take_pending_context`.
+        self._pending = ""
 
     @property
     def schema(self) -> ToolSchema:
@@ -66,11 +69,22 @@ class ActivateSkillTool:
         if skill is None:
             available = ", ".join(sorted(self.catalog.skills)) or "(none)"
             raise ToolError(f"Unknown skill: {name}. Available skills: {available}")
-        return _format_skill_content(skill, max_resources=self.max_resources)
+        # The body does NOT come back as the tool result. The reference harness
+        # returns a short stub and delivers the body as a sibling text part in
+        # the same user turn; `take_pending_context` is how the run loop picks
+        # it up. Keeping the body out of the tool result matters for compaction:
+        # tool results are summarised away, ordinary turn text is not.
+        self._pending = format_skill_content(skill, max_resources=self.max_resources)
+        return f"Launching skill: {skill.name}"
+
+    def take_pending_context(self) -> str:
+        """Hand the skill body to the run loop, once."""
+        pending, self._pending = self._pending, ""
+        return pending
 
 
-def _format_skill_content(skill: Skill, *, max_resources: int) -> str:
-    resources = _list_resources(skill.directory, max_resources=max_resources)
+def format_skill_content(skill: Skill, *, max_resources: int) -> str:
+    references, scripts = _list_resources(skill.directory, max_resources=max_resources)
     lines = [
         f'<skill_content name="{skill.name}">',
         skill.body,
@@ -78,26 +92,46 @@ def _format_skill_content(skill: Skill, *, max_resources: int) -> str:
         f"Skill directory: {skill.directory}",
         "Relative paths in this skill are relative to the skill directory.",
     ]
-    if resources:
-        lines.append("<skill_resources>")
-        lines.extend(f"  <file>{path}</file>" for path in resources)
-        lines.append("</skill_resources>")
+    # References and scripts are split because they are used differently:
+    # a reference is Read into context, a script is EXECUTED and its source
+    # never needs to be read. Listing them together invites the model to read
+    # a script it should have run.
+    if references:
+        lines.append("<skill_references>")
+        lines.append("  Read these only when you need them.")
+        lines.extend(f"  <file>{path}</file>" for path in references)
+        lines.append("</skill_references>")
+    if scripts:
+        lines.append("<skill_scripts>")
+        lines.append("  Run these with Bash from the skill directory. Do not Read them.")
+        lines.extend(f"  <file>{path}</file>" for path in scripts)
+        lines.append("</skill_scripts>")
     lines.append("</skill_content>")
     return "\n".join(lines)
 
 
-def _list_resources(directory: Path, *, max_resources: int) -> list[str]:
-    resources: list[str] = []
+def _list_resources(
+    directory: Path, *, max_resources: int
+) -> tuple[list[str], list[str]]:
+    """Split a skill's bundled files into (references, scripts).
+
+    Anything under a `scripts/` directory is a script; everything else is a
+    reference. The cap counts both together so a script-heavy skill can't
+    crowd out its own documentation.
+    """
+    references: list[str] = []
+    scripts: list[str] = []
     for path in sorted(directory.rglob("*"), key=lambda p: p.as_posix()):
-        if len(resources) >= max_resources:
-            resources.append(f"... resource list capped at {max_resources} files")
+        if len(references) + len(scripts) >= max_resources:
+            references.append(f"... resource list capped at {max_resources} files")
             break
         if not path.is_file() or path.name == "SKILL.md":
             continue
         if any(part in {".git", "node_modules", "__pycache__"} for part in path.parts):
             continue
-        resources.append(path.relative_to(directory).as_posix())
-    return resources
+        rel = path.relative_to(directory)
+        (scripts if "scripts" in rel.parts[:-1] else references).append(rel.as_posix())
+    return references, scripts
 
 
-__all__ = ["ActivateSkillTool"]
+__all__ = ["ActivateSkillTool", "format_skill_content"]

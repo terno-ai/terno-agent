@@ -31,6 +31,12 @@ class ToolResult:
     call_id: str
     content: str
     is_error: bool = False
+    # Content the tool wants in the conversation but NOT attributed to the tool
+    # result itself — it rides as a sibling text part in the same user turn.
+    # `Skill` uses this: the result is a short stub and the skill body arrives
+    # here, matching the reference harness and keeping the body in a form
+    # summarisation preserves.
+    followup_text: str = ""
 
 
 @dataclass(slots=True, frozen=True)

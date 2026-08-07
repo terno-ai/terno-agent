@@ -23,6 +23,7 @@ from __future__ import annotations
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from enum import Enum
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -36,8 +37,6 @@ if TYPE_CHECKING:
 DEFAULT_ALWAYS_ALLOW_TOOLS: frozenset[str] = frozenset(
     {
         "Read",
-        "glob",
-        "grep",
         "TaskList",
         "TaskGet",
         "TaskCreate",
@@ -51,10 +50,22 @@ DEFAULT_ALWAYS_ALLOW_TOOLS: frozenset[str] = frozenset(
 )
 
 
+def _same_path(a: str, b: str) -> bool:
+    """True when both strings name the same file, resolving symlinks and `..`."""
+    try:
+        return Path(a).expanduser().resolve() == Path(b).expanduser().resolve()
+    except OSError:  # pragma: no cover - unresolvable path
+        return False
+
+
 class PermissionMode(str, Enum):
     ASK = "ask"
     ALLOW_LIST = "allow_list"
     ALLOW_ALL = "allow_all"
+    # Read-only exploration while designing an approach. Mutating tools are
+    # denied outright rather than prompted for: the point is that nothing
+    # changes on disk until the user has approved a plan.
+    PLAN = "plan"
 
 
 @dataclass(frozen=True, slots=True)
@@ -152,6 +163,9 @@ class PermissionPolicy:
         default_factory=lambda: set(DEFAULT_ALWAYS_ALLOW_TOOLS)
     )
     _rules: list[AllowRule] = field(default_factory=list)
+    # The one path writable in PLAN mode — the agent has to put its plan
+    # somewhere, and every other write is blocked.
+    plan_file: str = ""
 
     @classmethod
     def build(
@@ -180,6 +194,23 @@ class PermissionPolicy:
         for rule in allow_rules:
             policy._add_rule(rule)
         return policy
+
+    def _decide_plan_mode(self, request: PermissionRequest) -> PermissionDecision:
+        """Read-only, plus writes to the plan file, plus leaving plan mode."""
+        if request.tool_name in self.always_allow_tools:
+            return PermissionDecision.allow_once()
+        if request.tool_name in ("EnterPlanMode", "ExitPlanMode"):
+            return PermissionDecision.allow_once()
+        if self.plan_file and request.tool_name in ("Write", "Edit"):
+            target = (request.arguments or {}).get("file_path")
+            if isinstance(target, str) and _same_path(target, self.plan_file):
+                return PermissionDecision.allow_once()
+        return PermissionDecision.deny(
+            f"{request.tool_name} is not available in plan mode — nothing may "
+            "change on disk until the user approves a plan. Keep exploring with "
+            f"read-only tools, write your plan to {self.plan_file or 'the plan file'}, "
+            "then call ExitPlanMode to request approval."
+        )
 
     # ----- public mutation -------------------------------------------------- #
 
@@ -212,6 +243,8 @@ class PermissionPolicy:
         return any(r.matches(request) for r in self._rules)
 
     def decide(self, request: PermissionRequest) -> PermissionDecision:
+        if self.mode == PermissionMode.PLAN:
+            return self._decide_plan_mode(request)
         if self.mode == PermissionMode.ALLOW_ALL:
             return PermissionDecision.allow_once()
         if self.is_allowed(request):
