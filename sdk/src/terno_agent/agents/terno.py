@@ -152,10 +152,10 @@ class TernoAgent(BaseAgent):
                 cancel_token=token,
                 sandbox=sandbox,
             ),
-            MonitorTool(
-                workdir=self.workdir,
-                cancel_token=token,
-            ),
+            # MonitorTool(
+            #     workdir=self.workdir,
+            #     cancel_token=token,
+            # ),
             WebFetchTool(),
             WebSearchTool(),
             TaskCreateTool(self.task_store),
