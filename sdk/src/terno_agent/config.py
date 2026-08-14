@@ -101,7 +101,9 @@ class Config:
     # Optional allowlist of skill names. When non-empty, only these skills are
     # discovered/exposed to the model; every other skill is dropped. Empty means
     # "expose all discovered skills".
-    skill_allowlist: list[str] = field(default_factory=lambda: ["data-visualization"])
+    skill_allowlist: list[str] = field(
+        default_factory=lambda: ["data-visualization", "interactive-dashboard-builder"]
+    )
     # ----- memory ---------------------------------------------------------- #
     memory_enabled: bool = True
     memory_top_k: int = 5
@@ -181,7 +183,9 @@ class Config:
         skill_include_user_raw = os.getenv("TERNO_SKILL_INCLUDE_USER", "true").lower()
         attachments_enabled_raw = os.getenv("TERNO_ATTACHMENTS_ENABLED", "true").lower()
         skill_paths_raw = os.getenv("TERNO_SKILL_PATHS", "")
-        skill_allowlist_raw = os.getenv("TERNO_SKILL_ALLOWLIST", "data-visualization")
+        skill_allowlist_raw = os.getenv(
+            "TERNO_SKILL_ALLOWLIST", "data-visualization,interactive-dashboard-builder"
+        )
         return cls(
             llm_provider=provider,
             llm_model=model,

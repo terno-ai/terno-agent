@@ -461,6 +461,7 @@ Built-in skills are available by default:
 | `data-cleaning` | messy data, deduplication, standardization |
 | `data-visualization` | charts, dashboards, visual summaries |
 | `documentation` | README, API docs, runbooks, tutorials |
+| `interactive-dashboard-builder` | self-contained interactive HTML dashboards with Chart.js, filters, KPIs |
 | `machine-learning` | models, experiments, metrics, leakage checks |
 | `python-data` | dataframe, notebook, numerical, and file-based analysis |
 | `research-synthesis` | research, comparisons, decision briefs |
