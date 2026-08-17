@@ -51,7 +51,7 @@ def test_block_always_names_user_folder_even_when_empty(tmp_path: Path):
     block = MemoryContextProvider(user_root).context_block()
     # Names the sandbox-side virtual path, never the host `user_root` — the
     # model's tools run inside the sandbox and can't act on a host path.
-    assert "/workspace/user_workspace/memory" in block
+    assert "/home/runner/user_workspace/memory" in block
     assert str(user_root) not in block
     assert "empty — no memories saved yet" in block
     # No org section when no org root is configured.
@@ -74,7 +74,7 @@ def test_block_adds_org_section_when_configured(tmp_path: Path):
     org_root.mkdir(parents=True)
     (org_root / MEMORY_INDEX_FILENAME).write_text(_INDEX, encoding="utf-8")
     block = MemoryContextProvider(user_root, org_root=org_root).context_block()
-    assert "/workspace/org_workspace/memory" in block
+    assert "/home/runner/org_shared/memory" in block
     assert str(org_root) not in block
     assert "read-only unless you are an org admin" in block
 
@@ -146,5 +146,5 @@ def test_explicit_user_memory_root_is_used(
 def test_context_block_injected_and_names_memory_folder(agent: TernoAgent):
     block = agent.memory_context.context_block()
     assert "Persistent memory" in block
-    assert "/workspace/user_workspace/memory" in block
+    assert "/home/runner/user_workspace/memory" in block
     assert str(agent.memory_context.user_root) not in block

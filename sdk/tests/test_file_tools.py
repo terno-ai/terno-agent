@@ -100,7 +100,7 @@ def test_write_rejects_directory_target(tmp_path):
 # edit_file is used directly, instead of the run_python + stdout template.     #
 # --------------------------------------------------------------------------- #
 
-_SANDBOX_PATH = "/workspace/outputs/report.txt"
+_SANDBOX_PATH = "/home/runner/user_workspace/report.txt"
 
 
 class _NativeSandbox:

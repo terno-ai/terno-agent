@@ -235,7 +235,7 @@ class GrepTool:
                             "Directory or single file to search, as it "
                             "resolves inside the sandbox (not the host "
                             "filesystem) — an absolute sandbox-side path, "
-                            "e.g. '/workspace/outputs'. Pass this explicitly; "
+                            "e.g. '/home/runner/user_workspace'. Pass this explicitly; "
                             "if omitted, the search runs wherever the "
                             "sandbox's shell happens to default to, which is "
                             "usually not what you want."

@@ -17,8 +17,8 @@ one file per fact (e.g. ``customer.md``, ``active-user.md``), never under
 subdirectory. Files cross-link to each other by name; the directory stays flat.
 
 * **private** memory → the caller's user folder
-  (``.../user_workspace/memory``);
-* **shared** memory → the org folder (``.../org_workspace/memory``), which
+  (``/home/runner/user_workspace/memory``);
+* **shared** memory → the org folder (``/home/runner/org_shared/memory``), which
   **only an org admin may write to**.
 
 Everyone in an org can READ the shared folder; the read tools search the user
