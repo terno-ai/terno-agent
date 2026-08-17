@@ -101,6 +101,7 @@ class TernoLLMClient:
             "tool_choice": None,
             "priority": False,
             "summarize": False,
+            "max_tokens": 25000,
         }
         # api_key is NOT in the payload yet (added inside the HTTP helpers), so
         # this print never leaks it.
