@@ -463,6 +463,7 @@ Built-in skills are available by default:
 | `documentation` | README, API docs, runbooks, tutorials |
 | `interactive-dashboard-builder` | self-contained interactive HTML dashboards with Chart.js, filters, KPIs |
 | `machine-learning` | models, experiments, metrics, leakage checks |
+| `predictive-analysis` | predicting future periods, demand plans, run rates |
 | `python-data` | dataframe, notebook, numerical, and file-based analysis |
 | `research-synthesis` | research, comparisons, decision briefs |
 | `sql-analysis` | analytical SQL, joins, cohorts, funnels |

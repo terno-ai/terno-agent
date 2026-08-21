@@ -97,6 +97,7 @@ def test_builtin_skills_are_available_by_default(tmp_path):
         "documentation",
         "interactive-dashboard-builder",
         "machine-learning",
+        "predictive-analysis",
         "python-data",
         "research-synthesis",
         "sql-analysis",
