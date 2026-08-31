@@ -20,9 +20,12 @@ layout.
 
 from __future__ import annotations
 
+import base64
 import json
 import logging
 import shlex
+import subprocess
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -37,6 +40,7 @@ logger = logging.getLogger(__name__)
 _GLOB_DEFAULT_LIMIT = 200
 _GREP_DEFAULT_LIMIT = 200
 _SANDBOX_TIMEOUT_S = 30
+_IS_WINDOWS = sys.platform == "win32"
 
 
 def _resolve_root(root_arg: Any, workdir: Path) -> Path:
@@ -76,12 +80,28 @@ def _run_json(sandbox: Sandbox, code_template: str, payload: dict) -> Any:
 
 
 def _run_shell_json(sandbox: Sandbox, code_template: str, payload: dict, *, cwd: str) -> Any:
-    """Like `_run_json`, but goes through `run_shell` (as `python3 -c ...`)
+    """Like `_run_json`, but goes through `run_shell` (as `python -c ...`)
     instead of `run_python`, so `cwd` is forwarded the same way BashTool
     forwards it — honored by sandboxes that support it, ignored by those
     that don't."""
     code = code_template % (json.dumps(payload),)
-    command = f"python3 -c {shlex.quote(code)}"
+    if _IS_WINDOWS:
+        # Sandboxes are Linux containers regardless of host OS, but a bare
+        # `python`/`python3` on a Windows host can resolve to the Microsoft
+        # Store's stub instead of a real interpreter - sys.executable is
+        # unambiguous for the local (non-container) case. The code is passed
+        # base64-encoded as a bare trailing argument (never quoted, never
+        # containing shell-special characters) rather than inline in the -c
+        # string, since cmd.exe's quote parsing doesn't round-trip nested
+        # quotes/newlines the way list2cmdline assumes.
+        encoded = base64.b64encode(code.encode()).decode()
+        wrapper = "import base64,sys;exec(base64.b64decode(sys.argv[1]).decode())"
+        command = (
+            f"{subprocess.list2cmdline([sys.executable])} "
+            f"-c {subprocess.list2cmdline([wrapper])} {encoded}"
+        )
+    else:
+        command = f"python3 -c {shlex.quote(code)}"
     result = sandbox.run_shell(command, timeout_s=_SANDBOX_TIMEOUT_S, cwd=cwd)
     if result.exit_code != 0:
         raise ToolError(f"sandbox operation failed: {result.stderr or result.stdout}")

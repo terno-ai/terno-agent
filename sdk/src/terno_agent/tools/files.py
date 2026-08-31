@@ -37,11 +37,19 @@ from terno_agent.sandbox.base import Sandbox
 _SANDBOX_TIMEOUT_S = 30
 
 
+def _is_sandbox_absolute(path: Path) -> bool:
+    """True for a host-absolute path (C:\\... or /...) or a POSIX-style
+    sandbox path (/home/...) even on Windows, where Path.is_absolute() alone
+    is False for a leading "/" without a drive letter - sandboxes here are
+    always POSIX (containers/VMs), so that leading "/" still means root."""
+    return path.is_absolute() or bool(path.root)
+
+
 def _resolve(path_str: str, workdir: Path | None = None) -> Path:
     if not path_str:
         raise ToolError("path is required.")
     path = Path(path_str).expanduser()
-    if path.is_absolute() or workdir is None:
+    if _is_sandbox_absolute(path) or workdir is None:
         return path
     return workdir / path
 
@@ -51,7 +59,7 @@ def _use_sandbox(path: Path, workdir: Path | None, sandbox: Sandbox | None) -> b
     local host filesystem: a sandbox is available, the path is absolute,
     and it doesn't fall under the agent's own local `workdir` (which stays
     on the host regardless — e.g. the file-based memory directory)."""
-    if sandbox is None or not path.is_absolute():
+    if sandbox is None or not _is_sandbox_absolute(path):
         return False
     if workdir is not None:
         try:
@@ -138,15 +146,18 @@ class ReadFileTool:
             raise ToolError("limit must be positive.")
 
         if _use_sandbox(path, self.workdir, self.sandbox):
+            # Sandboxes are always POSIX (containers/VMs) - as_posix(), not
+            # str(), so a Windows host doesn't hand it a backslash path.
+            sandbox_path = path.as_posix()
             native = getattr(self.sandbox, "read_file", None)
             if callable(native):
                 # The native op applies offset/limit and formats the result
                 # (line numbers, directory listing, truncation notes) itself,
                 # so return it verbatim rather than re-numbering below.
                 return _native_result(
-                    native(str(path), offset=offset, limit=limit)
+                    native(sandbox_path, offset=offset, limit=limit)
                 )
-            data = _run_json(self.sandbox, _READ_FILE_TEMPLATE, {"path": str(path)})
+            data = _run_json(self.sandbox, _READ_FILE_TEMPLATE, {"path": sandbox_path})
             if "error" in data:
                 raise ToolError(data["error"])
             text = data["text"]
@@ -228,19 +239,22 @@ class WriteFileTool:
         overwrite = bool(kwargs.get("overwrite", False))
 
         if _use_sandbox(path, self.workdir, self.sandbox):
+            # Sandboxes are always POSIX (containers/VMs) - as_posix(), not
+            # str(), so a Windows host doesn't hand it a backslash path.
+            sandbox_path = path.as_posix()
             native = getattr(self.sandbox, "write_file", None)
             if callable(native):
                 return _native_result(
-                    native(str(path), content, overwrite=overwrite)
+                    native(sandbox_path, content, overwrite=overwrite)
                 )
             data = _run_json(
                 self.sandbox,
                 _WRITE_FILE_TEMPLATE,
-                {"path": str(path), "content": content, "overwrite": overwrite},
+                {"path": sandbox_path, "content": content, "overwrite": overwrite},
             )
             if "error" in data:
                 raise ToolError(data["error"])
-            return f"Wrote {data['bytes']} bytes to {path}"
+            return f"Wrote {data['bytes']} bytes to {sandbox_path}"
 
         if path.exists():
             if path.is_dir():
@@ -316,16 +330,19 @@ class EditFileTool:
         replace_all = bool(kwargs.get("replace_all"))
 
         if _use_sandbox(path, self.workdir, self.sandbox):
+            # Sandboxes are always POSIX (containers/VMs) - as_posix(), not
+            # str(), so a Windows host doesn't hand it a backslash path.
+            sandbox_path = path.as_posix()
             native = getattr(self.sandbox, "edit_file", None)
             if callable(native):
                 return _native_result(
-                    native(str(path), old, new, replace_all=replace_all)
+                    native(sandbox_path, old, new, replace_all=replace_all)
                 )
             data = _run_json(
                 self.sandbox,
                 _EDIT_FILE_TEMPLATE,
                 {
-                    "path": str(path),
+                    "path": sandbox_path,
                     "old": old,
                     "new": new,
                     "replace_all": replace_all,
@@ -333,7 +350,7 @@ class EditFileTool:
             )
             if "error" in data:
                 raise ToolError(data["error"])
-            return f"Replaced {data['replaced']} occurrence(s) in {path}"
+            return f"Replaced {data['replaced']} occurrence(s) in {sandbox_path}"
 
         if not path.exists():
             raise ToolError(f"File not found: {path}")

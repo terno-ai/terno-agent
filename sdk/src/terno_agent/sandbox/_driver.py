@@ -29,6 +29,8 @@ SENTINEL = "\x1e__TERNO_SANDBOX_RESPONSE__\x1e"
 DRIVER_SOURCE = '''
 import sys, io, json, traceback, contextlib, subprocess
 
+_IS_WINDOWS = sys.platform == "win32"
+
 SENTINEL = "\\x1e__TERNO_SANDBOX_RESPONSE__\\x1e"
 
 ns = {"__name__": "__terno_sandbox__", "__builtins__": __builtins__}
@@ -41,9 +43,15 @@ def _emit(response):
 
 def _run_shell(command):
     try:
-        proc = subprocess.run(
-            ["sh", "-c", command], capture_output=True, text=True
-        )
+        if _IS_WINDOWS:
+            # shell=True with the raw string, not ["cmd", "/c", command] -
+            # list2cmdline's argv-quoting doesn't match cmd.exe's own quote
+            # parsing, so nested double quotes in `command` come out mangled.
+            proc = subprocess.run(command, shell=True, capture_output=True, text=True)
+        else:
+            proc = subprocess.run(
+                ["sh", "-c", command], capture_output=True, text=True
+            )
     except BaseException as exc:
         return {"stdout": "", "stderr": "shell launch failed: " + str(exc), "exit_code": 1}
     return {

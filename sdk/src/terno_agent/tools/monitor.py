@@ -9,19 +9,29 @@ Return semantics:
 - ``status=matched``  the first line matching ``until_regex`` arrived.
 - ``status=exited``   the process exited on its own.
 - ``status=timeout``  ``timeout_s`` elapsed before either of the above.
+
+Cross-platform note: process-group semantics differ fundamentally between
+POSIX (process groups + signals + fcntl non-blocking reads) and Windows (job-less
+process trees + CREATE_NEW_PROCESS_GROUP + taskkill). Each side gets its own
+implementation below rather than a lowest-common-denominator shim.
 """
 
 from __future__ import annotations
 
-import fcntl
 import os
+import queue
 import re
 import signal
 import subprocess
+import sys
+import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+
+if sys.platform != "win32":
+    import fcntl
 
 from terno_agent.core.cancel import CancelToken
 from terno_agent.core.exceptions import AgentCancelled, ToolError
@@ -32,6 +42,8 @@ _POLL_INTERVAL_S = 0.05
 _TERM_GRACE_S = 0.5
 _DEFAULT_TIMEOUT_S = 60
 _DEFAULT_MAX_LINES = 200
+
+_IS_WINDOWS = sys.platform == "win32"
 
 
 @dataclass
@@ -58,7 +70,10 @@ class MonitorTool:
                 "properties": {
                     "command": {
                         "type": "string",
-                        "description": "Shell command to execute (POSIX `sh -c`).",
+                        "description": (
+                            "Shell command to execute (`sh -c` on POSIX, "
+                            "`cmd /c` on Windows)."
+                        ),
                     },
                     "until_regex": {
                         "type": "string",
@@ -104,20 +119,12 @@ class MonitorTool:
             raise AgentCancelled("cancelled before monitor started")
 
         try:
-            proc = subprocess.Popen(
-                ["sh", "-c", command],
-                cwd=str(self.workdir),
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-                bufsize=1,
-                start_new_session=True,
-            )
+            proc = _spawn(command, self.workdir)
         except OSError as exc:
             raise ToolError(f"Failed to launch shell: {exc}") from exc
 
         assert proc.stdout is not None
-        _set_nonblocking(proc.stdout.fileno())
+        reader = _OutputReader(proc.stdout)
 
         deadline = time.monotonic() + timeout
         retained: list[str] = []
@@ -135,10 +142,7 @@ class MonitorTool:
                     outcome = "timeout"
                     break
 
-                try:
-                    chunk = proc.stdout.read(4096)
-                except (BlockingIOError, OSError):
-                    chunk = None
+                chunk = reader.read_chunk()
 
                 if chunk:
                     partial += chunk
@@ -154,10 +158,7 @@ class MonitorTool:
                     continue
 
                 if proc.poll() is not None:
-                    try:
-                        tail = proc.stdout.read() or ""
-                    except (BlockingIOError, OSError):
-                        tail = ""
+                    tail = reader.drain()
                     if tail:
                         partial += tail
                     chunks = partial.split("\n")
@@ -203,12 +204,104 @@ def _append_line(buffer: list[str], line: str, max_lines: int) -> None:
         del buffer[: len(buffer) - max_lines]
 
 
+def _spawn(command: str, workdir: Path) -> subprocess.Popen[str]:
+    if _IS_WINDOWS:
+        # shell=True (not ["cmd", "/c", command]) - list2cmdline's generic
+        # argv-quoting doesn't match cmd.exe's own quote parsing, so nested
+        # double quotes in `command` come out mangled through the list form.
+        return subprocess.Popen(
+            command,
+            shell=True,
+            cwd=str(workdir),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,
+            creationflags=subprocess.CREATE_NEW_PROCESS_GROUP,
+        )
+    return subprocess.Popen(
+        ["sh", "-c", command],
+        cwd=str(workdir),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        bufsize=1,
+        start_new_session=True,
+    )
+
+
+class _OutputReader:
+    """Non-blocking-ish reads over a process's stdout.
+
+    POSIX: the stream fd is put in O_NONBLOCK mode via fcntl and read directly
+    on the caller's thread - no extra thread needed, matches the original
+    implementation exactly.
+
+    Windows: pipes can't be made non-blocking, so a background thread does
+    blocking reads and hands chunks over via a queue; the caller polls the
+    queue instead of the stream itself.
+    """
+
+    def __init__(self, stream: Any) -> None:
+        self._stream = stream
+        if _IS_WINDOWS:
+            self._queue: queue.Queue[str | None] = queue.Queue()
+            self._thread = threading.Thread(target=self._pump, daemon=True)
+            self._thread.start()
+        else:
+            _set_nonblocking(stream.fileno())
+
+    def _pump(self) -> None:
+        # readline(), not read(4096) - a fixed-size read blocks until that
+        # many bytes accumulate *or* EOF, so it never returns early just
+        # because a line arrived, effectively stalling until the process exits.
+        try:
+            for line in iter(self._stream.readline, ""):
+                self._queue.put(line)
+        except (OSError, ValueError):
+            pass
+        finally:
+            self._queue.put(None)
+
+    def read_chunk(self) -> str | None:
+        if _IS_WINDOWS:
+            try:
+                return self._queue.get_nowait()
+            except queue.Empty:
+                return None
+        try:
+            return self._stream.read(4096)
+        except (BlockingIOError, OSError):
+            return None
+
+    def drain(self) -> str:
+        """Collect whatever output is left once the process has exited."""
+        if _IS_WINDOWS:
+            self._thread.join(timeout=_TERM_GRACE_S)
+            parts: list[str] = []
+            while True:
+                try:
+                    item = self._queue.get_nowait()
+                except queue.Empty:
+                    break
+                if item is not None:
+                    parts.append(item)
+            return "".join(parts)
+        try:
+            return self._stream.read() or ""
+        except (BlockingIOError, OSError):
+            return ""
+
+
 def _set_nonblocking(fd: int) -> None:
     flags = fcntl.fcntl(fd, fcntl.F_GETFL)
     fcntl.fcntl(fd, fcntl.F_SETFL, flags | os.O_NONBLOCK)
 
 
 def _terminate_group(proc: subprocess.Popen[str]) -> None:
+    if _IS_WINDOWS:
+        _terminate_group_windows(proc)
+        return
     try:
         pgid = os.getpgid(proc.pid)
     except OSError:
@@ -230,6 +323,30 @@ def _terminate_group(proc: subprocess.Popen[str]) -> None:
             proc.wait(timeout=_TERM_GRACE_S)
         except subprocess.TimeoutExpired:
             pass
+
+
+def _terminate_group_windows(proc: subprocess.Popen[str]) -> None:
+    # CTRL_BREAK_EVENT is delivered to the whole process group we created via
+    # CREATE_NEW_PROCESS_GROUP, giving well-behaved children a chance to exit
+    # cleanly before the hard taskkill /T fallback below.
+    try:
+        proc.send_signal(signal.CTRL_BREAK_EVENT)
+    except (OSError, ValueError):
+        pass
+    try:
+        proc.wait(timeout=_TERM_GRACE_S)
+        return
+    except subprocess.TimeoutExpired:
+        pass
+    subprocess.run(
+        ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    try:
+        proc.wait(timeout=_TERM_GRACE_S)
+    except subprocess.TimeoutExpired:
+        pass
 
 
 def _format_output(
