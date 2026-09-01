@@ -1,11 +1,10 @@
 name: SDK tests
 
 on:
-  # Testing against fix/cross-platform only for now - switch to [main] once trusted.
   push:
-    branches: [fix/cross-platform]
+    branches: [main]
   pull_request:
-    branches: [fix/cross-platform]
+    branches: [main]
 
 jobs:
   test:
