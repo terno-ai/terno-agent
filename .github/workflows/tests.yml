@@ -1,0 +1,30 @@
+name: SDK tests
+
+on:
+  # Testing against fix/cross-platform only for now, while we're still
+  # experimenting - switch both of these back to [main] once trusted.
+  push:
+    branches: [fix/cross-platform]
+  pull_request:
+    branches: [fix/cross-platform]
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        working-directory: sdk
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v3
+        with:
+          python-version: "3.12"
+
+      - run: uv sync --extra dev
+
+      - run: uv run pytest tests/ -v
