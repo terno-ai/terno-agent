@@ -9,8 +9,11 @@ Covers the four layers that have to cooperate:
 
 from __future__ import annotations
 
+import sys
 import time
 from pathlib import Path
+
+import pytest
 
 from terno_agent.agents.base import BaseAgent
 from terno_agent.core.cancel import CancelToken
@@ -18,6 +21,11 @@ from terno_agent.core.exceptions import AgentCancelled
 from terno_agent.core.messages import AssistantMessage, Message
 from terno_agent.llm.base import LLMResponse
 from terno_agent.tools.shell import BashTool
+
+# BashTool shells out via `sh -c` on POSIX and shell=True on Windows (see
+# LocalSandbox._exec) - each platform's tests use that shell's own commands
+# rather than one lowest-common-denominator command string.
+_IS_WINDOWS = sys.platform == "win32"
 
 # --------------------------------------------------------------------------- #
 # CancelToken primitive
@@ -142,7 +150,8 @@ def test_cancel_during_streaming_returns_cancelled():
 # --------------------------------------------------------------------------- #
 
 
-def test_bash_tool_aborts_on_cancel(tmp_path: Path):
+@pytest.mark.skipif(_IS_WINDOWS, reason="POSIX command (sleep)")
+def test_bash_tool_aborts_on_cancel_posix(tmp_path: Path):
     token = CancelToken()
     tool = BashTool(workdir=tmp_path, default_timeout_s=30, cancel_token=token)
 
@@ -152,12 +161,30 @@ def test_bash_tool_aborts_on_cancel(tmp_path: Path):
     threading.Timer(0.2, token.cancel).start()
 
     start = time.monotonic()
-    import pytest
-
     with pytest.raises(AgentCancelled):
         tool.run(command="sleep 10", timeout_s=30)
     elapsed = time.monotonic() - start
     # We should be unblocked well before the 10s sleep, not after it.
+    assert elapsed < 3.0
+
+
+@pytest.mark.skipif(not _IS_WINDOWS, reason="Windows delay (ping)")
+def test_bash_tool_aborts_on_cancel_windows(tmp_path: Path):
+    token = CancelToken()
+    tool = BashTool(workdir=tmp_path, default_timeout_s=30, cancel_token=token)
+
+    import threading
+
+    # Flip the cancel token shortly after the subprocess starts.
+    threading.Timer(0.2, token.cancel).start()
+
+    start = time.monotonic()
+    with pytest.raises(AgentCancelled):
+        # ~10s delay - `timeout` fails under redirected/non-interactive
+        # stdin, which is exactly how tests spawn this process.
+        tool.run(command="ping -n 11 127.0.0.1 >NUL", timeout_s=30)
+    elapsed = time.monotonic() - start
+    # We should be unblocked well before the ~10s ping, not after it.
     assert elapsed < 3.0
 
 

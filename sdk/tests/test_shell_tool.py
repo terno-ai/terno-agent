@@ -1,3 +1,4 @@
+import sys
 from pathlib import Path
 
 import pytest
@@ -5,6 +6,11 @@ import pytest
 from terno_agent.core.exceptions import ToolError
 from terno_agent.sandbox.base import ExecutionResult
 from terno_agent.tools.shell import BashTool
+
+# BashTool shells out via `sh -c` on POSIX and `cmd`/shell=True on Windows
+# (see LocalSandbox._exec) - each platform's tests use that shell's own
+# commands rather than one lowest-common-denominator command string.
+_IS_WINDOWS = sys.platform == "win32"
 
 
 def test_bash_returns_stdout_and_exit_code(tmp_path: Path):
@@ -18,14 +24,32 @@ def test_bash_captures_nonzero_exit(tmp_path: Path):
     assert "exit_code=1" in out
 
 
-def test_bash_runs_in_workdir(tmp_path: Path):
+@pytest.mark.skipif(_IS_WINDOWS, reason="POSIX command (ls)")
+def test_bash_runs_in_workdir_posix(tmp_path: Path):
     (tmp_path / "marker.txt").write_text("x")
     out = BashTool(workdir=tmp_path).run(command="ls")
     assert "marker.txt" in out
 
 
-def test_bash_timeout(tmp_path: Path):
+@pytest.mark.skipif(not _IS_WINDOWS, reason="Windows command (dir)")
+def test_bash_runs_in_workdir_windows(tmp_path: Path):
+    (tmp_path / "marker.txt").write_text("x")
+    out = BashTool(workdir=tmp_path).run(command="dir")
+    assert "marker.txt" in out
+
+
+@pytest.mark.skipif(_IS_WINDOWS, reason="POSIX command (sleep)")
+def test_bash_timeout_posix(tmp_path: Path):
     out = BashTool(workdir=tmp_path).run(command="sleep 5", timeout_s=1)
+    assert "exit_code=124" in out
+    assert "timed out" in out
+
+
+@pytest.mark.skipif(not _IS_WINDOWS, reason="Windows delay (ping)")
+def test_bash_timeout_windows(tmp_path: Path):
+    # `timeout` fails under redirected/non-interactive stdin, which is
+    # exactly how tests spawn this process - ping as a delay instead.
+    out = BashTool(workdir=tmp_path).run(command="ping -n 6 127.0.0.1 >NUL", timeout_s=1)
     assert "exit_code=124" in out
     assert "timed out" in out
 

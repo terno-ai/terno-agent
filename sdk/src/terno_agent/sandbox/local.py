@@ -21,6 +21,7 @@ from terno_agent.sandbox.base import ExecutionResult
 
 _POLL_INTERVAL_S = 0.1
 _TERM_GRACE_S = 0.5
+_IS_WINDOWS = sys.platform == "win32"
 
 
 class LocalSandbox:
@@ -71,19 +72,24 @@ class LocalSandbox:
     ) -> ExecutionResult:
         # Unlike run_python (isolated temp dir), shell commands run in the
         # caller's directory on the host so they can see the real project.
+        # Windows: shell=True with the raw string (not ["cmd", "/c", command]) -
+        # list2cmdline's generic argv-quoting doesn't match cmd.exe's own quote
+        # parsing, so nested double quotes in `command` come out mangled.
+        argv: list[str] | str = command if _IS_WINDOWS else ["sh", "-c", command]
         return self._exec(
-            ["sh", "-c", command],
+            argv,
             workdir=cwd or os.getcwd(),
             env=env,
             timeout_s=timeout_s,
             cancel_token=cancel_token,
             what="run_shell",
             launch_error="failed to launch shell",
+            shell=_IS_WINDOWS,
         )
 
     def _exec(
         self,
-        argv: list[str],
+        argv: list[str] | str,
         *,
         workdir: str,
         env: dict[str, str] | None,
@@ -91,6 +97,7 @@ class LocalSandbox:
         cancel_token: CancelToken | None,
         what: str,
         launch_error: str,
+        shell: bool = False,
     ) -> ExecutionResult:
         child_env = {**os.environ, **(env or {})}
 
@@ -98,15 +105,27 @@ class LocalSandbox:
             raise AgentCancelled(f"cancelled before {what} started")
 
         try:
-            proc = subprocess.Popen(
-                argv,
-                cwd=workdir,
-                env=child_env,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                start_new_session=True,
-            )
+            if _IS_WINDOWS:
+                proc = subprocess.Popen(
+                    argv,
+                    cwd=workdir,
+                    env=child_env,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    shell=shell,
+                    creationflags=subprocess.CREATE_NEW_PROCESS_GROUP,
+                )
+            else:
+                proc = subprocess.Popen(
+                    argv,
+                    cwd=workdir,
+                    env=child_env,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    start_new_session=True,
+                )
         except OSError as exc:
             return ExecutionResult(
                 stdout="",
@@ -158,6 +177,9 @@ class LocalSandbox:
 
 
 def _terminate_group(proc: subprocess.Popen) -> None:
+    if _IS_WINDOWS:
+        _terminate_group_windows(proc)
+        return
     try:
         pgid = os.getpgid(proc.pid)
     except OSError:
@@ -179,6 +201,30 @@ def _terminate_group(proc: subprocess.Popen) -> None:
             proc.wait(timeout=_TERM_GRACE_S)
         except subprocess.TimeoutExpired:
             pass
+
+
+def _terminate_group_windows(proc: subprocess.Popen) -> None:
+    # CTRL_BREAK_EVENT reaches the whole process group we created via
+    # CREATE_NEW_PROCESS_GROUP, giving well-behaved children a chance to exit
+    # cleanly before the hard taskkill /T fallback below.
+    try:
+        proc.send_signal(signal.CTRL_BREAK_EVENT)
+    except (OSError, ValueError):
+        pass
+    try:
+        proc.wait(timeout=_TERM_GRACE_S)
+        return
+    except subprocess.TimeoutExpired:
+        pass
+    subprocess.run(
+        ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    try:
+        proc.wait(timeout=_TERM_GRACE_S)
+    except subprocess.TimeoutExpired:
+        pass
 
 
 def _drain(proc: subprocess.Popen) -> tuple[str, str]:

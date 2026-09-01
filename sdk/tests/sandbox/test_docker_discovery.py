@@ -9,11 +9,19 @@ from __future__ import annotations
 
 import hashlib
 import json
+import sys
 from pathlib import Path
 
 import pytest
 
 from terno_agent.sandbox.docker import discover_docker_base_url
+
+# Docker Desktop on Windows uses named pipes, not the Unix socket / $HOME/.docker
+# layout this resolver targets - not used by terno-desktop-app (native sandbox
+# mode) on Windows, so out of scope for now rather than a real regression.
+pytestmark = pytest.mark.skipif(
+    sys.platform == "win32", reason="Unix socket discovery - not used on Windows"
+)
 
 
 @pytest.fixture(autouse=True)
