@@ -102,6 +102,4 @@ asyncio_mode = "auto"
 
 [tool.coverage.run]
 parallel = true
-
-[tool.coverage.paths]
-source = ["sdk/src/terno_agent", "*/sdk/src/terno_agent"]
+relative_files = true
