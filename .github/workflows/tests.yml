@@ -55,24 +55,15 @@ jobs:
           COVERAGE_FILE: .coverage.${{ matrix.os }}
         run: uv run --project sdk pytest -c sdk/pyproject.toml sdk/tests --cov=sdk/src/terno_agent -v
 
-      - name: debug list coverage files
-        if: always() && matrix.python-version == '3.10'
-        working-directory: ${{ github.workspace }}
-        run: uv run --project sdk python -c "import pathlib; [print('repo root:', p) for p in pathlib.Path(r'${{ github.workspace }}').glob('.coverage*')]; [print('sdk/:', p) for p in pathlib.Path(r'${{ github.workspace }}/sdk').glob('.coverage*')]"
-
-      - name: stage coverage artifact
-        # Copies into a plain directory rather than path-matching one hidden dotfile directly, which failed repeatedly for reasons we couldn't pin down.
-        if: matrix.python-version == '3.10'
-        working-directory: ${{ github.workspace }}
-        run: uv run --project sdk python -c "import shutil, pathlib; d = pathlib.Path('coverage-artifacts'); d.mkdir(exist_ok=True); shutil.copy('.coverage.${{ matrix.os }}', d / '.coverage.${{ matrix.os }}')"
-
       - name: upload coverage data
+        # include-hidden-files is required because the .coverage.* data file is a dotfile, which actions/upload-artifact excludes by default.
         if: matrix.python-version == '3.10'
         uses: actions/upload-artifact@v4
         with:
           name: coverage-data-${{ matrix.os }}
-          path: coverage-artifacts
+          path: .coverage.${{ matrix.os }}
           if-no-files-found: error
+          include-hidden-files: true
 
   coverage:
     needs: test
