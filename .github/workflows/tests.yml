@@ -52,7 +52,7 @@ jobs:
         if: matrix.python-version == '3.10'
         working-directory: ${{ github.workspace }}
         env:
-          COVERAGE_FILE: .coverage.${{ matrix.os }}
+          COVERAGE_FILE: ${{ github.workspace }}/.coverage.${{ matrix.os }}
         run: uv run --project sdk pytest -c sdk/pyproject.toml sdk/tests --cov=sdk/src/terno_agent -v
 
       - name: upload coverage data
@@ -60,7 +60,8 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: coverage-data-${{ matrix.os }}
-          path: .coverage.*
+          path: ${{ github.workspace }}/.coverage.*
+          if-no-files-found: error
 
   coverage:
     needs: test
