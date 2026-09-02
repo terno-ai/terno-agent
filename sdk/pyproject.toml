@@ -55,6 +55,8 @@ all = [
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",
+    "pytest-cov>=5.0",
+    "diff-cover>=9.0",
     "ruff>=0.5",
     "mypy>=1.10",
 ]
@@ -97,3 +99,9 @@ ignore_missing_imports = true
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+
+[tool.coverage.run]
+parallel = true
+
+[tool.coverage.paths]
+source = ["sdk/src/terno_agent", "*/sdk/src/terno_agent"]

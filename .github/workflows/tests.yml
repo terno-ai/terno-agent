@@ -2,19 +2,34 @@ name: SDK tests
 
 on:
   push:
-    branches: [main]
   pull_request:
     branches: [main]
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
+  cancel-in-progress: true
+
 jobs:
+  context:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.set.outputs.matrix }}
+    steps:
+      - id: set
+        # Full matrix (3.10 = floor this package claims to support, 3.14 = newest stable) for PRs and pushes to main; feature-branch pushes skip 3.14 to control cost.
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ] || [ "${{ github.ref }}" = "refs/heads/main" ]; then
+            echo 'matrix={"os":["ubuntu-latest","windows-latest"],"python-version":["3.10","3.14"]}' >> "$GITHUB_OUTPUT"
+          else
+            echo 'matrix={"os":["ubuntu-latest","windows-latest"],"python-version":["3.10"]}' >> "$GITHUB_OUTPUT"
+          fi
+
   test:
+    needs: context
     name: test (${{ matrix.os }}, py${{ matrix.python-version }})
     strategy:
       fail-fast: false
-      matrix:
-        os: [ubuntu-latest, windows-latest]
-        # 3.10 = the floor this package claims to support; 3.14 = newest stable.
-        python-version: ["3.10", "3.14"]
+      matrix: ${{ fromJson(needs.context.outputs.matrix) }}
     runs-on: ${{ matrix.os }}
     defaults:
       run:
@@ -28,7 +43,58 @@ jobs:
 
       - run: uv sync --extra dev
 
-      - run: uv run pytest tests/ -v
+      - name: run tests
+        if: matrix.python-version != '3.10'
+        run: uv run pytest tests/ -v
+
+      - name: run tests with coverage
+        # Runs from the repo root so coverage.xml records paths matching `git diff`.
+        if: matrix.python-version == '3.10'
+        working-directory: ${{ github.workspace }}
+        env:
+          COVERAGE_FILE: .coverage.${{ matrix.os }}
+        run: uv run --project sdk pytest -c sdk/pyproject.toml sdk/tests --cov=sdk/src/terno_agent -v
+
+      - name: upload coverage data
+        if: matrix.python-version == '3.10'
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-data-${{ matrix.os }}
+          path: .coverage.*
+
+  coverage:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: astral-sh/setup-uv@v3
+        with:
+          python-version: "3.10"
+
+      - run: uv sync --project sdk --extra dev
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: coverage-data-*
+          merge-multiple: true
+
+      - run: uv run --project sdk coverage combine
+      - run: uv run --project sdk coverage xml
+
+      - name: diff coverage (pull request)
+        if: github.event_name == 'pull_request'
+        run: uv run --project sdk diff-cover coverage.xml --fail-under=70
+
+      - name: diff coverage (push to main)
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: uv run --project sdk diff-cover coverage.xml --compare-branch=${{ github.event.before }} --fail-under=70
+
+      - name: diff coverage (feature branch push)
+        if: github.event_name == 'push' && github.ref != 'refs/heads/main'
+        run: uv run --project sdk diff-cover coverage.xml --compare-branch=origin/main --fail-under=70
 
   platform-pattern-check:
     runs-on: ubuntu-latest
