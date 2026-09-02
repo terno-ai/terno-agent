@@ -53,7 +53,7 @@ jobs:
         working-directory: ${{ github.workspace }}
         env:
           COVERAGE_FILE: .coverage.${{ matrix.os }}
-        run: uv run --project sdk pytest -c sdk/pyproject.toml sdk/tests --cov=sdk/src/terno_agent -v
+        run: uv run --project sdk pytest -c sdk/pyproject.toml sdk/tests --cov=sdk/src/terno_agent --cov-config=sdk/pyproject.toml -v
 
       - name: upload coverage data
         # include-hidden-files is required because the .coverage.* data file is a dotfile, which actions/upload-artifact excludes by default.
@@ -84,8 +84,8 @@ jobs:
           pattern: coverage-data-*
           merge-multiple: true
 
-      - run: uv run --project sdk coverage combine
-      - run: uv run --project sdk coverage xml
+      - run: uv run --project sdk coverage combine --rcfile=sdk/pyproject.toml
+      - run: uv run --project sdk coverage xml --rcfile=sdk/pyproject.toml
 
       - name: diff coverage (pull request)
         if: github.event_name == 'pull_request'
