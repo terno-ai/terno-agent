@@ -65,7 +65,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: coverage-data-${{ matrix.os }}
-          path: ${{ github.workspace }}/.coverage.*
+          path: ${{ github.workspace }}/.coverage.${{ matrix.os }}
           if-no-files-found: error
 
   coverage:
