@@ -57,6 +57,7 @@ jobs:
 
       - name: debug list coverage files
         if: always() && matrix.python-version == '3.10'
+        working-directory: ${{ github.workspace }}
         run: uv run --project sdk python -c "import pathlib; [print('repo root:', p) for p in pathlib.Path(r'${{ github.workspace }}').glob('.coverage*')]; [print('sdk/:', p) for p in pathlib.Path(r'${{ github.workspace }}/sdk').glob('.coverage*')]"
 
       - name: upload coverage data
