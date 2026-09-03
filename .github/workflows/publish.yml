@@ -11,6 +11,16 @@ on:
           - testpypi
           - pypi
         default: testpypi
+      bump_type:
+        description: "Version bump. 'none' means you already bumped pyproject.toml by hand."
+        required: true
+        type: choice
+        options:
+          - none
+          - patch
+          - minor
+          - major
+        default: none
 
 jobs:
   build:
@@ -20,12 +30,27 @@ jobs:
         working-directory: sdk
     env:
       UV_PYTHON: "3.12"
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
       - uses: astral-sh/setup-uv@v3
+
+      - name: bump version
+        if: github.event.inputs.target == 'pypi' && github.event.inputs.bump_type != 'none'
+        run: uvx hatch version ${{ github.event.inputs.bump_type }}
+
+      - name: commit version bump
+        if: github.event.inputs.target == 'pypi' && github.event.inputs.bump_type != 'none'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add pyproject.toml
+          git commit -m "bumped version to $(uvx hatch version)"
+          git push origin HEAD:${{ github.ref_name }}
 
       - run: uv sync --extra dev
 
