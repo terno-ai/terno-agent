@@ -93,6 +93,20 @@ uv sync --extra benchmarks
 Then run Terminal-Bench or SWE-bench as documented in
 [benchmarks/README.md](benchmarks/README.md).
 
+Every push and PR is automatically tested across Windows and Linux (see [`.github/workflows/tests.yml`](.github/workflows/tests.yml)).
+
+## Releasing
+
+Publishing to PyPI is a deliberate, manual step — pushing to `main` never publishes anything by itself.
+
+1. Go to **Actions → Publish to PyPI → Run workflow** in this repo.
+2. Choose:
+   - **target**: `testpypi` to safely dry-run the mechanism, or `pypi` for a real release.
+   - **bump_type**: `patch` / `minor` / `major` to have the workflow bump `sdk/pyproject.toml`'s version for you, or `none` if you've already bumped it yourself in a prior commit.
+3. Run it. On a real (`pypi`) run, the workflow tests, builds, publishes via PyPI Trusted Publishing (no stored token), then tags the commit `vX.Y.Z` and creates a matching GitHub Release automatically.
+
+If `bump_type` is `none` but the version wasn't actually changed, the run fails fast with a clear error instead of silently trying to re-publish an existing version. See [`.github/workflows/publish.yml`](.github/workflows/publish.yml) for the full pipeline.
+
 ## License
 
 Apache 2.0 — see [LICENSE](LICENSE).
