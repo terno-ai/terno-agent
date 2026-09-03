@@ -59,7 +59,6 @@ jobs:
   publish:
     needs: build
     runs-on: ubuntu-latest
-    environment: ${{ github.event.inputs.target }}
     permissions:
       id-token: write
       contents: write
