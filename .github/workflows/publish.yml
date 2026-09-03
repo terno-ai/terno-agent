@@ -49,9 +49,10 @@ jobs:
       - name: commit version bump
         if: github.event.inputs.target == 'pypi' && github.event.inputs.bump_type != 'none'
         run: |
+          uv lock
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add pyproject.toml
+          git add pyproject.toml uv.lock
           git commit -m "bumped version to $(uvx hatch version)"
           git push origin HEAD:${{ github.ref_name }}
 
