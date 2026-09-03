@@ -34,12 +34,13 @@ jobs:
     defaults:
       run:
         working-directory: sdk
+    env:
+      # setup-uv has no python-version input; UV_PYTHON is what actually pins the interpreter uv resolves to.
+      UV_PYTHON: ${{ matrix.python-version }}
     steps:
       - uses: actions/checkout@v4
 
       - uses: astral-sh/setup-uv@v3
-        with:
-          python-version: ${{ matrix.python-version }}
 
       - run: uv sync --extra dev
 
@@ -68,14 +69,14 @@ jobs:
   coverage:
     needs: test
     runs-on: ubuntu-latest
+    env:
+      UV_PYTHON: "3.10"
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
       - uses: astral-sh/setup-uv@v3
-        with:
-          python-version: "3.10"
 
       - run: uv sync --project sdk --extra dev
 
@@ -104,11 +105,11 @@ jobs:
     defaults:
       run:
         working-directory: sdk
+    env:
+      UV_PYTHON: "3.12"
     steps:
       - uses: actions/checkout@v4
 
       - uses: astral-sh/setup-uv@v3
-        with:
-          python-version: "3.12"
 
       - run: uv run python scripts/check_platform_patterns.py
