@@ -7,6 +7,151 @@ description: Build self-contained interactive HTML dashboards with Chart.js, dro
 
 Patterns and techniques for building self-contained HTML/JS dashboards with Chart.js, filters, interactivity, and professional styling.
 
+## Code Generation Rules
+
+Read these before writing anything. Each one exists because breaking it
+produces a dashboard that fails in the browser.
+
+### Use the functions in this skill
+
+`COLORS`, `formatValue`, `renderKPI`, `createLineChart`, `createBarChart`,
+`createDoughnutChart`, `updateChart`, `populateFilter`, `getFilterValue`,
+`filterByDateRange` and `renderTable` are the whole vocabulary of a
+dashboard. Copy them into the `<script>` block **as written** and call them.
+
+- Do not write a bespoke charting, formatting or table routine when one of
+  these covers the job.
+- Do not inline a modified copy of one of them at a call site.
+- If a chart needs a Chart.js option these don't expose, pass it through the
+  existing `options` argument -- don't hand-roll a second `new Chart(...)`.
+- Copy `COLORS` and `formatValue` first. Every other function depends on
+  them, and a missing `COLORS` is the single most common cause of a
+  dashboard that loads with empty chart boxes.
+
+Keep the custom JavaScript you write down to the parts that are genuinely
+specific to this dashboard: the `Dashboard` class body, the filter
+predicates in `applyFilters`, and the calls that wire data into the
+functions above. Everything else is a copy.
+
+### Never compress JavaScript onto one line
+
+Write one statement per line, with the indentation shown in this skill. Do
+not minify, do not chain a whole render into a single expression, and do not
+collapse a function body onto its signature line.
+
+A syntax error in one-lined JavaScript is reported as "line 1" and cannot be
+located -- neither by you nor by the browser console. Keeping the code on
+separate lines is what makes an error fixable.
+
+### Never build JavaScript inside a Python f-string
+
+This is the most common source of syntax errors in generated dashboards. CSS
+uses `{`, and JavaScript template literals use `${...}` -- both collide with
+f-string and `.format()` placeholders, producing either a Python
+`KeyError`/`SyntaxError` or, worse, HTML that is silently mangled.
+
+Assemble the file with plain (non-f) strings and `str.replace` on explicit
+placeholders, and pass data as JSON rather than interpolating values into
+code:
+
+```python
+import json
+
+# Non-f strings. Nothing in here is interpolated by Python.
+STYLES = """
+    .kpi-card { background: #fff; border-radius: 8px; }
+"""
+
+SCRIPT = """
+    const COLORS = ['#4C72B0', '#DD8452', '#55A868'];
+
+    function formatValue(value, format) {
+        // ... copied from this skill, unchanged
+    }
+
+    const DATA = JSON.parse(document.getElementById('dashboard-data').textContent);
+    const dashboard = new Dashboard(DATA);
+"""
+
+TEMPLATE = """<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>__TITLE__</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.5.1"></script>
+<style>__STYLES__</style>
+</head>
+<body>
+__BODY__
+<script id="dashboard-data" type="application/json">__DATA__</script>
+<script>__SCRIPT__</script>
+</body>
+</html>
+"""
+
+html = TEMPLATE
+for token, value in (
+    ("__TITLE__", title),
+    ("__STYLES__", STYLES),
+    ("__BODY__", body_html),
+    ("__DATA__", json.dumps(records).replace("</", "<\\/")),
+    ("__SCRIPT__", SCRIPT),
+):
+    html = html.replace(token, value)
+```
+
+Two details in that pattern matter:
+
+- **Embed the data as JSON in a `<script type="application/json">` block**
+  and read it with `JSON.parse`, instead of writing `const DATA = ` followed
+  by interpolated Python. The JSON is inert text, so no value in the data
+  can break the surrounding JavaScript.
+- **`json.dumps` emits bare `NaN` for a missing float**, which is valid
+  Python output but invalid JavaScript -- `JSON.parse` throws and the page
+  renders blank. Replace missing values before serialising
+  (`df.where(df.notna(), None)`), or pass `allow_nan=False` to find out at
+  build time. The `.replace("</", "<\\/")` guards against a `</script>`
+  inside a string value closing the data block early.
+
+### Validate the JavaScript before showing the dashboard
+
+After writing the HTML, extract the inline script and check that it parses:
+
+```python
+import re, shutil, subprocess, tempfile, os
+
+html = open(out_path, encoding="utf-8").read()
+blocks = [
+    body for attrs, body in re.findall(
+        r"<script\b([^>]*)>(.*?)</script\s*>", html, re.DOTALL)
+    if "src=" not in attrs and "application/json" not in attrs
+]
+
+if shutil.which("node"):
+    with tempfile.TemporaryDirectory() as tmp:
+        for i, body in enumerate(blocks):
+            # Check each block on its own: concatenating them produces bogus
+            # "Identifier has already been declared" errors.
+            path = os.path.join(tmp, f"block_{i}.js")
+            open(path, "w", encoding="utf-8").write(body)
+            done = subprocess.run(["node", "--check", path],
+                                  capture_output=True, text=True)
+            if done.returncode != 0:
+                raise SystemExit(f"script block {i} has a syntax error:\n{done.stderr}")
+```
+
+Node is not installed in every sandbox, so treat a missing `node` as "check
+skipped", not as a failure. These checks work everywhere and are worth
+running regardless:
+
+- The file ends with `</html>` (catches a truncated write).
+- `html.count("<script") == html.count("</script")`.
+- Every `<canvas id="...">` you reference has a matching `getElementById`.
+- No line in a script block is longer than ~200 characters (a proxy for
+  accidentally minified code).
+
+Report a failed check to the user instead of handing them a broken file.
+
 ## HTML/JS Dashboard Patterns
 
 ### Base Template
@@ -20,8 +165,9 @@ Every dashboard follows this structure:
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Dashboard Title</title>
-    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.5.1" integrity="sha384-jb8JQMbMoBUzgWatfe6COACi2ljcDdZQ2OxczGA3bGNeWe+6DChMTBJemed7ZnvJ" crossorigin="anonymous"></script>
-    <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@3.0.0" integrity="sha384-cVMg8E3QFwTvGCDuK+ET4PD341jF3W8nO1auiXfuZNQkzbUUiBGLsIQUE+b1mxws" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.5.1"></script>
+    <!-- Only load the date adapter if a chart uses a time-scale axis.
+         Prefer pre-formatted category labels and omit it. -->
     <style>
         /* Dashboard styles go here */
     </style>
@@ -52,9 +198,15 @@ Every dashboard follows this structure:
         </footer>
     </div>
 
+    <!-- Data goes in its own JSON block, never interpolated into the code
+         below. See "Never build JavaScript inside a Python f-string". -->
+    <script id="dashboard-data" type="application/json">[]</script>
+
     <script>
-        // Embedded data
-        const DATA = [];
+        const DATA = JSON.parse(document.getElementById('dashboard-data').textContent);
+
+        // COLORS, formatValue and the create*Chart / renderKPI / renderTable
+        // helpers are copied here unchanged from this skill.
 
         // Dashboard logic
         class Dashboard {
@@ -120,6 +272,11 @@ function renderKPI(elementId, value, previousValue, format = 'number') {
 }
 
 function formatValue(value, format) {
+    // Guard first: this runs inside Chart.js tick and tooltip callbacks,
+    // where a single throw takes down the entire chart.
+    if (value === null || value === undefined || value === '') return '\u2014';
+    if (typeof value === 'number' && !isFinite(value)) return '\u2014';
+
     switch (format) {
         case 'currency':
             if (value >= 1e6) return `$${(value / 1e6).toFixed(1)}M`;
@@ -147,6 +304,23 @@ function formatValue(value, format) {
 ```
 
 ## Chart.js Integration
+
+### Shared Palette
+
+Every chart function below reads `COLORS`. Copy this into the `<script>`
+block before them -- if it is missing, the charts throw
+`COLORS is not defined` and render as empty boxes.
+
+```javascript
+const COLORS = [
+    '#4C72B0', '#DD8452', '#55A868', '#C44E52', '#8172B3',
+    '#937860', '#DA8BC3', '#8C8C8C', '#CCB974', '#64B5CD'
+];
+```
+
+These are the same six accents as the `--color-1 ... --color-6` CSS
+variables in the Color System section, plus four more for charts with many
+series. Keep the two lists consistent if you change either.
 
 ### Line Chart
 
