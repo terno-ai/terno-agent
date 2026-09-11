@@ -459,6 +459,7 @@ Built-in skills are available by default:
 | `debugging` | failing tests, runtime errors, flaky behavior |
 | `data-analysis` | dataset exploration, summaries, metrics |
 | `data-cleaning` | messy data, deduplication, standardization |
+| `data-exploration` | exploring the fresh database and build knowledge about it |
 | `data-visualization` | charts, dashboards, visual summaries |
 | `documentation` | README, API docs, runbooks, tutorials |
 | `interactive-dashboard-builder` | self-contained interactive HTML dashboards with Chart.js, filters, KPIs |

@@ -92,6 +92,7 @@ def test_builtin_skills_are_available_by_default(tmp_path):
         "code-review",
         "data-analysis",
         "data-cleaning",
+        "data-exploration",
         "data-visualization",
         "debugging",
         "documentation",

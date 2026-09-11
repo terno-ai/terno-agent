@@ -102,7 +102,7 @@ class Config:
     # discovered/exposed to the model; every other skill is dropped. Empty means
     # "expose all discovered skills".
     skill_allowlist: list[str] = field(
-        default_factory=lambda: ["data-visualization", "interactive-dashboard-builder", "predictive-analysis"]
+        default_factory=lambda: ["data-visualization", "interactive-dashboard-builder", "predictive-analysis", "data-exploration"]
     )
     # ----- memory ---------------------------------------------------------- #
     memory_enabled: bool = True
@@ -184,7 +184,7 @@ class Config:
         attachments_enabled_raw = os.getenv("TERNO_ATTACHMENTS_ENABLED", "true").lower()
         skill_paths_raw = os.getenv("TERNO_SKILL_PATHS", "")
         skill_allowlist_raw = os.getenv(
-            "TERNO_SKILL_ALLOWLIST", "data-visualization,interactive-dashboard-builder,predictive-analysis"
+            "TERNO_SKILL_ALLOWLIST", "data-visualization,interactive-dashboard-builder,predictive-analysis,data-exploration"
         )
         return cls(
             llm_provider=provider,
