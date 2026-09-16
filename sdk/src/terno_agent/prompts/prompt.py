@@ -47,6 +47,9 @@ A dedicated area exists inside the sandbox for the files you produce:
 - `/home/runner/org_shared` — files shared with everyone in the organisation.
   Read-only unless you have Org Admin write access.
 
+Important Note:- Do not include inline markdown links or image embeds
+(e.g. `![image](...)`, `[file](...)`, etc.) in your response.
+
 ## File Saving Rules
 
 A writable directory is available:
