@@ -43,11 +43,19 @@ _SANDBOX_TIMEOUT_S = 30
 _IS_WINDOWS = sys.platform == "win32"
 
 
+def _is_sandbox_absolute(path: Path) -> bool:
+    """True for a host-absolute path (C:\\... or /...) or a POSIX-style
+    sandbox path (/home/...) even on Windows, where Path.is_absolute() alone
+    is False for a leading "/" without a drive letter - sandboxes here are
+    always POSIX (containers/VMs), so that leading "/" still means root."""
+    return path.is_absolute() or bool(path.root)
+
+
 def _resolve_root(root_arg: Any, workdir: Path) -> Path:
     if not root_arg:
         return workdir
     path = Path(str(root_arg)).expanduser()
-    if not path.is_absolute():
+    if not _is_sandbox_absolute(path):
         path = (workdir / path).resolve()
     return path
 
@@ -55,7 +63,7 @@ def _resolve_root(root_arg: Any, workdir: Path) -> Path:
 def _use_sandbox(path: Path, workdir: Path | None, sandbox: Sandbox | None) -> bool:
     """See `files._use_sandbox` — same rule, duplicated to avoid a cross-file
     dependency for two tools that already stand alone."""
-    if sandbox is None or not path.is_absolute():
+    if sandbox is None or not _is_sandbox_absolute(path):
         return False
     if workdir is not None:
         try:
