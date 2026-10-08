@@ -47,7 +47,7 @@ from terno_agent.rag.embeddings import create_embedding_client
 from terno_agent.rag.vector_store import create_vector_store
 from terno_agent.sandbox.base import Sandbox
 from terno_agent.sandbox.factory import create_sandbox
-from terno_agent.skills import ActivateSkillTool, SkillCatalog, discover_skills
+from terno_agent.skills import ActivateSkillTool, Skill, SkillCatalog, discover_skills
 from terno_agent.tools.ask_user import AskCallback, AskUserTool
 from terno_agent.tools.code_exec import RunPythonTool
 from terno_agent.tools.files import EditFileTool, ReadFileTool, WriteFileTool
@@ -350,6 +350,7 @@ class TernoAgent(BaseAgent):
         run_python_timeout_s: int = 30,
         sandbox: Sandbox | None = None,
         task_store: TaskStore | None = None,
+        extra_skills: list[Skill] | None = None,
     ) -> TernoAgent:
         """Build a :class:`TernoAgent` from a :class:`Config`.
 
@@ -363,6 +364,9 @@ class TernoAgent(BaseAgent):
         terno-ai's database store); when omitted the agent uses a
         process-local :class:`InMemoryTaskStore`, so the SDK is fully
         functional standalone.
+
+        Pass ``extra_skills`` to add host-built skills that are not read from
+        disk; they are not filtered by ``skill_allowlist``.
         """
         if not config.llm_api_key:
             raise ConfigError(
@@ -427,6 +431,8 @@ class TernoAgent(BaseAgent):
             if config.skills_enabled
             else SkillCatalog()
         )
+        for skill in extra_skills or ():
+            skill_catalog.skills[skill.name] = skill
 
         compaction_hook: CompactionHook | None = None
         if config.compaction_enabled:

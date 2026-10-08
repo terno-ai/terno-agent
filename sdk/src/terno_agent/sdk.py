@@ -36,6 +36,7 @@ if TYPE_CHECKING:
     from terno_agent.knowledge.runner import KnowledgeReport
     from terno_agent.knowledge.store import KnowledgeStore
     from terno_agent.sandbox.base import Sandbox
+    from terno_agent.skills import Skill
     from terno_agent.tools.tasks import TaskStore
 
 
@@ -78,6 +79,7 @@ class Agent:
         org_memory_root: str | Path | None = None,
         is_org_admin: bool | None = None,
         session_id: str | None = None,
+        extra_skills: "list[Skill] | None" = None,
     ) -> None:
         self.config = config or _build_config(
             api_key=api_key,
@@ -108,6 +110,7 @@ class Agent:
             sandbox=sandbox,
             task_store=task_store,
             permission_policy=permission_policy,
+            extra_skills=extra_skills,
         )
         self._closed = False
 
@@ -147,6 +150,7 @@ class Agent:
         ask_callback: AskCallback | None = None,
         sandbox: "Sandbox | None" = None,
         task_store: "TaskStore | None" = None,
+        extra_skills: "list[Skill] | None" = None,
     ) -> Agent:
         """Build an `Agent` from an explicit `Config`.
 
@@ -162,6 +166,9 @@ class Agent:
         receiving the pending ``list[Question]`` and returning one
         ``Answer`` per question. Without it, ``ask_user`` is not offered
         to the model at all (matching the SDK's standalone default).
+
+        Pass ``extra_skills`` to add host-built skills that are not read from
+        disk; they are not filtered by ``skill_allowlist``.
         """
         return cls(
             config=config,
@@ -174,6 +181,7 @@ class Agent:
             ask_callback=ask_callback,
             sandbox=sandbox,
             task_store=task_store,
+            extra_skills=extra_skills,
         )
 
     # ----- Inference --------------------------------------------------------- #

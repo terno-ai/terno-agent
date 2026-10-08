@@ -6,7 +6,8 @@ from terno_agent.agents.terno import TernoAgent
 from terno_agent.config import Config
 from terno_agent.core.messages import AssistantMessage
 from terno_agent.llm.base import LLMResponse
-from terno_agent.skills import ActivateSkillTool, discover_skills
+from terno_agent.sdk import Agent
+from terno_agent.skills import ActivateSkillTool, Skill, discover_skills
 
 
 class _CapturingLLM:
@@ -149,3 +150,60 @@ def test_config_can_scope_skills_to_host_owned_paths_only(tmp_path):
         == "Host-specific viz instructions."
     )
     assert "activate_skill" in agent.tools
+
+
+def test_from_config_accepts_extra_skills(tmp_path):
+    config = Config(
+        llm_provider="terno",
+        llm_model="dummy",
+        llm_api_key="test-key",
+        provisioner_url="https://example.invalid",
+        sandbox="none",
+        sandbox_fallback="none",
+        mcp_enabled=False,
+        memory_enabled=False,
+        file_memory_enabled=False,
+        skills_enabled=True,
+        skill_include_builtin=False,
+        skill_include_user=False,
+    )
+    extra = Skill(
+        name="app-sales",
+        description="Saved app. Sales by brand.",
+        path=Path("/nonexistent/app-sales/SKILL.md"),
+        body="Run it.",
+    )
+
+    agent = TernoAgent.from_config(
+        config, workdir=tmp_path / "workdir", extra_skills=[extra]
+    )
+
+    assert list(agent.skill_catalog.skills) == ["app-sales"]
+    assert "<name>app-sales</name>" in agent.system_prompt
+    result = agent.tools["activate_skill"].run(name="app-sales")
+    assert "Run it." in result
+    assert "<skill_resources>" not in result
+
+
+def test_agent_facade_passes_extra_skills_through(tmp_path):
+    config = Config(
+        llm_provider="terno",
+        llm_model="dummy",
+        llm_api_key="test-key",
+        provisioner_url="https://example.invalid",
+        sandbox="none",
+        sandbox_fallback="none",
+        mcp_enabled=False,
+        memory_enabled=False,
+        file_memory_enabled=False,
+    )
+    extra = Skill(
+        name="app-sales",
+        description="Saved app. Sales by brand.",
+        path=Path("/nonexistent/app-sales/SKILL.md"),
+        body="Run it.",
+    )
+
+    agent = Agent.from_config(config, workdir=tmp_path / "workdir", extra_skills=[extra])
+
+    assert "<name>app-sales</name>" in agent.history[0].content
