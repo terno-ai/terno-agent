@@ -13,8 +13,7 @@ from terno_agent.llm.terno_llm import ProvisionerError, TernoLLMClient
 CREDITS_EXHAUSTED = {
     "status": "error",
     "error_code": "credits_exhausted",
-    "message": "Insufficient credits on Sachin Sharma's account.",
-    "details": {"account_name": "Sachin Sharma"},
+    "message": "Insufficient credits in your account.",
 }
 
 
@@ -41,8 +40,8 @@ def test_non_retryable_stream_error_raises_without_fallback(client, monkeypatch)
     exc = info.value
     assert isinstance(exc, LLMError)
     assert exc.error_code == "credits_exhausted"
-    assert exc.details == {"account_name": "Sachin Sharma"}
-    assert str(exc) == "Insufficient credits on Sachin Sharma's account."
+    assert exc.details == {}
+    assert str(exc) == "Insufficient credits in your account."
 
 
 def test_retryable_stream_error_falls_back_then_raises_structured(client, monkeypatch):
