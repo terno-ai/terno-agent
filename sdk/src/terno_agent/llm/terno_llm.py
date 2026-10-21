@@ -29,6 +29,7 @@ import os
 import urllib.error
 import urllib.request
 from typing import Any
+import logging
 
 from terno_agent.core.exceptions import ConfigError, LLMError
 from terno_agent.core.messages import AssistantMessage, Message, ToolCall
@@ -42,6 +43,44 @@ PROVISIONER_READ_TIMEOUT = 90
 
 DEFAULT_APP_VERSION = "terno-agent"
 DEFAULT_REQUEST_SOURCE = "terno-agent-sdk"
+
+logger = logging.getLogger(__name__)
+
+# Provisioner error codes that will fail the same way on a retry, so the
+# stream → get_response fallback is skipped and the error surfaces at once.
+NON_RETRYABLE_ERROR_CODES = frozenset(
+    {"no_api_key", "unauthorized", "credits_exhausted"}
+)
+
+
+class ProvisionerError(LLMError):
+    """A structured error from the provisioner's ``/root/llm/`` endpoint.
+
+    Carries the provisioner's error envelope (``error_code``, ``message``,
+    ``details``) so callers can react to the code — e.g. show a billing link
+    for ``credits_exhausted`` — instead of parsing a string. ``str(exc)`` is
+    just the user-facing ``message``.
+    """
+
+    def __init__(
+        self,
+        error_code: str,
+        message: str,
+        details: dict[str, Any] | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.error_code = error_code
+        self.message = message
+        self.details = details or {}
+
+    @classmethod
+    def from_response(cls, data: dict[str, Any]) -> ProvisionerError:
+        details = data.get("details")
+        return cls(
+            error_code=data.get("error_code") or "unknown_error",
+            message=data.get("message") or "Something went wrong. Please try again.",
+            details=details if isinstance(details, dict) else None,
+        )
 
 
 class TernoLLMClient:
@@ -133,8 +172,8 @@ class TernoLLMClient:
 
         Returns ``None`` (rather than raising) when the stream cannot be used
         so that ``complete`` can fall back to the non-streaming endpoint. A
-        provisioner ``error`` chunk, however, is a real LLM failure and is
-        raised as ``LLMError``.
+        provisioner ``error`` chunk that a retry cannot fix is raised as
+        ``ProvisionerError``.
         """
         payload = {**base_payload, "type": "stream_response"}
 
@@ -167,22 +206,19 @@ class TernoLLMClient:
             return None
 
         if error_chunk is not None:
-            # If tokens already reached the UI we can't cleanly re-run, so
-            # surface the error. Otherwise (nothing streamed yet — e.g. a
-            # provisioner that doesn't support stream_response, or a transient
-            # stream-start failure) fall back to the non-streaming endpoint,
-            # which either succeeds or raises a clean terminal error.
-            if text_parts:
-                raise LLMError(
-                    "Provisioner error"
-                    + (
-                        f" ({error_chunk['error_code']})"
-                        if error_chunk.get("error_code")
-                        else ""
-                    )
-                    + f": {error_chunk.get('message') or 'unknown error'}"
+            # If tokens already reached the UI we can't cleanly re-run, and a
+            # non-retryable code (e.g. credits_exhausted) would only fail
+            # again, so surface the error. Otherwise (nothing streamed yet —
+            # e.g. a provisioner that doesn't support stream_response, or a
+            # transient stream-start failure) fall back to the non-streaming
+            # endpoint, which either succeeds or raises a clean terminal error.
+            if text_parts or error_chunk.get("error_code") in NON_RETRYABLE_ERROR_CODES:
+                logger.error(
+                    "[terno-proxy] stream returned error "
+                    f"({error_chunk.get('error_code')}): {error_chunk.get('message')}"
                 )
-            print(
+                raise ProvisionerError.from_response(error_chunk)
+            logger.debug(
                 "[terno-proxy] stream returned error "
                 f"({error_chunk.get('error_code')}) before any tokens — "
                 "falling back to get_response"
@@ -232,11 +268,11 @@ class TernoLLMClient:
         data = self._call_provisioner(payload)
 
         if data.get("status") == "error":
-            raise LLMError(
-                "Provisioner error"
-                + (f" ({data['error_code']})" if data.get("error_code") else "")
-                + f": {data.get('message') or 'unknown error'}"
+            logger.debug(
+                "[terno-proxy] Provisioner returned error "
+                f"({data.get('error_code')}): {data.get('message')}"
             )
+            raise ProvisionerError.from_response(data)
 
         # The provisioner returns an OpenAI-shaped ChatCompletionMessage plus
         # usage/model metadata (see TernoLLM.get_response).
@@ -329,21 +365,34 @@ class TernoLLMClient:
                 raw = resp.read().decode("utf-8")
         except urllib.error.HTTPError as exc:
             detail = exc.read().decode("utf-8", "replace") if exc.fp else ""
-            raise LLMError(
-                f"Provisioner returned HTTP {exc.code}: {detail or exc.reason}"
+            logger.debug(f"Provisioner HTTP {exc.code}: {(detail or str(exc.reason))[:500]}")
+            raise ProvisionerError(
+                "http_error",
+                "The Terno server returned an error. Please try again.",
+                {"status_code": exc.code, "detail": detail[:500] or str(exc.reason)},
             ) from exc
         except TimeoutError as exc:
-            raise LLMError("Provisioner request timed out. Please try again.") from exc
+            logger.debug("[terno-proxy] provisioner request timed out")
+            raise ProvisionerError(
+                "timeout_error",
+                "The Terno server took too long to respond. Please try again.",
+            ) from exc
         except urllib.error.URLError as exc:
-            raise LLMError(
-                f"Could not reach provisioner at {self.provisioner_url}: {exc.reason}"
+            logger.debug(f"[terno-proxy] could not reach {self.provisioner_url}: {exc.reason}")
+            raise ProvisionerError(
+                "network_error",
+                "Could not reach the Terno server. Please check your connection and try again.",
+                {"reason": str(exc.reason)},
             ) from exc
 
         try:
             return json.loads(raw)
         except json.JSONDecodeError as exc:
-            raise LLMError(
-                f"Provisioner returned non-JSON response: {raw[:200]!r}"
+            logger.debug(f"[terno-proxy] non-JSON response: {raw[:200]!r}")
+            raise ProvisionerError(
+                "invalid_response",
+                "The Terno server sent an unexpected response. Please try again.",
+                {"raw": raw[:200]},
             ) from exc
 
 
@@ -400,4 +449,4 @@ def _build_tool_calls(partials: dict[int, dict[str, str]]) -> list[ToolCall]:
     return calls
 
 
-__all__ = ["TernoLLMClient"]
+__all__ = ["NON_RETRYABLE_ERROR_CODES", "ProvisionerError", "TernoLLMClient"]
