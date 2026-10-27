@@ -145,6 +145,18 @@ class Config:
     compaction_enabled: bool = True
     compaction_threshold_tokens: int = 80_000
     compaction_keep_last_turns: int = 4
+    # ----- tool output ------------------------------------------------------ #
+    # Tool results over ``tool_output_max_chars`` reach the model as head +
+    # tail; the full text is saved under ``tool_output_dir`` (a sandbox path
+    # when absolute and outside the workdir, else a host path under it). See
+    # ``core.tool_output``.
+    tool_output_limit_enabled: bool = True
+    tool_output_max_chars: int = 5000
+    tool_output_head_chars: int = 1500
+    tool_output_tail_chars: int = 1500
+    tool_output_dir: str = ""
+    # Regexes over a call's JSON arguments whose results get a larger budget.
+    tool_output_large_patterns: tuple[str, ...] = ()
     # ----- attachments ------------------------------------------------------ #
     attachments_enabled: bool = True
     attachments_dir: str = ".terno/attachments"
@@ -244,6 +256,10 @@ class Config:
             compaction_keep_last_turns=int(
                 os.getenv("TERNO_COMPACTION_KEEP_LAST_TURNS", "4")
             ),
+            tool_output_limit_enabled=os.getenv("TERNO_TOOL_OUTPUT_LIMIT_ENABLED", "true").lower()
+            not in {"false", "0", "no", "off"},
+            tool_output_max_chars=int(os.getenv("TERNO_TOOL_OUTPUT_MAX_CHARS", "5000")),
+            tool_output_dir=os.getenv("TERNO_TOOL_OUTPUT_DIR", "").strip(),
             attachments_enabled=attachments_enabled_raw not in {"false", "0", "no", "off"},
             attachments_dir=os.getenv("TERNO_ATTACHMENTS_DIR", ".terno/attachments"),
             max_attachment_bytes=int(

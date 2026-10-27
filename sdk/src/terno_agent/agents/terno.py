@@ -31,6 +31,7 @@ from terno_agent.core.permissions import (
     PermissionMode,
     PermissionPolicy,
 )
+from terno_agent.core.tool_output import ToolOutputLimiter, make_output_saver
 from terno_agent.llm.base import LLMClient
 from terno_agent.llm.factory import create_llm_client
 from terno_agent.mcp.manager import McpManager
@@ -68,6 +69,11 @@ from terno_agent.tools.tasks import (
 from terno_agent.tools.web import WebFetchTool, WebSearchTool
 
 
+# Upper bound on run_python/bash output held in memory when a
+# ToolOutputLimiter is active; the limiter decides what the model sees.
+_RAW_OUTPUT_CAP = 2_000_000
+
+
 class TernoAgent(BaseAgent):
     name = "terno"
     max_iterations = 100
@@ -102,6 +108,7 @@ class TernoAgent(BaseAgent):
         hook_manager: HookManager | None = None,
         compaction_hook: CompactionHook | None = None,
         memory_context: MemoryContextProvider | None = None,
+        tool_output_limiter: ToolOutputLimiter | None = None,
     ) -> None:
         self.workdir = (workdir or Path.cwd()).resolve()
         if max_iterations is not None:
@@ -139,6 +146,14 @@ class TernoAgent(BaseAgent):
         self.permission_hook: PreToolUseHook | None = resolved
 
         token = cancel_token or CancelToken()
+        # With a limiter shortening every result (head + tail, full text saved
+        # to a file), the code tools' own head-only caps would cut the output
+        # before the limiter sees it; keep only a memory-safety cap.
+        raw_output = (
+            {"max_output_chars": _RAW_OUTPUT_CAP}
+            if tool_output_limiter is not None
+            else {}
+        )
 
         tools: list = [
             ReadFileTool(workdir=self.workdir, sandbox=sandbox),
@@ -151,6 +166,7 @@ class TernoAgent(BaseAgent):
                 default_timeout_s=bash_timeout_s,
                 cancel_token=token,
                 sandbox=sandbox,
+                **raw_output,
             ),
             # MonitorTool(
             #     workdir=self.workdir,
@@ -175,6 +191,7 @@ class TernoAgent(BaseAgent):
                 cancel_token=token,
                 ask_callback=ask_callback,
                 permission_hook=self.permission_hook,
+                tool_output_limiter=tool_output_limiter,
             ),
         ]
         if ask_callback is not None:
@@ -185,6 +202,7 @@ class TernoAgent(BaseAgent):
                     sandbox,
                     timeout_s=run_python_timeout_s,
                     cancel_token=token,
+                    **raw_output,
                 )
             )
         if self.skill_catalog.skills:
@@ -224,6 +242,7 @@ class TernoAgent(BaseAgent):
             on_event=on_event,
             hook_manager=hooks,
             cancel_token=token,
+            tool_output_limiter=tool_output_limiter,
         )
 
         # Stream task-list changes as events so a host (CLI, terno-ai) can
@@ -465,12 +484,33 @@ class TernoAgent(BaseAgent):
             on_permission_request=on_permission_request,
             compaction_hook=compaction_hook,
             memory_context=memory_context,
+            tool_output_limiter=_build_tool_output_limiter(
+                config, workdir=resolved_workdir, sandbox=sandbox
+            ),
         )
 
     # ----- Convenience --------------------------------------------------- #
 
     def ask(self, task: str) -> AgentRun:
         return self.run(task)
+
+
+def _build_tool_output_limiter(
+    config: Config, *, workdir: Path, sandbox: Sandbox | None
+) -> ToolOutputLimiter | None:
+    if not config.tool_output_limit_enabled:
+        return None
+    save, output_dir = make_output_saver(
+        config.tool_output_dir, workdir=workdir, sandbox=sandbox
+    )
+    return ToolOutputLimiter.build(
+        save,
+        max_chars=config.tool_output_max_chars,
+        head_chars=config.tool_output_head_chars,
+        tail_chars=config.tool_output_tail_chars,
+        output_dir=output_dir,
+        large_patterns=config.tool_output_large_patterns,
+    )
 
 
 def _build_memory(

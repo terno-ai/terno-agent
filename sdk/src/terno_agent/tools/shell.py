@@ -32,6 +32,7 @@ class BashTool:
         sandbox: Sandbox | None = None,
         default_timeout_s: int = 120,
         cancel_token: CancelToken | None = None,
+        max_output_chars: int = _MAX_OUTPUT_BYTES,
     ) -> None:
         self.workdir = workdir
         # Bash is always sandbox-backed. With no sandbox configured we run
@@ -40,6 +41,7 @@ class BashTool:
         self.sandbox: Sandbox = sandbox or LocalSandbox()
         self.default_timeout_s = default_timeout_s
         self.cancel_token = cancel_token
+        self.max_output_chars = max_output_chars
 
     @property
     def schema(self) -> ToolSchema:
@@ -104,18 +106,21 @@ class BashTool:
             exit_code=result.exit_code,
             stdout=result.stdout,
             stderr=result.stderr + suffix,
+            max_chars=self.max_output_chars,
         )
 
 
-def _format_output(*, exit_code: int, stdout: str, stderr: str) -> str:
+def _format_output(
+    *, exit_code: int, stdout: str, stderr: str, max_chars: int = _MAX_OUTPUT_BYTES
+) -> str:
     combined = stdout
     if stderr:
         combined += ("\n" if combined and not combined.endswith("\n") else "") + stderr
-    if len(combined) > _MAX_OUTPUT_BYTES:
-        keep = _MAX_OUTPUT_BYTES // 2
+    if len(combined) > max_chars:
+        keep = max_chars // 2
         combined = (
             combined[:keep]
-            + f"\n... [truncated {len(combined) - _MAX_OUTPUT_BYTES} chars] ...\n"
+            + f"\n... [truncated {len(combined) - max_chars} chars] ...\n"
             + combined[-keep:]
         )
     header = f"exit_code={exit_code}\n"

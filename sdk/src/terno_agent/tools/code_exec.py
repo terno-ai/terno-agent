@@ -18,10 +18,15 @@ class RunPythonTool:
         *,
         timeout_s: int = 30,
         cancel_token: CancelToken | None = None,
+        max_output_chars: int = 8000,
     ) -> None:
         self.sandbox = sandbox
         self.timeout_s = timeout_s
         self.cancel_token = cancel_token
+        # Per-stream cap applied when rendering the result. The agent raises
+        # it when a ToolOutputLimiter is shortening results (head + tail, full
+        # text saved), so the limiter sees the whole output, not its head.
+        self.max_output_chars = max_output_chars
 
     @property
     def schema(self) -> ToolSchema:
@@ -66,4 +71,4 @@ class RunPythonTool:
         if "cancel_token" in params and self.cancel_token is not None:
             kwargs_extra["cancel_token"] = self.cancel_token
         result = self.sandbox.run_python(code, timeout_s=timeout, **kwargs_extra)
-        return result.render()
+        return result.render(self.max_output_chars)

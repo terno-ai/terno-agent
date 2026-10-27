@@ -49,6 +49,7 @@ from terno_agent.core.messages import (
     to_display_messages,
 )
 from terno_agent.core.tool import Tool
+from terno_agent.core.tool_output import ToolOutputLimiter
 from terno_agent.llm.base import LLMClient
 
 Trace = list[Message]
@@ -75,6 +76,7 @@ class BaseAgent:
         on_event: EventHook | None = None,
         hook_manager: HookManager | None = None,
         cancel_token: CancelToken | None = None,
+        tool_output_limiter: ToolOutputLimiter | None = None,
     ) -> None:
         self.llm = llm
         self.system_prompt = system_prompt
@@ -84,6 +86,9 @@ class BaseAgent:
         self.cancel_token = cancel_token or CancelToken()
         self.usage = UsageMeter()
         self.history: Trace = [SystemMessage(system_prompt)]
+        # Shortens oversized tool results (full text saved to a file) before
+        # they enter the history; ``None`` passes results through unchanged.
+        self.tool_output_limiter = tool_output_limiter
 
     # ----- public history controls -------------------------------------- #
 
@@ -221,13 +226,20 @@ class BaseAgent:
             return ToolResult(call_id=tc.id, content=f"Unknown tool: {tc.name}", is_error=True)
         try:
             output = tool.run(**tc.arguments)
-            return ToolResult(call_id=tc.id, content=output, is_error=False)
+            return ToolResult(call_id=tc.id, content=self._limit(tc, output), is_error=False)
         except AgentCancelled:
             raise
         except ToolError as exc:
-            return ToolResult(call_id=tc.id, content=str(exc), is_error=True)
+            # Error text can be as large as output (an MCP error body, a long
+            # traceback), so it goes through the same limit.
+            return ToolResult(call_id=tc.id, content=self._limit(tc, str(exc)), is_error=True)
         except Exception as exc:  # pragma: no cover - defensive
             return ToolResult(call_id=tc.id, content=f"Unhandled tool error: {exc}", is_error=True)
+
+    def _limit(self, tc: ToolCall, text: str) -> str:
+        if self.tool_output_limiter is None or not isinstance(text, str):
+            return text
+        return self.tool_output_limiter.apply(tc.name, tc.arguments, text)
 
     def _emit(self, event) -> None:
         if self.on_event is None:

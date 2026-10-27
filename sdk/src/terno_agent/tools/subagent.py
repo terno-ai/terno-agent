@@ -21,6 +21,7 @@ from terno_agent.sandbox.base import Sandbox
 
 if TYPE_CHECKING:
     from terno_agent.core.hooks import PreToolUseHook
+    from terno_agent.core.tool_output import ToolOutputLimiter
     from terno_agent.mcp.manager import McpManager
     from terno_agent.tools.ask_user import AskCallback
     from terno_agent.tools.tasks import TaskStore
@@ -40,6 +41,7 @@ class SpawnAgentTool:
     cancel_token: CancelToken | None = None
     ask_callback: AskCallback | None = None
     permission_hook: PreToolUseHook | None = None
+    tool_output_limiter: ToolOutputLimiter | None = None
 
     @property
     def schema(self) -> ToolSchema:
@@ -101,6 +103,7 @@ class SpawnAgentTool:
             cancel_token=self.cancel_token,
             ask_callback=self.ask_callback,
             permission_hook=self.permission_hook,
+            tool_output_limiter=self.tool_output_limiter,
         )
         result = subagent.run(task)
         return result.answer
