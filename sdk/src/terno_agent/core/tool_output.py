@@ -23,7 +23,7 @@ import sys
 import uuid
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 # (limit, head, tail) in characters.
@@ -153,15 +153,18 @@ def make_output_saver(
     with the sandbox's ``write_file`` op when it has one. Anything else is
     written on the host under ``workdir``.
     """
-    directory = Path(output_dir or DEFAULT_OUTPUT_DIR)
+    raw = output_dir or DEFAULT_OUTPUT_DIR
+    directory = Path(raw)
+    # Sandbox paths are POSIX; on a Windows host "/home/..." has no drive, so
+    # ``Path.is_absolute`` would call it relative and save it on the host.
     in_sandbox = (
         sandbox is not None
         and callable(getattr(sandbox, "write_file", None))
-        and directory.is_absolute()
+        and PurePosixPath(raw).is_absolute()
         and not _is_under(directory, workdir)
     )
     if in_sandbox:
-        base = directory.as_posix().rstrip("/")
+        base = PurePosixPath(raw).as_posix().rstrip("/")
 
         def save_in_sandbox(name: str, text: str) -> str | None:
             path = f"{base}/{name}"
