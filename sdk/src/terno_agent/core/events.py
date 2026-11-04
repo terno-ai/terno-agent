@@ -62,19 +62,22 @@ class TurnEnd:
 
 @dataclass(slots=True)
 class CompactionEvent:
-    """History was compacted: older turns were replaced by a summary.
+    """History was compacted: older messages were replaced by a summary.
 
-    Emitted once, right after :class:`~terno_agent.core.compaction.CompactionHook`
-    rewrites the in-memory history. A host can persist ``summary`` so the
-    condensed context survives across turns (e.g. terno-ai stores it as a
-    ``Summary`` chat message). ``preserved_turns`` is how many of the most
-    recent user turns were kept verbatim after the summary — the count a host
-    needs to reconstruct the same window when it rebuilds history.
+    Emitted right after :class:`~terno_agent.core.compaction.CompactionHook`
+    rewrites the in-memory history (before an LLM call). A host can persist
+    ``summary`` so the condensed context survives across turns (e.g. terno-ai
+    stores it as a ``Summary`` chat message). ``preserved_turns`` is the number
+    of user turns kept verbatim — the current one. ``preserved_messages`` is how
+    many messages after the current user message were kept verbatim (tool calls
+    with their results). The summary also covers those kept messages, so a
+    host replaying its own records may keep fewer without losing anything.
     """
 
     agent: str
     summary: str
     preserved_turns: int
+    preserved_messages: int = 0
 
 
 @dataclass(slots=True)

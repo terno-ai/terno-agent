@@ -222,7 +222,7 @@ class TernoAgent(BaseAgent):
                 _wrap_memory_extractor(memory_extractor),
             )
         if compaction_hook is not None:
-            hooks.register(HookEvent.CHAT_END, compaction_hook)
+            hooks.register(HookEvent.PRE_LLM, compaction_hook)
         if self.permission_hook is not None:
             hooks.register(HookEvent.PRE_TOOL_USE, self.permission_hook)
 
@@ -453,12 +453,24 @@ class TernoAgent(BaseAgent):
         for skill in extra_skills or ():
             skill_catalog.skills[skill.name] = skill
 
+        summary_llm = llm
+        if config.compaction_model and config.compaction_model != config.llm_model:
+            summary_llm = create_llm_client(
+                provider=config.llm_provider,
+                model=config.compaction_model,
+                api_key=config.llm_api_key,
+                provisioner_url=config.provisioner_url or None,
+                app_version=config.app_version or None,
+                request_source=config.request_source or None,
+            )
         compaction_hook: CompactionHook | None = None
         if config.compaction_enabled:
             compaction_hook = CompactionHook(
-                llm=llm,
-                threshold_input_tokens=config.compaction_threshold_tokens,
-                keep_last_turns=config.compaction_keep_last_turns,
+                llm=summary_llm,
+                trigger_tokens=config.compaction_trigger_tokens,
+                target_tokens=config.compaction_target_tokens,
+                keep_steps=config.compaction_keep_steps,
+                max_summary_tokens=config.compaction_summary_max_tokens,
             )
         return cls(
             llm,

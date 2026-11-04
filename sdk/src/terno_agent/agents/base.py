@@ -17,10 +17,13 @@ The agent also emits per-iteration `AgentEvent`s to an optional
 
 from __future__ import annotations
 
+import json
+import sys
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 
 from terno_agent.core.cancel import CancelToken
+from terno_agent.core.compaction import estimate_tokens
 from terno_agent.core.events import (
     EventHook,
     IterationStart,
@@ -144,15 +147,20 @@ class BaseAgent:
             user_content = task
             if extra_context:
                 user_content = f"<context>\n{extra_context}\n</context>\n\n{task}"
-        self.history.append(UserMessage(user_content))
+        user_message = UserMessage(user_content)
+        self.history.append(user_message)
 
         last_iteration = 0
-        run_start = len(self.history) - 1  # index of the UserMessage we just appended
+        turn_input = self.usage.total_input_tokens
+        turn_output = self.usage.total_output_tokens
+        turn_calls = self.usage.llm_calls
 
         try:
             for i in range(1, self.max_iterations + 1):
                 last_iteration = i
                 self.cancel_token.check()
+                # Before the snapshot, so hosts see the history actually sent.
+                self._dispatch_pre_llm()
                 prompt_snapshot = (
                     to_display_messages(self.history)
                     if self.on_event is not None
@@ -164,20 +172,23 @@ class BaseAgent:
                     )
                 )
 
+                schemas = [t.schema for t in self.tools.values()]
                 response = self.llm.complete(
                     self.history,
-                    tools=[t.schema for t in self.tools.values()],
+                    tools=schemas,
                     on_text_delta=self._emit_text_delta,
                 )
                 self.usage.record(response)
+                self._log_call_tokens(i, response, schemas)
                 assistant = response.message
                 self.history.append(assistant)
                 self._emit(TurnEnd(agent=self.name, message=assistant))
 
                 if not assistant.tool_calls:
+                    self._log_turn_tokens(i, turn_input, turn_output, turn_calls)
                     run = AgentRun(
                         answer=assistant.content,
-                        trace=self.history[run_start:],
+                        trace=self._trace_since(user_message),
                         iterations=i,
                     )
                     self._dispatch_chat_end(run)
@@ -193,9 +204,10 @@ class BaseAgent:
 
                 self.history.append(ToolResultMessage(results=results))
         except AgentCancelled:
+            self._log_turn_tokens(last_iteration, turn_input, turn_output, turn_calls)
             run = AgentRun(
                 answer="(cancelled by user)",
-                trace=self.history[run_start:],
+                trace=self._trace_since(user_message),
                 iterations=last_iteration,
                 cancelled=True,
             )
@@ -255,6 +267,48 @@ class BaseAgent:
         self.cancel_token.check()
         self._emit(TextDelta(agent=self.name, text=text))
 
+    def _log_call_tokens(self, step: int, response, schemas) -> None:
+        """One line per LLM call: what the provider counted, and roughly
+        where it went (tool schemas / system prompt / conversation history)."""
+        payload = [[s.name, s.description, s.parameters] for s in schemas]
+        tools = len(json.dumps(payload, default=str)) // 4
+        system = estimate_tokens(self.history[:1])
+        history = estimate_tokens(self.history[1:])
+        _log_tokens(
+            f"{self.name} step={step} in={response.input_tokens:,} out={response.output_tokens:,} "
+            f"| est tools~{tools:,} ({len(schemas)}) system~{system:,} "
+            f"history~{history:,} ({len(self.history) - 1} msgs)"
+        )
+
+    def _log_turn_tokens(self, steps: int, start_in: int, start_out: int, start_calls: int) -> None:
+        _log_tokens(
+            f"{self.name} turn total: {self.usage.llm_calls - start_calls} calls, {steps} steps, "
+            f"in={self.usage.total_input_tokens - start_in:,} "
+            f"out={self.usage.total_output_tokens - start_out:,}"
+        )
+
+    def _trace_since(self, user_message: UserMessage) -> Trace:
+        """This run's messages: from its user message on.
+
+        Found by identity because ``pre_llm`` hooks may rewrite the history
+        (compaction keeps the user message but moves it).
+        """
+        for idx in range(len(self.history) - 1, -1, -1):
+            if self.history[idx] is user_message:
+                return self.history[idx:]
+        return list(self.history)
+
+    def _dispatch_pre_llm(self) -> None:
+        if not self.hooks.has(HookEvent.PRE_LLM):
+            return
+        ctx = HookContext(
+            event=HookEvent.PRE_LLM,
+            agent=self,
+            history=self.history,
+            usage=self.usage,
+        )
+        self.hooks.dispatch(HookEvent.PRE_LLM, ctx)
+
     def _dispatch_chat_end(self, run: AgentRun) -> None:
         if not self.hooks.has(HookEvent.CHAT_END):
             return
@@ -266,6 +320,12 @@ class BaseAgent:
             run=run,
         )
         self.hooks.dispatch(HookEvent.CHAT_END, ctx)
+
+
+def _log_tokens(message: str) -> None:
+    # stderr, like the compaction trace, so it shows in a host's console
+    # without depending on logging configuration.
+    print(f"[tokens] {message}", file=sys.stderr)
 
 
 __all__ = ["AgentRun", "BaseAgent", "EventHook", "Trace"]

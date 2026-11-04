@@ -143,8 +143,11 @@ class Config:
     file_suffix: str = ""
     # ----- compaction ------------------------------------------------------ #
     compaction_enabled: bool = True
-    compaction_threshold_tokens: int = 80_000
-    compaction_keep_last_turns: int = 4
+    compaction_trigger_tokens: int = 20_000
+    compaction_target_tokens: int = 8_000
+    compaction_keep_steps: int = 3
+    compaction_model: str = ""
+    compaction_summary_max_tokens: int = 1_500
     # ----- tool output ------------------------------------------------------ #
     # Tool results over ``tool_output_max_chars`` reach the model as head +
     # tail; the full text is saved under ``tool_output_dir`` (a sandbox path
@@ -250,12 +253,14 @@ class Config:
             milvus_collection=os.getenv("TERNO_MILVUS_COLLECTION", "terno_memory"),
             compaction_enabled=os.getenv("TERNO_COMPACTION_ENABLED", "true").lower()
             not in {"false", "0", "no", "off"},
-            compaction_threshold_tokens=int(
-                os.getenv("TERNO_COMPACTION_THRESHOLD_TOKENS", "80000")
+            compaction_trigger_tokens=int(
+                os.getenv("TERNO_COMPACTION_TRIGGER_TOKENS", "20000")
             ),
-            compaction_keep_last_turns=int(
-                os.getenv("TERNO_COMPACTION_KEEP_LAST_TURNS", "4")
+            compaction_target_tokens=int(
+                os.getenv("TERNO_COMPACTION_TARGET_TOKENS", "8000")
             ),
+            compaction_keep_steps=int(os.getenv("TERNO_COMPACTION_KEEP_STEPS", "3")),
+            compaction_model=os.getenv("TERNO_COMPACTION_MODEL", "").strip(),
             tool_output_limit_enabled=os.getenv("TERNO_TOOL_OUTPUT_LIMIT_ENABLED", "true").lower()
             not in {"false", "0", "no", "off"},
             tool_output_max_chars=int(os.getenv("TERNO_TOOL_OUTPUT_MAX_CHARS", "5000")),
@@ -347,8 +352,10 @@ class Config:
             f"milvus_uri         = {self.milvus_uri or '(unset)'}\n"
             f"milvus_collection  = {self.milvus_collection}\n"
             f"compaction_enabled = {self.compaction_enabled}\n"
-            f"compaction_threshold_tokens = {self.compaction_threshold_tokens}\n"
-            f"compaction_keep_last_turns  = {self.compaction_keep_last_turns}\n"
+            f"compaction_trigger_tokens = {self.compaction_trigger_tokens}\n"
+            f"compaction_target_tokens  = {self.compaction_target_tokens}\n"
+            f"compaction_keep_steps     = {self.compaction_keep_steps}\n"
+            f"compaction_model   = {self.compaction_model or '(llm_model)'}\n"
             f"attachments_enabled = {self.attachments_enabled}\n"
             f"attachments_dir     = {self.attachments_dir}\n"
             f"max_attachment_bytes = {self.max_attachment_bytes}\n"

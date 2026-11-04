@@ -38,6 +38,7 @@ class HookEvent:
 
     CHAT_END = "chat_end"  # after agent.run() returns (success or cancelled)
     PRE_TOOL_USE = "pre_tool_use"  # before each tool invocation; may deny
+    PRE_LLM = "pre_llm"  # before each LLM call; may rewrite history in place
 
 
 # --------------------------------------------------------------------------- #
@@ -83,7 +84,7 @@ class UsageMeter:
 
 @dataclass(slots=True)
 class HookContext:
-    """Payload passed to ``chat_end`` hooks.
+    """Payload passed to ``chat_end`` and ``pre_llm`` hooks.
 
     Hooks may *mutate* `history` in place (the canonical example is
     compaction). All other fields are informational. `run` is set for
