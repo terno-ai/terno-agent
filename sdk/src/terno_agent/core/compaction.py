@@ -9,9 +9,14 @@ passes ``trigger_tokens``, older messages are summarized so it drops to about
 step. The agent's `history` is rewritten in place as::
 
     [SystemMessage(original prompt),
-     SystemMessage("Conversation summary (older turns compacted): …"),
+     AssistantMessage("Conversation summary (older turns compacted): …"),
      <current user message>,
      <last `keep_steps` tool steps verbatim>]
+
+The summary is an assistant message, as terno-ai's legacy agent sent it and
+as terno-ai replays saved summaries: the system prompt (and the tools) stay
+unchanged, so they remain a cacheable prefix, and providers that accept the
+system prompt only as the first message are not sent a second one.
 
 A step is an assistant message with its tool calls plus the results message
 that follows, so tool_use ↔ tool_result pairing stays intact.
@@ -93,8 +98,10 @@ class CompactionHook:
     target_tokens: int = 8_000
     keep_steps: int = 3
     max_summary_tokens: int = 1_500
-    # Below this there is too little to summarize to be worth an LLM call;
-    # the size is then in the kept steps, which compaction leaves alone.
+    # Summarize only when at least this much (or half the trigger-target gap,
+    # if larger) would be replaced. When the kept part alone is near the
+    # trigger (a huge question, a huge last step), this stops a summary on
+    # every call, each replacing only the step just added.
     min_head_tokens: int = 1_000
     # After a failed summary, wait until the history has grown to this size
     # instead of retrying on every call.
@@ -112,7 +119,8 @@ class CompactionHook:
         if split is None:
             return
         system_msg, head, kept = split
-        if all(_is_summary(m) for m in head) or estimate_tokens(head) < self.min_head_tokens:
+        min_head = max(self.min_head_tokens, (self.trigger_tokens - target) // 2)
+        if all(_is_summary(m) for m in head) or estimate_tokens(head) < min_head:
             return
 
         # The kept steps go into the summary too, so a host that persists it
@@ -122,7 +130,8 @@ class CompactionHook:
             self._retry_at_tokens = size + self.trigger_tokens // 4
             return
 
-        ctx.history[:] = [system_msg, SystemMessage(f"{SUMMARY_HEADER}\n{summary}"), *kept]
+        summary_msg = AssistantMessage(content=f"{SUMMARY_HEADER}\n{summary}")
+        ctx.history[:] = [system_msg, summary_msg, *kept]
         self._retry_at_tokens = 0
         _log(
             f"history ~{size:,} -> ~{estimate_tokens(ctx.history[1:]):,} tokens; "
@@ -197,7 +206,11 @@ def _summarize(llm: LLMClient, head: list[Message], max_tokens: int) -> str | No
 
 
 def _is_summary(message: Message) -> bool:
-    return isinstance(message, SystemMessage) and message.content.startswith(SUMMARY_HEADER)
+    return (
+        isinstance(message, AssistantMessage)
+        and not message.tool_calls
+        and message.content.startswith(SUMMARY_HEADER)
+    )
 
 
 # --------------------------------------------------------------------------- #

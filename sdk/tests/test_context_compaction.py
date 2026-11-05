@@ -86,7 +86,10 @@ def test_over_trigger_keeps_request_and_last_steps():
     _fire(CompactionHook(llm=llm), history)
 
     assert history[0].content == "sys"
+    # Legacy-style: the summary is an assistant message; the system prompt is untouched.
+    assert isinstance(history[1], AssistantMessage) and not history[1].tool_calls
     assert history[1].content.startswith(SUMMARY_HEADER)
+    assert sum(isinstance(m, SystemMessage) for m in history) == 1
     assert history[2] is user
     kept = [m for m in history[3:] if isinstance(m, AssistantMessage)]
     assert [tc.id for m in kept for tc in m.tool_calls] == ["c9", "c10", "c11"]
@@ -97,7 +100,7 @@ def test_over_trigger_keeps_request_and_last_steps():
 def test_fewer_steps_kept_when_they_do_not_fit_the_target():
     history = _history(steps=8, result_chars=12_000)  # each step ~3k tokens
     _fire(CompactionHook(llm=_SummaryLLM(), target_tokens=6_000), history)
-    kept_calls = [m for m in history if isinstance(m, AssistantMessage)]
+    kept_calls = [m for m in history if isinstance(m, AssistantMessage) and m.tool_calls]
     assert len(kept_calls) == 1
     _assert_paired(history)
 
@@ -122,7 +125,8 @@ def test_previous_summary_is_carried_into_the_next_one():
         history += _step(n, 8_000)
     _fire(hook, history)
     assert SUMMARY_HEADER in llm.transcripts[1]
-    assert sum(1 for m in history if isinstance(m, SystemMessage)) == 2
+    summaries = [m for m in history if isinstance(m, AssistantMessage) and not m.tool_calls]
+    assert len(summaries) == 1 and summaries[0].content.startswith(SUMMARY_HEADER)
 
 
 def test_does_not_resummarize_when_only_the_kept_steps_are_large():
@@ -130,7 +134,7 @@ def test_does_not_resummarize_when_only_the_kept_steps_are_large():
     hook = CompactionHook(llm=llm)
     history: list[Message] = [
         SystemMessage("sys"),
-        SystemMessage(f"{SUMMARY_HEADER}\nold"),
+        AssistantMessage(content=f"{SUMMARY_HEADER}\nold"),
         UserMessage("question"),
         *_step(1, 100_000),
     ]
@@ -231,3 +235,27 @@ def test_summary_covers_kept_steps_and_is_reported_for_saving():
     (event,) = [e for e in events if type(e).__name__ == "CompactionEvent"]
     assert event.summary == "SUMMARY"
     assert event.preserved_messages == 6
+
+
+def test_huge_question_does_not_cause_a_summary_every_step():
+    # The question alone is over the trigger, so history never gets under it;
+    # summaries must still wait for enough new steps instead of firing each call.
+    llm = _SummaryLLM()
+    hook = CompactionHook(llm=llm)
+    history: list[Message] = [SystemMessage("sys"), UserMessage("q" * 100_000)]
+    for n in range(9):
+        history += _step(n, 4_000)
+        _fire(hook, history)
+    assert 1 <= len(llm.transcripts) <= 3
+
+
+def test_anthropic_moves_a_leading_summary_into_the_system_prompt():
+    from terno_agent.llm.anthropic_client import _split_system
+
+    system, rest = _split_system([
+        SystemMessage("prompt"),
+        AssistantMessage(content=f"{SUMMARY_HEADER}\nolder work"),
+        UserMessage("question"),
+    ])
+    assert system == f"prompt\n\n{SUMMARY_HEADER}\nolder work"
+    assert [type(m) for m in rest] == [UserMessage]

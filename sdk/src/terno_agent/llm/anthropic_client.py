@@ -89,6 +89,10 @@ def _split_system(messages: list[Message]) -> tuple[str, list[Message]]:
             system_chunks.append(m.content)
         else:
             rest.append(m)
+    # Anthropic requires the conversation to open with a user turn. A leading
+    # assistant note (a compaction summary) joins the system prompt instead.
+    while rest and isinstance(rest[0], AssistantMessage) and not rest[0].tool_calls:
+        system_chunks.append(rest.pop(0).content)
     return "\n\n".join(system_chunks), rest
 
 
