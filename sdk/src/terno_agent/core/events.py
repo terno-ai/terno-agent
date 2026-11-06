@@ -78,6 +78,46 @@ class CompactionEvent:
     summary: str
     preserved_turns: int
     preserved_messages: int = 0
+    # Estimated history size (messages only, not the system prompt or tools)
+    # before and after, so a UI can show what was freed.
+    tokens_before: int = 0
+    tokens_after: int = 0
+
+
+@dataclass(slots=True)
+class CompactionStarted:
+    """Compaction is about to summarize older history (an LLM call).
+
+    Followed by :class:`CompactionEvent` on success or
+    :class:`CompactionFailed` otherwise, so a UI can show "condensing…" in
+    between.
+    """
+
+    agent: str
+    history_tokens: int
+
+
+@dataclass(slots=True)
+class CompactionFailed:
+    """The summary call failed; history was left as it was."""
+
+    agent: str
+    error: str = ""
+
+
+@dataclass(slots=True)
+class ContextUsage:
+    """How full the conversation history is, emitted before each LLM call.
+
+    ``history_tokens`` is the estimated size of the messages (not the system
+    prompt or tool schemas) after any compaction; ``limit_tokens`` is the size
+    at which compaction starts. A UI can draw ``history_tokens / limit_tokens``
+    as a fill meter that reaches 100% when the history gets summarized.
+    """
+
+    agent: str
+    history_tokens: int
+    limit_tokens: int
 
 
 @dataclass(slots=True)
@@ -103,6 +143,9 @@ AgentEvent = (
     | TurnEnd
     | TaskListUpdate
     | CompactionEvent
+    | CompactionStarted
+    | CompactionFailed
+    | ContextUsage
 )
 EventHook = Callable[[AgentEvent], None]
 
@@ -110,6 +153,9 @@ EventHook = Callable[[AgentEvent], None]
 __all__ = [
     "AgentEvent",
     "CompactionEvent",
+    "CompactionFailed",
+    "CompactionStarted",
+    "ContextUsage",
     "EventHook",
     "IterationStart",
     "TaskListUpdate",

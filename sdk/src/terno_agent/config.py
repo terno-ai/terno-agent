@@ -143,9 +143,9 @@ class Config:
     file_suffix: str = ""
     # ----- compaction ------------------------------------------------------ #
     compaction_enabled: bool = True
-    compaction_trigger_tokens: int = 20_000
-    compaction_target_tokens: int = 8_000
-    compaction_keep_steps: int = 3
+    compaction_trigger_tokens: int = 40_000
+    compaction_target_tokens: int = 15_000
+    compaction_keep_steps: int = 5
     compaction_model: str = ""
     compaction_summary_max_tokens: int = 1_500
     # ----- tool output ------------------------------------------------------ #

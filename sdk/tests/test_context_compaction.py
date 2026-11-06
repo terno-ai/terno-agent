@@ -259,3 +259,35 @@ def test_anthropic_moves_a_leading_summary_into_the_system_prompt():
     ])
     assert system == f"prompt\n\n{SUMMARY_HEADER}\nolder work"
     assert [type(m) for m in rest] == [UserMessage]
+
+
+def _names(events: list) -> list[str]:
+    return [type(e).__name__ for e in events]
+
+
+def test_ui_events_bracket_the_summary_and_report_usage():
+    llm = _SummaryLLM()
+    events: list = []
+    agent = BaseAgent(llm, "sys", [], on_event=events.append)
+    agent.history[:] = _history(steps=12)
+    _fire(CompactionHook(llm=llm), agent.history, agent=agent)
+
+    assert _names(events) == ["CompactionStarted", "CompactionEvent", "ContextUsage"]
+    started, done, usage = events
+    assert started.history_tokens == done.tokens_before > done.tokens_after
+    assert usage.history_tokens == done.tokens_after
+    assert usage.limit_tokens == 20_000
+
+
+def test_ui_events_below_trigger_and_on_failure():
+    events: list = []
+    agent = BaseAgent(_SummaryLLM(), "sys", [], on_event=events.append)
+    agent.history[:] = _history(steps=1)
+    _fire(CompactionHook(llm=_SummaryLLM()), agent.history, agent=agent)
+    assert _names(events) == ["ContextUsage"]
+    assert 0 < events[0].history_tokens < events[0].limit_tokens
+
+    events.clear()
+    agent.history[:] = _history(steps=12)
+    _fire(CompactionHook(llm=_SummaryLLM(fail=True)), agent.history, agent=agent)
+    assert _names(events) == ["CompactionStarted", "CompactionFailed", "ContextUsage"]

@@ -24,6 +24,9 @@ that follows, so tool_use ↔ tool_result pairing stays intact.
 The summary also covers the kept steps (they stay verbatim in memory too), so
 it is complete up to that moment. A :class:`CompactionEvent` with
 ``preserved_messages`` lets the host persist it and rebuild later turns from it.
+:class:`CompactionStarted` / :class:`CompactionFailed` bracket the summary
+call, and :class:`ContextUsage` is emitted on every call, so a UI can show a
+context meter and a "condensing…" indicator.
 
 If summarization fails (LLM error, no API key, etc.) the hook logs to
 stderr and leaves history untouched.
@@ -35,7 +38,12 @@ import json
 import sys
 from dataclasses import dataclass, field
 
-from terno_agent.core.events import CompactionEvent
+from terno_agent.core.events import (
+    CompactionEvent,
+    CompactionFailed,
+    CompactionStarted,
+    ContextUsage,
+)
 from terno_agent.core.hooks import HookContext
 from terno_agent.core.messages import (
     AssistantMessage,
@@ -108,6 +116,16 @@ class CompactionHook:
     _retry_at_tokens: int = field(default=0, init=False, repr=False)
 
     def __call__(self, ctx: HookContext) -> None:
+        self._compact_if_needed(ctx)
+        # Tell the host how full the history is after this check, so a UI can
+        # draw a meter that empties again right after a summary.
+        _emit(ctx, ContextUsage(
+            agent=_agent_name(ctx),
+            history_tokens=estimate_tokens(ctx.history[1:]),
+            limit_tokens=self.trigger_tokens,
+        ))
+
+    def _compact_if_needed(self, ctx: HookContext) -> None:
         size = estimate_tokens(ctx.history[1:])
         if size < max(self.trigger_tokens, self._retry_at_tokens):
             return
@@ -125,27 +143,38 @@ class CompactionHook:
 
         # The kept steps go into the summary too, so a host that persists it
         # needs nothing else from before this moment.
+        _emit(ctx, CompactionStarted(agent=_agent_name(ctx), history_tokens=size))
         summary = _summarize(self.llm, head + kept[1:], self.max_summary_tokens)
         if summary is None:
             self._retry_at_tokens = size + self.trigger_tokens // 4
+            _emit(ctx, CompactionFailed(agent=_agent_name(ctx)))
             return
 
         summary_msg = AssistantMessage(content=f"{SUMMARY_HEADER}\n{summary}")
         ctx.history[:] = [system_msg, summary_msg, *kept]
         self._retry_at_tokens = 0
+        after = estimate_tokens(ctx.history[1:])
         _log(
-            f"history ~{size:,} -> ~{estimate_tokens(ctx.history[1:]):,} tokens; "
+            f"history ~{size:,} -> ~{after:,} tokens; "
             f"{len(head)} messages summarized, {len(kept) - 1} kept after the user message"
         )
-        if ctx.agent is not None:
-            ctx.agent._emit(
-                CompactionEvent(
-                    agent=ctx.agent.name,
-                    summary=summary,
-                    preserved_turns=1,
-                    preserved_messages=len(kept) - 1,
-                )
-            )
+        _emit(ctx, CompactionEvent(
+            agent=_agent_name(ctx),
+            summary=summary,
+            preserved_turns=1,
+            preserved_messages=len(kept) - 1,
+            tokens_before=size,
+            tokens_after=after,
+        ))
+
+
+def _agent_name(ctx: HookContext) -> str:
+    return ctx.agent.name if ctx.agent is not None else ""
+
+
+def _emit(ctx: HookContext, event) -> None:
+    if ctx.agent is not None:
+        ctx.agent._emit(event)
 
 
 def estimate_tokens(messages: list[Message]) -> int:
