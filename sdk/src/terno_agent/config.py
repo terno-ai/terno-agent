@@ -94,6 +94,10 @@ class Config:
     # LLM round trip) than it saves.
     mcp_defer_tools: bool = False
     mcp_defer_min_tokens: int = 3_000
+    # Most tools one request may carry (providers reject more, e.g. OpenAI's
+    # 128). Caps loading of deferred tools; ``None`` means no cap. Passed to
+    # subagents, which may later run on a model with a different limit.
+    max_tools: int | None = None
     # ----- agent skills ---------------------------------------------------- #
     skills_enabled: bool = True
     skill_paths: list[str] = field(default_factory=list)
@@ -229,6 +233,7 @@ class Config:
             mcp_defer_tools=os.getenv("TERNO_MCP_DEFER_TOOLS", "false").lower()
             not in {"false", "0", "no", "off", ""},
             mcp_defer_min_tokens=int(os.getenv("TERNO_MCP_DEFER_MIN_TOKENS", "3000")),
+            max_tools=int(os.environ["TERNO_MAX_TOOLS"]) if os.getenv("TERNO_MAX_TOOLS") else None,
             skills_enabled=skills_enabled_raw not in {"false", "0", "no", "off"},
             skill_paths=[
                 path.strip()

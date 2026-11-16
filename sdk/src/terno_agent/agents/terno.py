@@ -116,12 +116,17 @@ class TernoAgent(BaseAgent):
         tool_output_limiter: ToolOutputLimiter | None = None,
         defer_mcp_tools: bool = False,
         defer_mcp_min_tokens: int = 3_000,
+        max_tools: int | None = None,
     ) -> None:
         self.workdir = (workdir or Path.cwd()).resolve()
         if max_iterations is not None:
             if max_iterations <= 0:
                 raise ConfigError("max_iterations must be positive.")
             self.max_iterations = max_iterations
+        if max_tools is not None:
+            if max_tools <= 0:
+                raise ConfigError("max_tools must be positive.")
+            self.max_tools = max_tools
         self.task_store = task_store or InMemoryTaskStore()
         self.sandbox = sandbox
         self.mcp_manager = mcp_manager
@@ -201,6 +206,7 @@ class TernoAgent(BaseAgent):
                 tool_output_limiter=tool_output_limiter,
                 defer_mcp_tools=defer_mcp_tools,
                 defer_mcp_min_tokens=defer_mcp_min_tokens,
+                max_tools=max_tools,
             ),
         ]
         if ask_callback is not None:
@@ -529,6 +535,7 @@ class TernoAgent(BaseAgent):
             memory_context=memory_context,
             defer_mcp_tools=config.mcp_defer_tools,
             defer_mcp_min_tokens=config.mcp_defer_min_tokens,
+            max_tools=config.max_tools,
             tool_output_limiter=_build_tool_output_limiter(
                 config, workdir=resolved_workdir, sandbox=sandbox
             ),

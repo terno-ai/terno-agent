@@ -372,6 +372,7 @@ def _build_config(
         mcp_servers=base.mcp_servers,
         mcp_defer_tools=base.mcp_defer_tools,
         mcp_defer_min_tokens=base.mcp_defer_min_tokens,
+        max_tools=base.max_tools,
         skills_enabled=base.skills_enabled,
         skill_paths=list(base.skill_paths),
         file_memory_enabled=base.file_memory_enabled,

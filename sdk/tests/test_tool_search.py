@@ -142,3 +142,31 @@ def test_max_tools_caps_loading():
         ToolCall(id="2", name="mcp__slack__post_message", arguments={})
     )
     assert result.is_error and "tool limit" in result.content
+
+
+def test_max_tools_from_init_reaches_subagent(monkeypatch):
+    agent = _agent(defer_mcp_tools=True, defer_mcp_min_tokens=0, max_tools=50)
+    assert agent.max_tools == 50
+    spawn = agent.tools["spawn_agent"]
+    assert spawn.max_tools == 50
+
+    built = {}
+
+    def fake_run(self, task):
+        built["agent"] = self
+        return type("R", (), {"answer": "ok"})()
+
+    monkeypatch.setattr(TernoAgent, "run", fake_run)
+    spawn.run(prompt="sub", task="t")
+    sub = built["agent"]
+    assert sub.max_tools == 50
+    assert TOOL_SEARCH_NAME in sub.tools
+    assert sub.deferred_tools
+
+
+def test_max_tools_must_be_positive():
+    import pytest
+    from terno_agent.core.exceptions import ConfigError
+
+    with pytest.raises(ConfigError):
+        _agent(max_tools=0)
