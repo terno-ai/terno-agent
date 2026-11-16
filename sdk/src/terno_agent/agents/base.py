@@ -69,6 +69,7 @@ class AgentRun:
 class BaseAgent:
     name: str = "agent"
     max_iterations: int = 12
+    max_tools: int | None = None
 
     def __init__(
         self,
@@ -80,10 +81,14 @@ class BaseAgent:
         hook_manager: HookManager | None = None,
         cancel_token: CancelToken | None = None,
         tool_output_limiter: ToolOutputLimiter | None = None,
+        deferred_tools: Iterable[Tool] = (),
     ) -> None:
         self.llm = llm
         self.system_prompt = system_prompt
         self.tools: dict[str, Tool] = {t.schema.name: t for t in tools}
+        self.deferred_tools: dict[str, Tool] = {
+            t.schema.name: t for t in deferred_tools if t.schema.name not in self.tools
+        }
         self.on_event = on_event
         self.hooks = hook_manager or HookManager()
         self.cancel_token = cancel_token or CancelToken()
@@ -119,6 +124,22 @@ class BaseAgent:
                 "the system prompt is managed by the agent."
             )
         self.history[:] = [self.history[0], *seeded]
+
+    def load_tools(self, names: Iterable[str]) -> list[Tool]:
+        """Move deferred tools into the active set; returns the ones moved.
+
+        Appended in order, never reordered, so the tool list sent to the
+        provider only grows (friendlier to prompt caching).
+        """
+        loaded: list[Tool] = []
+        for name in names:
+            if self.max_tools is not None and len(self.tools) >= self.max_tools:
+                break
+            tool = self.deferred_tools.pop(name, None)
+            if tool is not None:
+                self.tools[name] = tool
+                loaded.append(tool)
+        return loaded
 
     def add_hook(self, event: str, hook) -> None:
         """Shorthand for ``self.hooks.register(event, hook)``."""
@@ -223,6 +244,15 @@ class BaseAgent:
     def _guarded_tool_call(self, tc: ToolCall) -> ToolResult:
         """Dispatch ``pre_tool_use`` hooks; deny short-circuits the tool."""
         tool = self.tools.get(tc.name)
+        if tool is None and tc.name in self.deferred_tools:
+            loaded = self.load_tools([tc.name])
+            if not loaded:
+                return ToolResult(
+                    call_id=tc.id,
+                    content=f"Cannot load {tc.name}: the tool limit ({self.max_tools}) is reached.",
+                    is_error=True,
+                )
+            tool = loaded[0]
         if tool is None:
             return ToolResult(call_id=tc.id, content=f"Unknown tool: {tc.name}", is_error=True)
         if self.hooks.has(HookEvent.PRE_TOOL_USE):
@@ -276,7 +306,8 @@ class BaseAgent:
         history = estimate_tokens(self.history[1:])
         _log_tokens(
             f"{self.name} step={step} in={response.input_tokens:,} out={response.output_tokens:,} "
-            f"| est tools~{tools:,} ({len(schemas)}) system~{system:,} "
+            f"| est tools~{tools:,} ({len(schemas)}, {len(self.deferred_tools)} deferred) "
+            f"system~{system:,} "
             f"history~{history:,} ({len(self.history) - 1} msgs)"
         )
 

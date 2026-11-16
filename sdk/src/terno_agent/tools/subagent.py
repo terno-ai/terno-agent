@@ -42,6 +42,8 @@ class SpawnAgentTool:
     ask_callback: AskCallback | None = None
     permission_hook: PreToolUseHook | None = None
     tool_output_limiter: ToolOutputLimiter | None = None
+    defer_mcp_tools: bool = False
+    defer_mcp_min_tokens: int = 3_000
 
     @property
     def schema(self) -> ToolSchema:
@@ -104,6 +106,8 @@ class SpawnAgentTool:
             ask_callback=self.ask_callback,
             permission_hook=self.permission_hook,
             tool_output_limiter=self.tool_output_limiter,
+            defer_mcp_tools=self.defer_mcp_tools,
+            defer_mcp_min_tokens=self.defer_mcp_min_tokens,
         )
         result = subagent.run(task)
         return result.answer

@@ -57,6 +57,11 @@ from terno_agent.tools.monitor import MonitorTool
 from terno_agent.tools.search import GlobTool, GrepTool
 from terno_agent.tools.shell import BashTool
 from terno_agent.tools.subagent import SpawnAgentTool
+from terno_agent.tools.tool_search import (
+    ToolSearchTool,
+    deferred_index,
+    estimate_schema_tokens,
+)
 from terno_agent.tools.tasks import (
     InMemoryTaskStore,
     Task,
@@ -109,6 +114,8 @@ class TernoAgent(BaseAgent):
         compaction_hook: CompactionHook | None = None,
         memory_context: MemoryContextProvider | None = None,
         tool_output_limiter: ToolOutputLimiter | None = None,
+        defer_mcp_tools: bool = False,
+        defer_mcp_min_tokens: int = 3_000,
     ) -> None:
         self.workdir = (workdir or Path.cwd()).resolve()
         if max_iterations is not None:
@@ -192,6 +199,8 @@ class TernoAgent(BaseAgent):
                 ask_callback=ask_callback,
                 permission_hook=self.permission_hook,
                 tool_output_limiter=tool_output_limiter,
+                defer_mcp_tools=defer_mcp_tools,
+                defer_mcp_min_tokens=defer_mcp_min_tokens,
             ),
         ]
         if ask_callback is not None:
@@ -207,8 +216,22 @@ class TernoAgent(BaseAgent):
             )
         if self.skill_catalog.skills:
             tools.append(ActivateSkillTool(self.skill_catalog))
-        if mcp_manager is not None:
-            tools.extend(mcp_manager.tools())
+        # MCP tools are either sent in full (default) or deferred behind
+        # ``tool_search`` when their schemas are large enough to be worth it:
+        # the model then sees only their names until it loads them.
+        mcp_tools = list(mcp_manager.tools()) if mcp_manager is not None else []
+        deferred: list = []
+        tool_search: ToolSearchTool | None = None
+        if (
+            mcp_tools
+            and defer_mcp_tools
+            and estimate_schema_tokens(mcp_tools) >= defer_mcp_min_tokens
+        ):
+            deferred = mcp_tools
+            tool_search = ToolSearchTool()
+            tools.append(tool_search)
+        else:
+            tools.extend(mcp_tools)
         if memory_store is not None:
             tools.append(SearchMemoryTool(memory_store))
         # File-based memory needs no dedicated tools: the main agent reads and
@@ -235,15 +258,23 @@ class TernoAgent(BaseAgent):
             else SYSTEM_PROMPT.format(session_dir=session_dir, file_suffix=file_suffix)
         )
 
+        prompt = _with_skill_catalog(base_prompt, self.skill_catalog)
+        index = deferred_index(deferred)
+        if index:
+            prompt = f"{prompt}\n\n---\n{index}"
+
         super().__init__(
             llm,
-            _with_skill_catalog(base_prompt, self.skill_catalog),
+            prompt,
             tools,
             on_event=on_event,
             hook_manager=hooks,
             cancel_token=token,
             tool_output_limiter=tool_output_limiter,
+            deferred_tools=deferred,
         )
+        if tool_search is not None:
+            tool_search.agent = self
 
         # Stream task-list changes as events so a host (CLI, terno-ai) can
         # render a live todo list. Only the top-level agent wires this: it
@@ -496,6 +527,8 @@ class TernoAgent(BaseAgent):
             on_permission_request=on_permission_request,
             compaction_hook=compaction_hook,
             memory_context=memory_context,
+            defer_mcp_tools=config.mcp_defer_tools,
+            defer_mcp_min_tokens=config.mcp_defer_min_tokens,
             tool_output_limiter=_build_tool_output_limiter(
                 config, workdir=resolved_workdir, sandbox=sandbox
             ),

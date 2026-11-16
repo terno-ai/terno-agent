@@ -88,6 +88,12 @@ class Config:
     # without writing credentials to disk.
     mcp_servers: dict | None = None
     mcp_require_sandbox: bool = False
+    # Send MCP tools as names only and let the model load schemas on demand
+    # via ``tool_search``. Applied only when the MCP schemas are estimated at
+    # >= ``mcp_defer_min_tokens``; below that, deferring costs more (an extra
+    # LLM round trip) than it saves.
+    mcp_defer_tools: bool = False
+    mcp_defer_min_tokens: int = 3_000
     # ----- agent skills ---------------------------------------------------- #
     skills_enabled: bool = True
     skill_paths: list[str] = field(default_factory=list)
@@ -220,6 +226,9 @@ class Config:
             read_only_sql=os.getenv("TERNO_READ_ONLY_SQL", "true").lower() != "false",
             mcp_enabled=os.getenv("TERNO_MCP_ENABLED", "true").lower() != "false",
             mcp_config_path=os.getenv("TERNO_MCP_CONFIG", ""),
+            mcp_defer_tools=os.getenv("TERNO_MCP_DEFER_TOOLS", "false").lower()
+            not in {"false", "0", "no", "off", ""},
+            mcp_defer_min_tokens=int(os.getenv("TERNO_MCP_DEFER_MIN_TOKENS", "3000")),
             skills_enabled=skills_enabled_raw not in {"false", "0", "no", "off"},
             skill_paths=[
                 path.strip()
