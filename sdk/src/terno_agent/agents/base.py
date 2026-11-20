@@ -18,8 +18,9 @@ The agent also emits per-iteration `AgentEvent`s to an optional
 from __future__ import annotations
 
 import json
+import logging
 import sys
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 
 from terno_agent.core.cancel import CancelToken
@@ -56,6 +57,13 @@ from terno_agent.core.tool_output import ToolOutputLimiter
 from terno_agent.llm.base import LLMClient
 
 Trace = list[Message]
+
+# Returns short messages the model should see as soon as possible (e.g. "a
+# background task finished"). Called at the start of a turn and after each
+# round of tool calls; an empty list means nothing to say.
+NoticeSource = Callable[[], list[str]]
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(slots=True)
@@ -97,6 +105,7 @@ class BaseAgent:
         # Shortens oversized tool results (full text saved to a file) before
         # they enter the history; ``None`` passes results through unchanged.
         self.tool_output_limiter = tool_output_limiter
+        self.notice_sources: list[NoticeSource] = []
 
     # ----- public history controls -------------------------------------- #
 
@@ -157,6 +166,9 @@ class BaseAgent:
         # Per-call context becomes part of the user message rather than the
         # persistent system prompt, so memory recall / per-task hints are
         # scoped to one turn.
+        notices = self._collect_notices()
+        if notices:
+            extra_context = notices if not extra_context else f"{notices}\n\n---\n{extra_context}"
         if content_parts is not None:
             user_content: str | list[ContentPart] = content_parts
             if extra_context:
@@ -223,6 +235,14 @@ class BaseAgent:
                     self._emit(ToolResultEvent(agent=self.name, result=result))
                     results.append(result)
 
+                notices = self._collect_notices()
+                if notices:
+                    last = results[-1]
+                    results[-1] = ToolResult(
+                        call_id=last.call_id,
+                        content=f"{last.content}\n\n<notice>\n{notices}\n</notice>",
+                        is_error=last.is_error,
+                    )
                 self.history.append(ToolResultMessage(results=results))
         except AgentCancelled:
             self._log_turn_tokens(last_iteration, turn_input, turn_output, turn_calls)
@@ -282,6 +302,15 @@ class BaseAgent:
         if self.tool_output_limiter is None or not isinstance(text, str):
             return text
         return self.tool_output_limiter.apply(tc.name, tc.arguments, text)
+
+    def _collect_notices(self) -> str:
+        lines: list[str] = []
+        for source in self.notice_sources:
+            try:
+                lines.extend(source())
+            except Exception:
+                logger.exception("Notice source failed")
+        return "\n".join(lines)
 
     def _emit(self, event) -> None:
         if self.on_event is None:
@@ -359,4 +388,4 @@ def _log_tokens(message: str) -> None:
     print(f"[tokens] {message}", file=sys.stderr)
 
 
-__all__ = ["AgentRun", "BaseAgent", "EventHook", "Trace"]
+__all__ = ["AgentRun", "BaseAgent", "EventHook", "NoticeSource", "Trace"]
