@@ -251,7 +251,12 @@ def _keep_tail(path: str, keep_bytes: int) -> None:
         tail = f.read()
     with open(path + ".tmp", "wb") as f:
         f.write(tail)
-    os.replace(path + ".tmp", path)
+    try:
+        os.replace(path + ".tmp", path)
+    except PermissionError:
+        # Windows refuses while someone is reading the log; trim next time.
+        os.remove(path + ".tmp")
+        return
     # Remember that the start of the output is gone.
     open(path + ".trimmed", "w").close()
 

@@ -210,6 +210,17 @@ class TestService:
 # --------------------------------------------------------------------------- #
 
 
+# Python payloads run the same on every OS, so these cover Windows too.
+SLEEP = "import time; time.sleep(30)"
+# Starts a child that would outlive the task if stop missed it.
+SLEEP_WITH_CHILD = (
+    "import os, subprocess, sys, time\n"
+    "child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'])\n"
+    "open(os.path.join(os.getcwd(), 'child.pid'), 'w').write(str(child.pid))\n"
+    "time.sleep(60)\n"
+)
+
+
 def _wait(runner, handle, timeout=15.0) -> RunnerState:
     deadline = time.time() + timeout
     while time.time() < deadline:
@@ -220,11 +231,21 @@ def _wait(runner, handle, timeout=15.0) -> RunnerState:
     raise AssertionError("background task did not finish")
 
 
-@posix_only
+def _wait_for_file(path, timeout=15.0) -> str:
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if os.path.exists(path):
+            text = open(path).read().strip()
+            if text:
+                return text
+        time.sleep(0.1)
+    raise AssertionError(f"{path} never appeared")
+
+
 class TestSandboxRunner:
     def _start(self, tmp_path, kind, payload, task_id="1"):
         store = InMemoryBackgroundTaskStore()
-        runner = SandboxBackgroundRunner(LocalSandbox(), root_dir=str(tmp_path))
+        runner = SandboxBackgroundRunner(LocalSandbox(), root_dir=str(tmp_path), cwd=str(tmp_path))
         task = store.create("t", kind=kind, runner="sandbox")
         task.id = task_id
         return runner, runner.start(task, payload)
@@ -235,7 +256,13 @@ class TestSandboxRunner:
         assert state.exit_code == 0
         assert "hello from bg" in runner.read_output(handle, max_chars=1000)
 
-    def test_shell_exit_code_is_reported(self, tmp_path):
+    def test_exit_code_is_reported(self, tmp_path):
+        runner, handle = self._start(tmp_path, "python", "import sys; print('oops'); sys.exit(3)")
+        assert _wait(runner, handle).exit_code == 3
+        assert "oops" in runner.read_output(handle, max_chars=1000)
+
+    @posix_only
+    def test_shell_command(self, tmp_path):
         runner, handle = self._start(tmp_path, "shell", "echo oops >&2; exit 3")
         assert _wait(runner, handle).exit_code == 3
         assert "oops" in runner.read_output(handle, max_chars=1000)
@@ -244,18 +271,29 @@ class TestSandboxRunner:
         runner, handle = self._start(tmp_path, "python", "print('a' * 5000 + 'END')")
         _wait(runner, handle)
         text = runner.read_output(handle, max_chars=10)
-        assert text.endswith("END\n") and "earlier output omitted" in text
+        assert text.rstrip().endswith("END") and "earlier output omitted" in text
 
-    def test_stop_kills_the_process_group(self, tmp_path):
-        runner, handle = self._start(tmp_path, "shell", "sleep 60 & sleep 60")
+    def test_stop_kills_the_whole_process_tree(self, tmp_path):
+        runner, handle = self._start(tmp_path, "python", SLEEP_WITH_CHILD)
+        child_pid = int(_wait_for_file(str(tmp_path / "child.pid")))
         assert runner.poll(handle).running
         runner.stop(handle)
-        state = _wait(runner, handle, timeout=5)
+        state = _wait(runner, handle, timeout=10)
         assert state.exit_code is None or state.exit_code != 0
+        assert _wait_dead(child_pid)
 
     def test_unknown_kind_is_rejected(self, tmp_path):
         with pytest.raises(BackgroundRunnerError):
             self._start(tmp_path, "ruby", "puts 1")
+
+
+def _wait_dead(pid, timeout=10.0) -> bool:
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if not _sandbox_ops._alive(pid):
+            return True
+        time.sleep(0.2)
+    return False
 
 
 # --------------------------------------------------------------------------- #
@@ -263,7 +301,6 @@ class TestSandboxRunner:
 # --------------------------------------------------------------------------- #
 
 
-@posix_only
 class TestSandboxOps:
     def _start(self, tmp_path, kind, payload, max_log_bytes=1_000_000):
         return _sandbox_ops.start(
@@ -291,7 +328,7 @@ class TestSandboxOps:
         assert {"spec.json", "pid", "output.log", "exit_code", "_sandbox_ops.py"} <= names
 
     def test_runs_in_the_given_directory(self, tmp_path):
-        handle = self._start(tmp_path, "shell", "pwd")
+        handle = self._start(tmp_path, "python", "import os; print(os.getcwd())")
         self._wait(handle)
         output = _sandbox_ops.read_output(handle=handle, max_chars=1000)["output"]
         assert os.path.realpath(output.strip()) == os.path.realpath(str(tmp_path))
@@ -304,12 +341,14 @@ class TestSandboxOps:
         reply = _sandbox_ops.read_output(handle=handle, max_chars=100)
         assert "line 19999" in reply["output"] and reply["truncated"]
 
+    @posix_only
     def test_missing_command_reports_exit_code(self, tmp_path):
         handle = self._start(tmp_path, "shell", "exec /nonexistent/binary")
         assert self._wait(handle)["exit_code"] != 0
 
+    @posix_only
     def test_lost_process_is_an_error(self, tmp_path):
-        handle = self._start(tmp_path, "shell", "sleep 30")
+        handle = self._start(tmp_path, "python", SLEEP)
         pid = int(open(os.path.join(handle, "pid")).read())
         os.killpg(pid, 9)
         # Started straight from this test process, the wrapper is our child:
@@ -319,14 +358,14 @@ class TestSandboxOps:
         assert reply.get("exit_code") is None and "without an exit code" in reply["error"]
 
     def test_stop_on_finished_task_is_harmless(self, tmp_path):
-        handle = self._start(tmp_path, "shell", "true")
+        handle = self._start(tmp_path, "python", "pass")
         self._wait(handle)
         assert _sandbox_ops.stop(handle=handle) == {}
 
     def test_repeated_task_id_gets_a_fresh_directory(self, tmp_path):
-        first = self._start(tmp_path, "shell", "exit 4")
+        first = self._start(tmp_path, "python", "import sys; sys.exit(4)")
         assert self._wait(first)["exit_code"] == 4
-        second = self._start(tmp_path, "shell", "sleep 30")
+        second = self._start(tmp_path, "python", SLEEP)
         try:
             assert second != first
             assert _sandbox_ops.poll(handle=second) == {"running": True}
@@ -334,20 +373,24 @@ class TestSandboxOps:
             _sandbox_ops.stop(handle=second, grace_s=0.5)
 
     def test_stop_after_finish_never_signals(self, tmp_path, monkeypatch):
-        handle = self._start(tmp_path, "shell", "true")
+        handle = self._start(tmp_path, "python", "pass")
         self._wait(handle)
         # Even if the pid now belongs to a live process, a finished task is
         # left alone.
+        def fail(*_args, **_kwargs):
+            pytest.fail("signalled a finished task")
+
         monkeypatch.setattr(_sandbox_ops, "_alive", lambda pid: True)
-        monkeypatch.setattr(_sandbox_ops.os, "killpg", lambda *a: pytest.fail("signalled"))
+        monkeypatch.setattr(_sandbox_ops.os, "killpg", fail, raising=False)
+        monkeypatch.setattr(_sandbox_ops.subprocess, "run", fail)
         assert _sandbox_ops.stop(handle=handle) == {}
 
     def test_old_finished_tasks_are_pruned(self, tmp_path):
-        old = self._start(tmp_path, "shell", "true")
+        old = self._start(tmp_path, "python", "pass")
         self._wait(old)
         long_ago = time.time() - _sandbox_ops.RETENTION_S - 60
         os.utime(os.path.join(old, "exit_code"), (long_ago, long_ago))
-        running = self._start(tmp_path, "shell", "sleep 30")
+        running = self._start(tmp_path, "python", SLEEP)
         try:
             assert not os.path.exists(old)
             assert os.path.exists(running)
@@ -514,3 +557,16 @@ class TestTernoAgentWiring:
         tool = TernoAgent(_DummyLLM(), background=service).tools["background_output"]
         with pytest.raises(ToolError, match="between"):
             tool.run(task_id="1", max_chars=10**9)
+
+
+def test_trim_is_skipped_while_the_log_is_busy(tmp_path, monkeypatch):
+    log = tmp_path / "output.log"
+    log.write_bytes(b"x" * 100)
+
+    def busy(*_args):
+        raise PermissionError("in use")
+
+    monkeypatch.setattr(_sandbox_ops.os, "replace", busy)
+    _sandbox_ops._keep_tail(str(log), 10)
+    assert log.read_bytes() == b"x" * 100
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["output.log"]
