@@ -132,3 +132,38 @@ def test_timeout_kills_and_recovers(fresh_sandbox):
     r2 = fresh_sandbox.run_python("print('recovered')")
     assert r2.exit_code == 0
     assert r2.stdout.strip() == "recovered"
+
+
+def test_large_snippet_is_sent_whole(fresh_sandbox):
+    # Bigger than the socket buffer: used to hang waiting for the line's end.
+    result = fresh_sandbox.run_python("x = '" + "a" * 300_000 + "'\nprint(len(x))", timeout_s=30)
+    assert not result.timed_out
+    assert result.stdout.strip() == "300000"
+
+
+def test_background_task_runs_detached(fresh_sandbox):
+    import time
+
+    from terno_agent.background import BackgroundTasks, SandboxBackgroundRunner
+
+    tasks = BackgroundTasks(
+        {"sandbox": SandboxBackgroundRunner(fresh_sandbox)}, poll_interval_s=0
+    )
+    done = tasks.start(kind="python", payload="print('from the background')", description="a")
+    sleeper = tasks.start(kind="shell", payload="sleep 60 & sleep 60", description="b")
+    deadline = time.time() + 20
+    notices: list[str] = []
+    while not notices and time.time() < deadline:
+        notices = tasks.take_notices()
+        time.sleep(0.5)
+    assert notices and "completed (exit code 0)" in notices[0]
+    assert "from the background" in tasks.output(done.id)
+
+    tasks.stop(sleeper.id)
+    leftover = fresh_sandbox.run_python(
+        "import os\n"
+        "procs = [open(f'/proc/{p}/cmdline', 'rb').read() for p in os.listdir('/proc')"
+        " if p.isdigit() and os.path.exists(f'/proc/{p}/cmdline')]\n"
+        "print(sum(b'sleep' in c for c in procs))"
+    )
+    assert leftover.stdout.strip() == "0"

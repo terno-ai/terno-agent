@@ -35,6 +35,8 @@ from terno_agent.sandbox._driver import DRIVER_SOURCE, SENTINEL
 from terno_agent.sandbox.base import ExecutionResult
 
 _POLL_INTERVAL_S = 0.2
+# Upper bound on writing one snippet to the driver.
+_SEND_TIMEOUT_S = 30
 _STREAM_STDOUT = 1
 _STREAM_STDERR = 2
 
@@ -291,7 +293,7 @@ class DockerSandbox:
             self._ensure_session()
             request = json.dumps(request_payload) + "\n"
             try:
-                self._sock.send(request.encode("utf-8"))
+                _send_all(self._sock, request.encode("utf-8"), timeout_s=_SEND_TIMEOUT_S)
             except (BrokenPipeError, OSError) as exc:
                 # Driver died — recreate next call and surface the error.
                 self._teardown(remove=not self.persist)
@@ -384,6 +386,29 @@ class _SandboxCancelled(Exception):
 
 class _SandboxDriverGone(Exception):
     """Internal signal: driver process died or sent garbage."""
+
+
+def _send_all(sock, data: bytes, *, timeout_s: float) -> None:
+    """Write all of ``data`` to a non-blocking socket.
+
+    A single ``send`` only takes what fits in the socket buffer (about 8 KB
+    here), so larger snippets would be cut off and the driver would wait
+    forever for the rest of the line.
+    """
+    view = memoryview(data)
+    deadline = time.monotonic() + timeout_s
+    while view:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError("timed out sending the snippet to the sandbox")
+        _, writable, _ = select.select([], [sock], [], min(remaining, 1.0))
+        if not writable:
+            continue
+        try:
+            sent = sock.send(view)
+        except BlockingIOError:
+            continue
+        view = view[sent:]
 
 
 def _read_next_frame(sock) -> tuple[int, bytes | None]:
