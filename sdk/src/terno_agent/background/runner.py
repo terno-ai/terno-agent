@@ -12,12 +12,14 @@ own runner instead.
 from __future__ import annotations
 import inspect
 import json
+import os
 from dataclasses import dataclass
 from functools import cache
 from typing import Protocol, runtime_checkable
 from terno_agent.background import _sandbox_ops
 from terno_agent.background.store import BackgroundTask
 from terno_agent.sandbox.base import Sandbox
+from terno_agent.sandbox.local import LocalSandbox
 
 
 @dataclass(frozen=True, slots=True)
@@ -105,6 +107,8 @@ class SandboxBackgroundRunner:
             raise ValueError("max_log_bytes must be positive.")
         self.sandbox = sandbox
         self.root_dir = root_dir
+        if not cwd and isinstance(sandbox, LocalSandbox):
+            cwd = os.getcwd()
         self.cwd = cwd
         self.call_timeout_s = call_timeout_s
         self.max_log_bytes = max_log_bytes

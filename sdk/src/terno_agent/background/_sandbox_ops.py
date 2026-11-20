@@ -71,14 +71,14 @@ def start(
 
     spec = {
         "argv": _command(task_dir, kind, payload),
-        "cwd": cwd or None,
+        "cwd": cwd or os.getcwd(),
         "max_log_bytes": max_log_bytes,
     }
     _write_atomic(os.path.join(task_dir, SPEC_FILE), json.dumps(spec))
     _write_atomic(os.path.join(task_dir, MODULE_FILE), _own_source())
 
     options = {"stdin": subprocess.DEVNULL, "stdout": subprocess.DEVNULL,
-               "stderr": subprocess.DEVNULL, "close_fds": True}
+               "stderr": subprocess.DEVNULL, "close_fds": True, "cwd": task_dir}
     if _IS_WINDOWS:
         options["creationflags"] = _WINDOWS_DETACHED
     else:
@@ -162,9 +162,14 @@ def wrap(task_dir: str) -> int:
     spec = _read_spec(task_dir)
     log_path = os.path.join(task_dir, LOG_FILE)
     max_bytes = int(spec["max_log_bytes"])
+    cwd = spec["cwd"]
+    if not os.path.isdir(cwd):
+        with open(log_path, "ab") as log:
+            log.write(f"working directory {cwd} is gone; running in {task_dir}\n".encode())
+        cwd = task_dir
     try:
         child = subprocess.Popen(
-            spec["argv"], cwd=spec["cwd"], stdin=subprocess.DEVNULL,
+            spec["argv"], cwd=cwd, stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
         )
     except OSError as exc:

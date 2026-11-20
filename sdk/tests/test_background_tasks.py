@@ -286,6 +286,31 @@ class TestSandboxRunner:
         with pytest.raises(BackgroundRunnerError):
             self._start(tmp_path, "ruby", "puts 1")
 
+    def test_start_without_a_cwd(self, tmp_path):
+        # LocalSandbox runs each call in a temporary directory it deletes
+        # afterwards; on Windows that failed while the detached process sat in
+        # it. The work runs where the call ran; the wrapper in its task dir.
+        runner = SandboxBackgroundRunner(LocalSandbox(), root_dir=str(tmp_path))
+        task = InMemoryBackgroundTaskStore().create("t", kind="python", runner="sandbox")
+        handle = runner.start(task, "import os; print(os.getcwd())")
+        assert _wait(runner, handle).exit_code == 0
+        output = runner.read_output(handle, max_chars=1000).strip()
+        assert os.path.realpath(output) == os.path.realpath(os.getcwd())
+
+    def test_missing_cwd_falls_back_to_the_task_directory(self, tmp_path):
+        gone = tmp_path / "gone"
+        handle = _sandbox_ops.start(
+            root=str(tmp_path / "bg"), task_id="1", kind="python",
+            payload="import os; print(os.getcwd())", cwd=str(gone), max_log_bytes=10_000,
+        )["handle"]
+        deadline = time.time() + 15
+        while _sandbox_ops.poll(handle=handle)["running"] and time.time() < deadline:
+            time.sleep(0.1)
+        assert _sandbox_ops.poll(handle=handle)["exit_code"] == 0
+        output = _sandbox_ops.read_output(handle=handle, max_chars=2000)["output"]
+        assert "is gone" in output
+        assert os.path.realpath(output.strip().splitlines()[-1]) == os.path.realpath(handle)
+
 
 def _wait_dead(pid, timeout=10.0) -> bool:
     deadline = time.time() + timeout

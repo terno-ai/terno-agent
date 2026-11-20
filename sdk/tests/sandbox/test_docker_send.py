@@ -34,12 +34,17 @@ def test_sends_more_than_the_socket_buffer():
         reader.close()
 
 
-def test_times_out_when_nobody_reads():
+def test_times_out_when_the_socket_never_becomes_writable(monkeypatch):
+    # How much an OS buffers on a socket varies (Windows takes far more), so
+    # simulate a full buffer instead of trying to fill a real one.
+    import terno_agent.sandbox.docker as docker_module
+
+    monkeypatch.setattr(docker_module.select, "select", lambda r, w, x, t: ([], [], []))
     writer, reader = socket.socketpair()
     writer.setblocking(False)
     try:
         with pytest.raises(TimeoutError):
-            _send_all(writer, b"x" * 10_000_000, timeout_s=0.5)
+            _send_all(writer, b"x" * 100, timeout_s=0.3)
     finally:
         writer.close()
         reader.close()
