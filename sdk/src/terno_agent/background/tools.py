@@ -30,8 +30,9 @@ class RunInBackgroundTool:
             description=(
                 "Start Python code or a shell command in the sandbox and return "
                 "at once with a task id, while it keeps running. You are told "
-                "automatically when it finishes, even after this turn ends, and "
-                "can then read its output with background_output.\n\n"
+                "when it finishes, and can then read its output with "
+                "background_output. Work that runs past the time limit is "
+                "stopped.\n\n"
                 "## When to use\n"
                 "- Work that will clearly take more than a couple of minutes: "
                 "training a model, processing many files or rows, bulk "
@@ -76,10 +77,14 @@ class RunInBackgroundTool:
         task = self.tasks.start(
             kind=kind, payload=payload, description=kwargs.get("description") or ""
         )
-        return (
+        started = (
             f'Started background task {task.id} ("{task.description}"). You will '
             "be told when it finishes; do not wait or poll for it."
         )
+        location = self.tasks.output_location(task)
+        if location:
+            started += f" Its output is written to {location}."
+        return started
 
 
 @dataclass
@@ -112,7 +117,10 @@ class BackgroundOutputTool:
         task_id = kwargs.get("task_id")
         if not task_id:
             raise ToolError("background_output requires a 'task_id'.")
-        max_chars = int(kwargs.get("max_chars") or 8000)
+        try:
+            max_chars = int(kwargs.get("max_chars") or 8000)
+        except (TypeError, ValueError) as exc:
+            raise ToolError("max_chars must be a whole number.") from exc
         if not 0 < max_chars <= _MAX_OUTPUT_CHARS:
             raise ToolError(f"max_chars must be between 1 and {_MAX_OUTPUT_CHARS}.")
         return self.tasks.output(str(task_id), max_chars=max_chars)

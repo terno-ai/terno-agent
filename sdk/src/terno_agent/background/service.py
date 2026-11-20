@@ -16,7 +16,7 @@ import logging
 import time
 from collections.abc import Callable, Mapping
 
-from terno_agent.background.runner import BackgroundRunner, BackgroundRunnerError
+from terno_agent.background.runner import BackgroundRunner, OutputFileRunner
 from terno_agent.background.store import (
     COMPLETED,
     FAILED,
@@ -32,6 +32,8 @@ from terno_agent.core.exceptions import ToolError
 logger = logging.getLogger(__name__)
 
 SANDBOX_RUNNER = "sandbox"
+# How much of the end of a finished task's output its notice carries.
+NOTICE_TAIL_CHARS = 1500
 
 
 class BackgroundTasks:
@@ -81,8 +83,9 @@ class BackgroundTasks:
             )
         task = self.store.create(description, kind=kind, runner=runner, metadata=metadata)
         try:
-            handle = backend.start(task, payload)
-        except BackgroundRunnerError as exc:
+            handle = backend.start(task, payload, max_runtime_s=self.max_runtime_s)
+        except Exception as exc:
+            # Whatever went wrong, the task must not hold a running slot.
             self.store.finish(task.id, FAILED, error=str(exc))
             raise ToolError(f"Could not start the background task: {exc}") from exc
         return self.store.update(task.id, handle=handle)
@@ -92,16 +95,14 @@ class BackgroundTasks:
         if task.finished:
             return task
         self._stop_quietly(task)
-        # Stopped on request: nothing to tell the agent later.
-        task = self.store.finish(task.id, STOPPED)
-        return self.store.update(task.id, notified=True)
+        return self.store.update(task.id, status=STOPPED, notified=True)
 
     def output(self, task_id: str, *, max_chars: int = 8000) -> str:
         self.refresh(force=True)
         task = self.store.get(task_id)
         try:
             text = self._runner(task).read_output(task.handle, max_chars=max_chars)
-        except BackgroundRunnerError as exc:
+        except Exception as exc:
             text = f"[could not read output: {exc}]"
         return f"{self.describe(task)}\n--- output ---\n{text or '(no output yet)'}"
 
@@ -112,26 +113,23 @@ class BackgroundTasks:
         if not force and now - self._last_refresh < self.poll_interval_s:
             return
         self._last_refresh = now
+        limit = f"stopped after the {_duration(self.max_runtime_s)} limit"
         for task in self.store.running():
-            if task.runtime_s(now) > self.max_runtime_s:
-                self._stop_quietly(task)
-                self.store.finish(
-                    task.id,
-                    TIMED_OUT,
-                    error=f"stopped after the {_duration(self.max_runtime_s)} limit",
-                )
+            state = None
+            if task.handle:
+                try:
+                    state = self._runner(task).poll(task.handle)
+                except Exception as exc:
+                    # Treat as transient: the sandbox may be busy or restarting.
+                    logger.warning("Could not check background task %s: %s", task.id, exc)
+            if state is None or state.running:
+                if task.runtime_s(now) > self.max_runtime_s:
+                    self._stop_quietly(task)
+                    self.store.finish(task.id, TIMED_OUT, error=limit)
                 continue
-            if not task.handle:
-                continue
-            try:
-                state = self._runner(task).poll(task.handle)
-            except (BackgroundRunnerError, ToolError) as exc:
-                # Treat as transient: the sandbox may be busy or restarting.
-                logger.warning("Could not check background task %s: %s", task.id, exc)
-                continue
-            if state.running:
-                continue
-            if state.exit_code is None:
+            if state.timed_out:
+                self.store.finish(task.id, TIMED_OUT, error=limit)
+            elif state.exit_code is None:
                 self.store.finish(task.id, FAILED, error=state.error or "ended unexpectedly")
             else:
                 status = COMPLETED if state.exit_code == 0 else FAILED
@@ -140,13 +138,22 @@ class BackgroundTasks:
     # ----- what the agent sees ------------------------------------------ #
 
     def take_notices(self) -> list[str]:
-        """One line per task that finished since the agent was last told."""
+        """One notice per task that finished since the agent was last told:
+        how it ended and the end of its output, so the agent rarely needs to
+        ask for more."""
         self.refresh()
-        return [
-            f"{self.describe(t)}. Read its output with "
-            f'background_output(task_id="{t.id}").'
-            for t in self.store.claim_unnotified()
-        ]
+        return [self._notice(t) for t in self.store.claim_unnotified()]
+
+    def output_location(self, task: BackgroundTask) -> str | None:
+        """Where the task's full output is, when it is a file the agent can
+        open with its file tools."""
+        backend = self.runners.get(task.runner)
+        if not task.handle or not isinstance(backend, OutputFileRunner):
+            return None
+        try:
+            return backend.output_path(task.handle)
+        except Exception:
+            return None
 
     def context_block(self) -> str:
         """The tasks still running, for the start of each turn."""
@@ -180,6 +187,28 @@ class BackgroundTasks:
 
     # ----- internals ---------------------------------------------------- #
 
+    def _notice(self, task: BackgroundTask) -> str:
+        lines = [f"{self.describe(task)}."]
+        tail = self._tail(task)
+        if tail:
+            lines.append(f"End of its output:\n{tail}")
+        more = f'background_output(task_id="{task.id}")'
+        location = self.output_location(task)
+        if location:
+            more += f" or open {location}"
+        lines.append(f"Full output: {more}.")
+        return "\n".join(lines)
+
+    def _tail(self, task: BackgroundTask) -> str:
+        if not task.handle:
+            return ""
+        try:
+            text = self._runner(task).read_output(task.handle, max_chars=NOTICE_TAIL_CHARS)
+        except Exception as exc:
+            logger.warning("Could not read background task %s output: %s", task.id, exc)
+            return ""
+        return text.strip()
+
     def _runner(self, task: BackgroundTask) -> BackgroundRunner:
         backend = self.runners.get(task.runner)
         if backend is None:
@@ -191,7 +220,7 @@ class BackgroundTasks:
             return
         try:
             self._runner(task).stop(task.handle)
-        except (BackgroundRunnerError, ToolError) as exc:
+        except Exception as exc:
             logger.warning("Could not stop background task %s: %s", task.id, exc)
 
 

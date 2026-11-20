@@ -6,6 +6,8 @@ from __future__ import annotations
 import os
 import sys
 import time
+import uuid
+from unittest import mock
 
 import pytest
 
@@ -20,6 +22,7 @@ from terno_agent.background import (
     BackgroundRunnerError,
     BackgroundTasks,
     InMemoryBackgroundTaskStore,
+    RunInBackgroundTool,
     RunnerState,
     SandboxBackgroundRunner,
     _sandbox_ops,
@@ -46,7 +49,7 @@ class _FakeRunner:
         self.stopped: list[str] = []
         self.fail_start = False
 
-    def start(self, task, payload):
+    def start(self, task, payload, *, max_runtime_s):
         if self.fail_start:
             raise BackgroundRunnerError("sandbox is down")
         handle = f"h{task.id}"
@@ -248,7 +251,7 @@ class TestSandboxRunner:
         runner = SandboxBackgroundRunner(LocalSandbox(), root_dir=str(tmp_path), cwd=str(tmp_path))
         task = store.create("t", kind=kind, runner="sandbox")
         task.id = task_id
-        return runner, runner.start(task, payload)
+        return runner, runner.start(task, payload, max_runtime_s=600)
 
     def test_python_runs_detached_and_output_is_kept(self, tmp_path):
         runner, handle = self._start(tmp_path, "python", "print('hello from bg')")
@@ -292,7 +295,7 @@ class TestSandboxRunner:
         # it. The work runs where the call ran; the wrapper in its task dir.
         runner = SandboxBackgroundRunner(LocalSandbox(), root_dir=str(tmp_path))
         task = InMemoryBackgroundTaskStore().create("t", kind="python", runner="sandbox")
-        handle = runner.start(task, "import os; print(os.getcwd())")
+        handle = runner.start(task, "import os; print(os.getcwd())", max_runtime_s=600)
         assert _wait(runner, handle).exit_code == 0
         output = runner.read_output(handle, max_chars=1000).strip()
         assert os.path.realpath(output) == os.path.realpath(os.getcwd())
@@ -300,8 +303,9 @@ class TestSandboxRunner:
     def test_missing_cwd_falls_back_to_the_task_directory(self, tmp_path):
         gone = tmp_path / "gone"
         handle = _sandbox_ops.start(
-            root=str(tmp_path / "bg"), task_id="1", kind="python",
+            root=str(tmp_path / "bg"), name="1-x", kind="python",
             payload="import os; print(os.getcwd())", cwd=str(gone), max_log_bytes=10_000,
+            max_runtime_s=600,
         )["handle"]
         deadline = time.time() + 15
         while _sandbox_ops.poll(handle=handle)["running"] and time.time() < deadline:
@@ -312,10 +316,24 @@ class TestSandboxRunner:
         assert os.path.realpath(output.strip().splitlines()[-1]) == os.path.realpath(handle)
 
 
+def _pid_alive(pid) -> bool:
+    if sys.platform == "win32":
+        import subprocess
+
+        out = subprocess.run(["tasklist", "/FI", f"PID eq {pid}", "/FO", "CSV", "/NH"],
+                             capture_output=True, text=True).stdout
+        return f'"{pid}"' in out
+    try:
+        os.kill(pid, 0)
+    except OSError:
+        return False
+    return True
+
+
 def _wait_dead(pid, timeout=10.0) -> bool:
     deadline = time.time() + timeout
     while time.time() < deadline:
-        if not _sandbox_ops._alive(pid):
+        if not _pid_alive(pid):
             return True
         time.sleep(0.2)
     return False
@@ -327,14 +345,16 @@ def _wait_dead(pid, timeout=10.0) -> bool:
 
 
 class TestSandboxOps:
-    def _start(self, tmp_path, kind, payload, max_log_bytes=1_000_000):
+    def _start(self, tmp_path, kind, payload, max_log_bytes=1_000_000, name=None,
+               max_runtime_s=600):
         return _sandbox_ops.start(
             root=str(tmp_path),
-            task_id="7",
+            name=name or f"7-{uuid.uuid4().hex[:8]}",
             kind=kind,
             payload=payload,
             cwd=str(tmp_path),
             max_log_bytes=max_log_bytes,
+            max_runtime_s=max_runtime_s,
         )["handle"]
 
     def _wait(self, handle):
@@ -387,15 +407,11 @@ class TestSandboxOps:
         self._wait(handle)
         assert _sandbox_ops.stop(handle=handle) == {}
 
-    def test_repeated_task_id_gets_a_fresh_directory(self, tmp_path):
-        first = self._start(tmp_path, "python", "import sys; sys.exit(4)")
+    def test_a_task_directory_is_never_reused(self, tmp_path):
+        first = self._start(tmp_path, "python", "import sys; sys.exit(4)", name="1-same")
         assert self._wait(first)["exit_code"] == 4
-        second = self._start(tmp_path, "python", SLEEP)
-        try:
-            assert second != first
-            assert _sandbox_ops.poll(handle=second) == {"running": True}
-        finally:
-            _sandbox_ops.stop(handle=second, grace_s=0.5)
+        with pytest.raises(FileExistsError):
+            self._start(tmp_path, "python", SLEEP, name="1-same")
 
     def test_stop_after_finish_never_signals(self, tmp_path, monkeypatch):
         handle = self._start(tmp_path, "python", "pass")
@@ -405,7 +421,7 @@ class TestSandboxOps:
         def fail(*_args, **_kwargs):
             pytest.fail("signalled a finished task")
 
-        monkeypatch.setattr(_sandbox_ops, "_alive", lambda pid: True)
+        monkeypatch.setattr(_sandbox_ops, "_wrapper_alive", lambda pid, task_dir: True)
         monkeypatch.setattr(_sandbox_ops.os, "killpg", fail, raising=False)
         monkeypatch.setattr(_sandbox_ops.subprocess, "run", fail)
         assert _sandbox_ops.stop(handle=handle) == {}
@@ -414,7 +430,7 @@ class TestSandboxOps:
         old = self._start(tmp_path, "python", "pass")
         self._wait(old)
         long_ago = time.time() - _sandbox_ops.RETENTION_S - 60
-        os.utime(os.path.join(old, "exit_code"), (long_ago, long_ago))
+        os.utime(old, (long_ago, long_ago))
         running = self._start(tmp_path, "python", SLEEP)
         try:
             assert not os.path.exists(old)
@@ -595,3 +611,246 @@ def test_trim_is_skipped_while_the_log_is_busy(tmp_path, monkeypatch):
     _sandbox_ops._keep_tail(str(log), 10)
     assert log.read_bytes() == b"x" * 100
     assert sorted(p.name for p in tmp_path.iterdir()) == ["output.log"]
+
+
+# --------------------------------------------------------------------------- #
+# Review regressions
+# --------------------------------------------------------------------------- #
+
+
+class TestServiceFailures:
+    def test_work_that_ended_unpolled_is_not_reported_as_timed_out(self):
+        service, runner, clock = _service(max_runtime_s=60)
+        task = service.start(kind="python", payload="x", description="quick")
+        runner.states[task.handle] = RunnerState(running=False, exit_code=0)
+        clock.now += 4 * 3600  # nobody polled for hours
+        service.refresh(force=True)
+        assert service.store.get(task.id).status == COMPLETED
+        assert runner.stopped == []
+
+    def test_runner_reported_time_out(self):
+        service, runner, _ = _service()
+        task = service.start(kind="python", payload="x", description="slow")
+        runner.states[task.handle] = RunnerState(running=False, timed_out=True)
+        service.refresh(force=True)
+        assert service.store.get(task.id).status == TIMED_OUT
+
+    def test_any_start_error_frees_the_slot(self):
+        service, runner, _ = _service(max_running=1)
+        runner.start = mock.Mock(side_effect=RuntimeError("sandbox exploded"))
+        with pytest.raises(ToolError, match="sandbox exploded"):
+            service.start(kind="python", payload="x", description="a")
+        runner.start = _FakeRunner().start
+        service.start(kind="python", payload="x", description="b")  # slot is free
+
+    def test_any_poll_error_is_transient(self):
+        service, runner, _ = _service()
+        task = service.start(kind="python", payload="x", description="a")
+        runner.poll = mock.Mock(side_effect=RuntimeError("kernel restarting"))
+        service.refresh(force=True)
+        assert service.store.get(task.id).status == RUNNING
+        assert "a" in service.context_block()
+
+    def test_stop_is_recorded_even_if_the_sandbox_fails(self):
+        service, runner, _ = _service()
+        task = service.start(kind="python", payload="x", description="a")
+        runner.stop = mock.Mock(side_effect=RuntimeError("gone"))
+        stopped = service.stop(task.id)
+        assert (stopped.status, stopped.notified) == (STOPPED, True)
+
+    def test_stop_never_hides_a_finish_that_won(self):
+        store = InMemoryBackgroundTaskStore()
+        task = store.create("a", kind="python", runner="sandbox")
+        store.finish(task.id, COMPLETED, exit_code=0)
+        store.update(task.id, status=STOPPED, notified=True)
+        got = store.get(task.id)
+        assert (got.status, got.notified) == (COMPLETED, False)
+
+
+class TestRunnerErrors:
+    def test_every_sandbox_error_becomes_a_runner_error(self):
+        class Broken:
+            def run_python(self, code, **kwargs):
+                raise TimeoutError("no reply")
+
+        runner = SandboxBackgroundRunner(Broken())
+        with pytest.raises(BackgroundRunnerError):
+            runner.poll("/x")
+
+    def test_bad_reply_becomes_a_runner_error(self):
+        from terno_agent.sandbox.base import ExecutionResult
+
+        class Garbled:
+            def run_python(self, code, **kwargs):
+                reply = _sandbox_ops.MARKER + "{not json"
+                return ExecutionResult(stdout=reply, stderr="", exit_code=0)
+
+        with pytest.raises(BackgroundRunnerError, match="bad reply"):
+            SandboxBackgroundRunner(Garbled()).poll("/x")
+
+    def test_failed_start_stops_whatever_did_start(self):
+        calls = []
+
+        class LostReply:
+            def run_python(self, code, **kwargs):
+                calls.append(code)
+                raise TimeoutError("reply lost")
+
+        runner = SandboxBackgroundRunner(LostReply(), root_dir="/r")
+        task = InMemoryBackgroundTaskStore().create("t", kind="python", runner="sandbox")
+        with pytest.raises(BackgroundRunnerError):
+            runner.start(task, "print(1)", max_runtime_s=60)
+        assert len(calls) == 2 and "'stop'" in calls[1]
+
+
+@posix_only
+class TestProcessLifecycle:
+    def _start(self, tmp_path, payload, kind="shell", max_runtime_s=600):
+        return _sandbox_ops.start(
+            root=str(tmp_path), name=f"t-{uuid.uuid4().hex[:8]}", kind=kind, payload=payload,
+            cwd=str(tmp_path), max_log_bytes=100_000, max_runtime_s=max_runtime_s,
+        )["handle"]
+
+    def _wait(self, handle, timeout=15.0):
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            reply = _sandbox_ops.poll(handle=handle)
+            if not reply["running"]:
+                return reply
+            time.sleep(0.1)
+        raise AssertionError("still running")
+
+    def _group_gone(self, handle, timeout=10.0):
+        group = int(open(os.path.join(handle, "pid")).read())
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            # Started from this test, the wrapper is our child: reap it as
+            # init would, or it lingers as a zombie in the group.
+            try:
+                os.waitpid(group, os.WNOHANG)
+            except ChildProcessError:
+                pass
+            try:
+                os.killpg(group, 0)
+            except ProcessLookupError:
+                return True
+            except PermissionError:
+                pass  # macOS: only zombies left, not yet reaped
+            time.sleep(0.1)
+        return False
+
+    def test_stop_kills_work_that_ignores_sigterm(self, tmp_path):
+        handle = self._start(tmp_path, "trap '' TERM; sleep 30")
+        time.sleep(0.5)
+        _sandbox_ops.stop(handle=handle, grace_s=0.5)
+        assert self._group_gone(handle)
+
+    def test_polite_stop_lets_the_wrapper_record_the_end(self, tmp_path):
+        handle = self._start(tmp_path, "sleep 30")
+        time.sleep(0.5)
+        _sandbox_ops.stop(handle=handle, grace_s=2)
+        reply = self._wait(handle)
+        assert reply.get("exit_code") not in (None, 0)
+
+    def test_wrapper_enforces_the_time_limit(self, tmp_path):
+        handle = self._start(tmp_path, "sleep 30", max_runtime_s=1)
+        assert self._wait(handle, timeout=10) == {"running": False, "timed_out": True}
+        assert self._group_gone(handle)
+        assert "time limit" in _sandbox_ops.read_output(handle=handle, max_chars=500)["output"]
+
+    def test_task_ends_when_the_work_exits_even_if_a_child_holds_the_output(self, tmp_path):
+        handle = self._start(tmp_path, "(sleep 20 &); echo bye")
+        started = time.time()
+        assert self._wait(handle, timeout=10)["exit_code"] == 0
+        assert time.time() - started < 8
+        assert "bye" in _sandbox_ops.read_output(handle=handle, max_chars=500)["output"]
+
+    def test_reused_pid_is_not_taken_for_the_wrapper(self, tmp_path):
+        handle = self._start(tmp_path, "sleep 30")
+        try:
+            if not os.path.isdir("/proc"):
+                pytest.skip("needs /proc to tell processes apart")
+            # Our own pid is alive but is not this task's wrapper.
+            assert not _sandbox_ops._wrapper_alive(os.getpid(), handle)
+        finally:
+            _sandbox_ops.stop(handle=handle, grace_s=0.5)
+
+
+class TestSandboxOpsSafety:
+    def test_log_write_errors_never_raise(self, tmp_path):
+        log = _sandbox_ops._Log(str(tmp_path / "missing" / "output.log"), 1000)
+        log.note("hello")  # directory does not exist: the write fails
+        assert log.failed
+
+    @pytest.mark.skipif(not hasattr(os, "getuid"), reason="POSIX ownership")
+    def test_refuses_a_root_owned_by_someone_else(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(_sandbox_ops.os, "getuid", lambda: os.stat(tmp_path).st_uid + 1)
+        with pytest.raises(PermissionError):
+            _sandbox_ops._prepare_root(str(tmp_path))
+
+    def test_default_root_is_per_user(self):
+        root = _sandbox_ops._prepare_root("")
+        owner = str(os.getuid()) if hasattr(os, "getuid") else os.environ.get("USERNAME", "user")
+        assert root.endswith(f"terno-background-{owner}")
+
+    def test_windows_shell_command_is_one_string(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(_sandbox_ops, "_IS_WINDOWS", True)
+        assert _sandbox_ops._command(str(tmp_path), "shell", 'echo "a b"') == 'cmd /c echo "a b"'
+
+    def test_pid_files_cannot_point_at_init(self, tmp_path):
+        (tmp_path / "pid").write_text("1")
+        assert _sandbox_ops._read_pid(str(tmp_path)) is None
+
+
+class TestNoticePersistence:
+    def test_hosts_see_the_notice_in_the_result_event(self):
+        events = []
+        pending = [[], ["task 1 finished"]]
+        llm = _ScriptedLLM([_call(), _final()])
+        agent = BaseAgent(llm, "sys", [_EchoTool()], on_event=events.append)
+        agent.notice_sources.append(lambda: pending.pop(0))
+        agent.run("go")
+        from terno_agent.core.events import ToolResultEvent
+
+        result = next(e for e in events if isinstance(e, ToolResultEvent)).result
+        assert "task 1 finished" in result.content
+
+
+class TestRicherNotices:
+    def test_notice_carries_the_end_of_the_output(self):
+        service, runner, _ = _service()
+        task = service.start(kind="python", payload="x", description="report")
+        runner.states[task.handle] = RunnerState(running=False, exit_code=0)
+        (notice,) = service.take_notices()
+        assert "End of its output:\noutput of h1" in notice
+        assert 'background_output(task_id="1")' in notice
+
+    def test_notice_survives_unreadable_output(self):
+        service, runner, _ = _service()
+        task = service.start(kind="python", payload="x", description="report")
+        runner.states[task.handle] = RunnerState(running=False, exit_code=0)
+        runner.read_output = mock.Mock(side_effect=RuntimeError("sandbox gone"))
+        (notice,) = service.take_notices()
+        assert "completed" in notice and "End of its output" not in notice
+
+    def test_output_file_is_named_when_the_runner_has_one(self):
+        class FileRunner(_FakeRunner):
+            def output_path(self, handle):
+                return f"/bg/{handle}/output.log"
+
+        service = BackgroundTasks({"sandbox": FileRunner()}, poll_interval_s=0)
+        tool = RunInBackgroundTool(service)
+        assert "Its output is written to /bg/h1/output.log." in tool.run(
+            description="x", code="print(1)"
+        )
+        service.runners["sandbox"].states["h1"] = RunnerState(running=False, exit_code=0)
+        assert "or open /bg/h1/output.log" in service.take_notices()[0]
+
+    def test_no_file_named_for_runners_without_one(self):
+        service, _, _ = _service()
+        assert "written to" not in RunInBackgroundTool(service).run(description="x", code="1")
+
+    def test_sandbox_runner_output_path_follows_the_sandbox_style(self):
+        runner = SandboxBackgroundRunner(LocalSandbox())
+        assert runner.output_path("/tmp/bg/1-ab") == "/tmp/bg/1-ab/output.log"
+        assert runner.output_path(r"C:\Temp\bg\1-ab") == r"C:\Temp\bg\1-ab\output.log"

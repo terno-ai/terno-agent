@@ -371,7 +371,11 @@ class TernoAgent(BaseAgent):
         elif self.memory_context is None:
             print("[memory] no memory_context on this agent — nothing injected")
         if self.background is not None:
-            block = self.background.context_block()
+            try:
+                block = self.background.context_block()
+            except Exception as exc:
+                _warn(f"could not list background tasks: {exc}")
+                block = ""
             if block:
                 extra_context = block if not extra_context else f"{extra_context}\n\n---\n{block}"
         if content_parts is not None:

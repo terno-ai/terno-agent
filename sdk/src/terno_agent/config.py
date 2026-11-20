@@ -196,7 +196,9 @@ class Config:
                 "Invalid attachment_image_mode "
                 f"{self.attachment_image_mode!r}. Must be one of: auto, native, metadata."
             )
-        if self.background_max_running <= 0 or self.background_max_runtime_s <= 0:
+        if self.background_tasks_enabled and (
+            self.background_max_running <= 0 or self.background_max_runtime_s <= 0
+        ):
             raise ConfigError(
                 "background_max_running and background_max_runtime_s must be positive."
             )

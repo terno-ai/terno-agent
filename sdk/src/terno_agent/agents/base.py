@@ -228,21 +228,15 @@ class BaseAgent:
                     return run
 
                 results: list[ToolResult] = []
-                for tc in assistant.tool_calls:
+                last_call = len(assistant.tool_calls) - 1
+                for index, tc in enumerate(assistant.tool_calls):
                     self.cancel_token.check()
                     self._emit(ToolCallEvent(agent=self.name, call=tc))
                     result = self._guarded_tool_call(tc)
+                    if index == last_call:
+                        result = self._with_notices(result)
                     self._emit(ToolResultEvent(agent=self.name, result=result))
                     results.append(result)
-
-                notices = self._collect_notices()
-                if notices:
-                    last = results[-1]
-                    results[-1] = ToolResult(
-                        call_id=last.call_id,
-                        content=f"{last.content}\n\n<notice>\n{notices}\n</notice>",
-                        is_error=last.is_error,
-                    )
                 self.history.append(ToolResultMessage(results=results))
         except AgentCancelled:
             self._log_turn_tokens(last_iteration, turn_input, turn_output, turn_calls)
@@ -302,6 +296,16 @@ class BaseAgent:
         if self.tool_output_limiter is None or not isinstance(text, str):
             return text
         return self.tool_output_limiter.apply(tc.name, tc.arguments, text)
+
+    def _with_notices(self, result: ToolResult) -> ToolResult:
+        notices = self._collect_notices()
+        if not notices:
+            return result
+        return ToolResult(
+            call_id=result.call_id,
+            content=f"{result.content}\n\n<notice>\n{notices}\n</notice>",
+            is_error=result.is_error,
+        )
 
     def _collect_notices(self) -> str:
         lines: list[str] = []

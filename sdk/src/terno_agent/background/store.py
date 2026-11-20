@@ -158,7 +158,12 @@ class BackgroundTaskStore(ABC):
 
     @abstractmethod
     def _apply_update(self, task_id: str, fields: dict[str, Any]) -> BackgroundTask:
-        """Apply ``fields`` to the stored task and return it."""
+        """Apply ``fields`` to the stored task and return it.
+
+        When ``fields`` finishes the task (a finished ``status``), apply them
+        only if the task is still running, atomically: the first outcome wins
+        even when several threads or processes report one at once.
+        """
 
     @abstractmethod
     def get(self, task_id: str) -> BackgroundTask:
@@ -196,6 +201,8 @@ class InMemoryBackgroundTaskStore(BackgroundTaskStore):
     def _apply_update(self, task_id: str, fields: dict[str, Any]) -> BackgroundTask:
         with self._lock:
             task = self.get(task_id)
+            if fields.get("status") in FINISHED_STATUSES and task.finished:
+                return task
             for key, value in fields.items():
                 setattr(task, key, value)
             return task
