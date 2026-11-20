@@ -14,6 +14,12 @@ import sys
 from pathlib import Path
 
 from terno_agent.agents.base import AgentRun, BaseAgent
+from terno_agent.background import (
+    SANDBOX_RUNNER,
+    BackgroundTasks,
+    SandboxBackgroundRunner,
+    background_tools,
+)
 from terno_agent.config import Config
 from terno_agent.core.cancel import CancelToken
 from terno_agent.core.compaction import CompactionHook
@@ -48,6 +54,7 @@ from terno_agent.rag.embeddings import create_embedding_client
 from terno_agent.rag.vector_store import create_vector_store
 from terno_agent.sandbox.base import Sandbox
 from terno_agent.sandbox.factory import create_sandbox
+from terno_agent.sandbox.local import LocalSandbox
 from terno_agent.skills import ActivateSkillTool, Skill, SkillCatalog, discover_skills
 from terno_agent.tools.ask_user import AskCallback, AskUserTool
 from terno_agent.tools.code_exec import RunPythonTool
@@ -77,6 +84,11 @@ from terno_agent.tools.web import WebFetchTool, WebSearchTool
 # Upper bound on run_python/bash output held in memory when a
 # ToolOutputLimiter is active; the limiter decides what the model sees.
 _RAW_OUTPUT_CAP = 2_000_000
+
+_BACKGROUND_HINT = (
+    "If this work needs longer, start it with run_in_background instead of "
+    "retrying with a longer timeout."
+)
 
 
 class TernoAgent(BaseAgent):
@@ -117,6 +129,7 @@ class TernoAgent(BaseAgent):
         defer_mcp_tools: bool = False,
         defer_mcp_min_tokens: int = 3_000,
         max_tools: int | None = None,
+        background: BackgroundTasks | None = None,
     ) -> None:
         self.workdir = (workdir or Path.cwd()).resolve()
         if max_iterations is not None:
@@ -139,6 +152,10 @@ class TernoAgent(BaseAgent):
         # MEMORY.md index(es) and folder paths into each turn's context.
         self.memory_context = memory_context
         self.ask_callback = ask_callback
+        # Top-level agent only: subagents are not given it, so background
+        # work and its notices stay with the conversation that started them.
+        self.background = background
+        timeout_hint = _BACKGROUND_HINT if background is not None else ""
 
         resolved = _resolve_permissions(
             permission_policy=permission_policy,
@@ -178,6 +195,7 @@ class TernoAgent(BaseAgent):
                 default_timeout_s=bash_timeout_s,
                 cancel_token=token,
                 sandbox=sandbox,
+                timeout_hint=timeout_hint,
                 **raw_output,
             ),
             # MonitorTool(
@@ -217,6 +235,7 @@ class TernoAgent(BaseAgent):
                     sandbox,
                     timeout_s=run_python_timeout_s,
                     cancel_token=token,
+                    timeout_hint=timeout_hint,
                     **raw_output,
                 )
             )
@@ -240,6 +259,8 @@ class TernoAgent(BaseAgent):
             tools.extend(mcp_tools)
         if memory_store is not None:
             tools.append(SearchMemoryTool(memory_store))
+        if background is not None:
+            tools.extend(background_tools(background))
         # File-based memory needs no dedicated tools: the main agent reads and
         # writes it with the ordinary read_file/write_file/edit_file/grep tools
         # above, following the Memory protocol in its system prompt.
@@ -281,6 +302,8 @@ class TernoAgent(BaseAgent):
         )
         if tool_search is not None:
             tool_search.agent = self
+        if background is not None:
+            self.notice_sources.append(background.take_notices)
 
         # Stream task-list changes as events so a host (CLI, terno-ai) can
         # render a live todo list. Only the top-level agent wires this: it
@@ -347,6 +370,10 @@ class TernoAgent(BaseAgent):
                 )
         elif self.memory_context is None:
             print("[memory] no memory_context on this agent — nothing injected")
+        if self.background is not None:
+            block = self.background.context_block()
+            if block:
+                extra_context = block if not extra_context else f"{extra_context}\n\n---\n{block}"
         if content_parts is not None:
             return super().run(task, extra_context=extra_context, content_parts=content_parts)
         return super().run(task, extra_context=extra_context)
@@ -407,6 +434,7 @@ class TernoAgent(BaseAgent):
         sandbox: Sandbox | None = None,
         task_store: TaskStore | None = None,
         extra_skills: list[Skill] | None = None,
+        background: BackgroundTasks | None = None,
     ) -> TernoAgent:
         """Build a :class:`TernoAgent` from a :class:`Config`.
 
@@ -423,6 +451,12 @@ class TernoAgent(BaseAgent):
 
         Pass ``extra_skills`` to add host-built skills that are not read from
         disk; they are not filtered by ``skill_allowlist``.
+
+        Pass ``background`` to supply the background task service (e.g. with a
+        database store and the host's own runners). When omitted and
+        ``config.background_tasks_enabled`` is set, one is built that runs
+        tasks in the sandbox and keeps them in memory. Without a sandbox,
+        background tasks are not offered.
         """
         if not config.llm_api_key:
             raise ConfigError(
@@ -440,6 +474,8 @@ class TernoAgent(BaseAgent):
         )
         sandbox = sandbox if sandbox is not None else _init_sandbox(config)
         resolved_workdir = (Path(workdir) if workdir is not None else Path.cwd()).resolve()
+        if background is None and config.background_tasks_enabled:
+            background = _build_background(config, sandbox, workdir=resolved_workdir)
 
         mcp_manager: McpManager | None = None
         if config.mcp_enabled:
@@ -536,6 +572,7 @@ class TernoAgent(BaseAgent):
             defer_mcp_tools=config.mcp_defer_tools,
             defer_mcp_min_tokens=config.mcp_defer_min_tokens,
             max_tools=config.max_tools,
+            background=background,
             tool_output_limiter=_build_tool_output_limiter(
                 config, workdir=resolved_workdir, sandbox=sandbox
             ),
@@ -545,6 +582,29 @@ class TernoAgent(BaseAgent):
 
     def ask(self, task: str) -> AgentRun:
         return self.run(task)
+
+
+def _build_background(
+    config: Config, sandbox: Sandbox | None, *, workdir: Path
+) -> BackgroundTasks | None:
+    # Never fall back to the host: long-running agent code only runs where
+    # the caller chose to run code. Use sandbox="local" to run it locally.
+    if sandbox is None:
+        _warn(
+            "background_tasks_enabled is set but there is no sandbox; "
+            "background tasks are disabled for this session."
+        )
+        return None
+    runner = SandboxBackgroundRunner(
+        sandbox,
+        root_dir=config.background_dir,
+        cwd=str(workdir) if isinstance(sandbox, LocalSandbox) else "",
+    )
+    return BackgroundTasks(
+        {SANDBOX_RUNNER: runner},
+        max_running=config.background_max_running,
+        max_runtime_s=config.background_max_runtime_s,
+    )
 
 
 def _build_tool_output_limiter(

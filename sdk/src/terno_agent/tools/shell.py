@@ -33,6 +33,7 @@ class BashTool:
         default_timeout_s: int = 120,
         cancel_token: CancelToken | None = None,
         max_output_chars: int = _MAX_OUTPUT_BYTES,
+        timeout_hint: str = "",
     ) -> None:
         self.workdir = workdir
         # Bash is always sandbox-backed. With no sandbox configured we run
@@ -42,6 +43,8 @@ class BashTool:
         self.default_timeout_s = default_timeout_s
         self.cancel_token = cancel_token
         self.max_output_chars = max_output_chars
+        # Appended when a command times out, e.g. to point at run_in_background.
+        self.timeout_hint = timeout_hint
 
     @property
     def schema(self) -> ToolSchema:
@@ -101,7 +104,11 @@ class BashTool:
             extra["cancel_token"] = token
 
         result = run_shell(command, timeout_s=timeout, **extra)
-        suffix = f"\n[timed out after {timeout}s]" if result.timed_out else ""
+        suffix = ""
+        if result.timed_out:
+            suffix = f"\n[timed out after {timeout}s]"
+            if self.timeout_hint:
+                suffix += f"\n{self.timeout_hint}"
         return _format_output(
             exit_code=result.exit_code,
             stdout=result.stdout,

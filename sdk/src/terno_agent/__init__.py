@@ -1,6 +1,12 @@
 """terno-agent: a coding agent CLI + SDK with file ops, shell, sandboxed
 Python, task tracking, subagents, and pluggable MCP servers."""
 
+from terno_agent.background import (
+    BackgroundTask,
+    BackgroundTasks,
+    BackgroundTaskStore,
+    InMemoryBackgroundTaskStore,
+)
 from terno_agent.config import Config
 from terno_agent.core.events import TaskListUpdate
 from terno_agent.core.permissions import (
@@ -19,7 +25,11 @@ from terno_agent.tools.tasks import (
 __version__ = "0.2.0"
 __all__ = [
     "Agent",
+    "BackgroundTask",
+    "BackgroundTaskStore",
+    "BackgroundTasks",
     "Config",
+    "InMemoryBackgroundTaskStore",
     "InMemoryTaskStore",
     "PermissionDecision",
     "PermissionMode",

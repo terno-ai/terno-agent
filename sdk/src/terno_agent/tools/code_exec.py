@@ -19,6 +19,7 @@ class RunPythonTool:
         timeout_s: int = 30,
         cancel_token: CancelToken | None = None,
         max_output_chars: int = 8000,
+        timeout_hint: str = "",
     ) -> None:
         self.sandbox = sandbox
         self.timeout_s = timeout_s
@@ -27,6 +28,8 @@ class RunPythonTool:
         # it when a ToolOutputLimiter is shortening results (head + tail, full
         # text saved), so the limiter sees the whole output, not its head.
         self.max_output_chars = max_output_chars
+        # Appended when a run times out, e.g. to point at run_in_background.
+        self.timeout_hint = timeout_hint
 
     @property
     def schema(self) -> ToolSchema:
@@ -71,4 +74,7 @@ class RunPythonTool:
         if "cancel_token" in params and self.cancel_token is not None:
             kwargs_extra["cancel_token"] = self.cancel_token
         result = self.sandbox.run_python(code, timeout_s=timeout, **kwargs_extra)
-        return result.render(self.max_output_chars)
+        rendered = result.render(self.max_output_chars)
+        if result.timed_out and self.timeout_hint:
+            rendered += f"\n{self.timeout_hint}"
+        return rendered

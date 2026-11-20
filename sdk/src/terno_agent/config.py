@@ -98,6 +98,14 @@ class Config:
     # 128). Caps loading of deferred tools; ``None`` means no cap. Passed to
     # subagents, which may later run on a model with a different limit.
     max_tools: int | None = None
+    # ----- background tasks ------------------------------------------------ #
+    # Offer run_in_background / background_output / stop_background_task.
+    # Needs a sandbox (docker, local, ...): with sandbox "none" they are off.
+    # A host can instead pass its own ``background`` service to from_config.
+    background_tasks_enabled: bool = False
+    background_max_running: int = 3
+    background_max_runtime_s: int = 3 * 3600
+    background_dir: str = ""
     # ----- agent skills ---------------------------------------------------- #
     skills_enabled: bool = True
     skill_paths: list[str] = field(default_factory=list)
@@ -188,6 +196,10 @@ class Config:
                 "Invalid attachment_image_mode "
                 f"{self.attachment_image_mode!r}. Must be one of: auto, native, metadata."
             )
+        if self.background_max_running <= 0 or self.background_max_runtime_s <= 0:
+            raise ConfigError(
+                "background_max_running and background_max_runtime_s must be positive."
+            )
 
     @classmethod
     def from_env(cls) -> Config:
@@ -234,6 +246,11 @@ class Config:
             not in {"false", "0", "no", "off", ""},
             mcp_defer_min_tokens=int(os.getenv("TERNO_MCP_DEFER_MIN_TOKENS", "3000")),
             max_tools=int(os.environ["TERNO_MAX_TOOLS"]) if os.getenv("TERNO_MAX_TOOLS") else None,
+            background_tasks_enabled=os.getenv("TERNO_BACKGROUND_TASKS", "false").lower()
+            not in {"false", "0", "no", "off", ""},
+            background_max_running=int(os.getenv("TERNO_BACKGROUND_MAX_RUNNING", "3")),
+            background_max_runtime_s=int(os.getenv("TERNO_BACKGROUND_MAX_RUNTIME_S", "10800")),
+            background_dir=os.getenv("TERNO_BACKGROUND_DIR", "").strip(),
             skills_enabled=skills_enabled_raw not in {"false", "0", "no", "off"},
             skill_paths=[
                 path.strip()

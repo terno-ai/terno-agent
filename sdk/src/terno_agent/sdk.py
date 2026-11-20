@@ -33,6 +33,7 @@ from terno_agent.core.permissions import (
 from terno_agent.tools.ask_user import AskCallback
 
 if TYPE_CHECKING:
+    from terno_agent.background import BackgroundTasks
     from terno_agent.knowledge.runner import KnowledgeReport
     from terno_agent.knowledge.store import KnowledgeStore
     from terno_agent.sandbox.base import Sandbox
@@ -80,6 +81,7 @@ class Agent:
         is_org_admin: bool | None = None,
         session_id: str | None = None,
         extra_skills: "list[Skill] | None" = None,
+        background: BackgroundTasks | None = None,
     ) -> None:
         self.config = config or _build_config(
             api_key=api_key,
@@ -111,6 +113,7 @@ class Agent:
             task_store=task_store,
             permission_policy=permission_policy,
             extra_skills=extra_skills,
+            background=background,
         )
         self._closed = False
 
@@ -151,6 +154,7 @@ class Agent:
         sandbox: "Sandbox | None" = None,
         task_store: "TaskStore | None" = None,
         extra_skills: "list[Skill] | None" = None,
+        background: BackgroundTasks | None = None,
     ) -> Agent:
         """Build an `Agent` from an explicit `Config`.
 
@@ -169,6 +173,11 @@ class Agent:
 
         Pass ``extra_skills`` to add host-built skills that are not read from
         disk; they are not filtered by ``skill_allowlist``.
+
+        Pass ``background`` to supply the background task service (store and
+        runners). Without it, ``config.background_tasks_enabled`` decides
+        whether the SDK builds a sandbox-backed, in-memory one (only when there
+        is a sandbox).
         """
         return cls(
             config=config,
@@ -182,6 +191,7 @@ class Agent:
             sandbox=sandbox,
             task_store=task_store,
             extra_skills=extra_skills,
+            background=background,
         )
 
     # ----- Inference --------------------------------------------------------- #
