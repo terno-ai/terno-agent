@@ -85,8 +85,8 @@ class BackgroundTasks:
         try:
             handle = backend.start(task, payload, max_runtime_s=self.max_runtime_s)
         except Exception as exc:
-            # Whatever went wrong, the task must not hold a running slot.
             self.store.finish(task.id, FAILED, error=str(exc))
+            self.store.update(task.id, notified=True)
             raise ToolError(f"Could not start the background task: {exc}") from exc
         return self.store.update(task.id, handle=handle)
 

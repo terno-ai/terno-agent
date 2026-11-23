@@ -181,6 +181,7 @@ class TestService:
         with pytest.raises(ToolError, match="sandbox is down"):
             service.start(kind="python", payload="x", description="a")
         assert service.store.list()[0].status == FAILED
+        assert service.take_notices() == []
 
     def test_poll_errors_leave_the_task_running(self):
         service, runner, _ = _service()
