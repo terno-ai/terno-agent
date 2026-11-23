@@ -141,6 +141,26 @@ class TestService:
         assert 'background_output(task_id="1")' in notices[0]
         assert service.take_notices() == []
 
+    def test_finish_time_is_when_the_work_ended(self):
+        service, runner, clock = _service()
+        task = service.start(kind="python", payload="x", description="train")
+        clock.now += 100
+        runner.states[task.handle] = RunnerState(running=False, exit_code=0, ended_at=clock.now - 30)
+        service.refresh(force=True)
+        assert service.store.get(task.id).finished_at == clock.now - 30
+
+    def test_finish_time_stays_between_start_and_now(self):
+        service, runner, clock = _service()
+        early = service.start(kind="python", payload="x", description="a")
+        late = service.start(kind="python", payload="x", description="b")
+        clock.now += 100
+        # Another machine's clock: before the start, or in the future.
+        runner.states[early.handle] = RunnerState(running=False, exit_code=0, ended_at=early.started_at - 50)
+        runner.states[late.handle] = RunnerState(running=False, exit_code=0, ended_at=clock.now + 50)
+        service.refresh(force=True)
+        assert service.store.get(early.id).finished_at == early.started_at
+        assert service.store.get(late.id).finished_at == clock.now
+
     def test_nonzero_exit_and_lost_process_are_failures(self):
         service, runner, _ = _service()
         a = service.start(kind="shell", payload="x", description="a")
@@ -259,6 +279,13 @@ class TestSandboxRunner:
         state = _wait(runner, handle)
         assert state.exit_code == 0
         assert "hello from bg" in runner.read_output(handle, max_chars=1000)
+
+    def test_end_time_is_reported(self, tmp_path):
+        before = time.time()
+        runner, handle = self._start(tmp_path, "python", "print('done')")
+        state = _wait(runner, handle)
+        # Allow for filesystems that keep whole-second times.
+        assert state.ended_at is not None and before - 2 <= state.ended_at <= time.time() + 1
 
     def test_exit_code_is_reported(self, tmp_path):
         runner, handle = self._start(tmp_path, "python", "import sys; print('oops'); sys.exit(3)")
@@ -755,7 +782,9 @@ class TestProcessLifecycle:
 
     def test_wrapper_enforces_the_time_limit(self, tmp_path):
         handle = self._start(tmp_path, "sleep 30", max_runtime_s=1)
-        assert self._wait(handle, timeout=10) == {"running": False, "timed_out": True}
+        reply = self._wait(handle, timeout=10)
+        assert reply["running"] is False and reply["timed_out"] is True
+        assert reply["ended_at"] is not None
         assert self._group_gone(handle)
         assert "time limit" in _sandbox_ops.read_output(handle=handle, max_chars=500)["output"]
 

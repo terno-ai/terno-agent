@@ -127,13 +127,16 @@ class BackgroundTasks:
                     self._stop_quietly(task)
                     self.store.finish(task.id, TIMED_OUT, error=limit)
                 continue
+            ended = _clamp(state.ended_at, task.started_at, now) if state.ended_at is not None else None
             if state.timed_out:
-                self.store.finish(task.id, TIMED_OUT, error=limit)
+                self.store.finish(task.id, TIMED_OUT, error=limit, finished_at=ended)
             elif state.exit_code is None:
-                self.store.finish(task.id, FAILED, error=state.error or "ended unexpectedly")
+                self.store.finish(
+                    task.id, FAILED, error=state.error or "ended unexpectedly", finished_at=ended
+                )
             else:
                 status = COMPLETED if state.exit_code == 0 else FAILED
-                self.store.finish(task.id, status, exit_code=state.exit_code)
+                self.store.finish(task.id, status, exit_code=state.exit_code, finished_at=ended)
 
     # ----- what the agent sees ------------------------------------------ #
 
@@ -222,6 +225,11 @@ class BackgroundTasks:
             self._runner(task).stop(task.handle)
         except Exception as exc:
             logger.warning("Could not stop background task %s: %s", task.id, exc)
+
+
+def _clamp(value: float, low: float, high: float) -> float:
+    """``value`` kept within [low, high] (another machine's clock can be off)."""
+    return min(max(value, low), high)
 
 
 def _duration(seconds: float) -> str:

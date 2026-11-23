@@ -126,14 +126,18 @@ class BackgroundTaskStore(ABC):
         *,
         exit_code: int | None = None,
         error: str = "",
+        finished_at: float | None = None,
     ) -> BackgroundTask:
-        """Mark a task finished unless it already is (first outcome wins)."""
+        """Mark a task finished unless it already is (first outcome wins).
+        ``finished_at`` defaults to now."""
         if status not in FINISHED_STATUSES:
             raise ValueError(f"{status!r} is not a finished status.")
         task = self.get(task_id)
         if task.finished:
             return task
-        return self.update(task_id, status=status, exit_code=exit_code, error=error)
+        return self.update(
+            task_id, status=status, exit_code=exit_code, error=error, finished_at=finished_at
+        )
 
     def running(self) -> list[BackgroundTask]:
         return [t for t in self.list() if t.status == RUNNING]

@@ -102,10 +102,10 @@ def start(
 
 def poll(*, handle: str) -> dict:
     if os.path.exists(os.path.join(handle, TIMED_OUT_FILE)):
-        return {"running": False, "timed_out": True}
+        return {"running": False, "timed_out": True, "ended_at": _ended_at(handle, TIMED_OUT_FILE)}
     exit_code = _read_exit_code(handle)
     if exit_code is not None:
-        return {"running": False, "exit_code": exit_code}
+        return {"running": False, "exit_code": exit_code, "ended_at": _ended_at(handle, EXIT_FILE)}
     pid = _read_pid(handle)
     if pid is None:
         return {"running": False, "error": "task files are missing (was the sandbox restarted?)"}
@@ -113,7 +113,7 @@ def poll(*, handle: str) -> dict:
         return {"running": True}
     exit_code = _read_exit_code(handle)
     if exit_code is not None:
-        return {"running": False, "exit_code": exit_code}
+        return {"running": False, "exit_code": exit_code, "ended_at": _ended_at(handle, EXIT_FILE)}
     return {"running": False, "error": "the process ended without an exit code"}
 
 
@@ -311,6 +311,14 @@ def _read_spec(task_dir: str) -> dict:
 def _read_pid(task_dir: str) -> int | None:
     pid = _read_int(os.path.join(task_dir, PID_FILE))
     return pid if pid is not None and pid > 1 else None
+
+
+def _ended_at(task_dir: str, name: str) -> float | None:
+    """When the work ended: the file recording its end is written right then."""
+    try:
+        return os.path.getmtime(os.path.join(task_dir, name))
+    except OSError:
+        return None
 
 
 def _read_exit_code(task_dir: str) -> int | None:

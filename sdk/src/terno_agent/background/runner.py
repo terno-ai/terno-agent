@@ -33,6 +33,7 @@ class RunnerState:
     # The work outlived its time limit and was stopped.
     timed_out: bool = False
     error: str = ""
+    ended_at: float | None = None
 
 
 class BackgroundRunnerError(Exception):
@@ -161,6 +162,7 @@ class SandboxBackgroundRunner:
             exit_code=int(exit_code) if exit_code is not None else None,
             timed_out=bool(reply.get("timed_out")),
             error=str(reply.get("error") or ""),
+            ended_at=float(reply["ended_at"]) if reply.get("ended_at") is not None else None,
         )
 
     def read_output(self, handle: str, *, max_chars: int) -> str:
