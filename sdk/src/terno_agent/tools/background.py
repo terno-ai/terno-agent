@@ -11,6 +11,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+from terno_agent.background import RUNNING
 from terno_agent.background.service import BackgroundTasks
 from terno_agent.core.exceptions import ToolError
 from terno_agent.core.tool import ToolSchema
@@ -27,24 +28,29 @@ _TASK_ID = {
 _GUIDE = (
     "\n\n## Running in the background\n"
     "Set run_in_background to start the work and return at once with a task "
-    "id while it keeps running. You are told when it finishes, and can then "
-    "read its output with background_output. Work that runs past the time "
-    "limit is stopped.\n"
-    "Use it for:\n"
-    "- Work that will clearly take more than a couple of minutes: training a "
-    "model, processing many files or rows, bulk downloads.\n"
-    "- Something that is not ready yet and has to be checked again later: a "
-    "slow external job, a report still being generated, an error that says "
-    "to retry later. Instead of stopping and asking the user to come back, "
-    "put the retrying in the background run, which can wait and try again "
-    "until it gets a result.\n"
-    "- A run that already hit its time limit.\n"
-    "- The user asks for it to run in the background.\n"
-    "Not for quick work, or when your very next step needs the result.\n"
-    "After starting it, tell the user what is running and carry on or end "
-    "your turn. Don't wait for it yourself with sleep or a polling loop; "
-    "waiting and retrying inside the background run is fine. Save results "
-    "to files and print a short summary."
+    "id while it keeps running. You are told when it finishes. Work that runs "
+    "past the time limit is stopped.\n"
+    "Use it for work that will take more than a couple of minutes, or that is "
+    "not ready yet and has to be tried again later (a slow job, something "
+    "still being prepared, an error that says to retry later). Not for quick "
+    "work, or when your very next step needs the result.\n"
+    "The background code must:\n"
+    "- Stand on its own: load everything it needs.\n"
+    "- Keep going until it has a result: retry until it succeeds or fails in a "
+    "way retrying cannot fix. Don't cap the attempts; the time limit bounds it.\n"
+    "- Save results to files and print a short summary, or a clear error.\n"
+    "After starting it:\n"
+    "- The work belongs to the background run: don't do, retry or test it "
+    "again in the foreground.\n"
+    "- Don't check on it or wait for it (no sleep, no polling, no "
+    "background_output while it runs): you will be told when it finishes.\n"    "- Don't guess or describe its result before you are told it finished.\n"
+    "- Tell the user what is running and end your turn, unless there is other, "
+    "independent work they asked for: do that, then end your turn."
+)
+
+_STILL_RUNNING = (
+    "It is still running: you will be told when it finishes. Don't check on it "
+    "again; tell the user it is running, or carry on with other work."
 )
 
 _TIMEOUT_HINT = (
@@ -100,7 +106,9 @@ class BackgroundOption:
         task = self.tasks.start(kind=self.kind, payload=payload, description=description or "")
         started = (
             f'Started background task {task.id} ("{task.description}"). You will '
-            "be told when it finishes; do not wait or poll for it."
+            "be told when it finishes; do not wait or poll for it, and don't run "
+            "this work again in the foreground. Tell the user what is running and "
+            "end your turn unless you have other, independent work."
         )
         location = self.tasks.output_location(task)
         if location:
@@ -130,8 +138,8 @@ class BackgroundOutputTool:
             name="background_output",
             description=(
                 "Show a background task's status and the latest part of its "
-                "output. Use it when a task has finished, or when the user asks "
-                "how one is going; not in a loop to wait for one."
+                "output. Use it after you were told a task finished, or when "
+                "the user asks how one is going; not to check on or wait for one."
             ),
             parameters={
                 "type": "object",
@@ -156,7 +164,10 @@ class BackgroundOutputTool:
             raise ToolError("max_chars must be a whole number.") from exc
         if not 0 < max_chars <= _MAX_OUTPUT_CHARS:
             raise ToolError(f"max_chars must be between 1 and {_MAX_OUTPUT_CHARS}.")
-        return self.tasks.output(str(task_id), max_chars=max_chars)
+        text = self.tasks.output(str(task_id), max_chars=max_chars)
+        if self.tasks.store.get(str(task_id)).status == RUNNING:
+            text += f"\n{_STILL_RUNNING}"
+        return text
 
 
 @dataclass

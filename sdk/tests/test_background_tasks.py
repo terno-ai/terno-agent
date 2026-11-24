@@ -658,6 +658,26 @@ class TestTernoAgentWiring:
             agent.tools["bash"].run(command="ls", run_in_background=True)
         assert service.store.running() == []
 
+    def test_the_guidance_hands_the_work_to_the_background(self):
+        service, _, _ = _service()
+        agent = TernoAgent(_DummyLLM(), sandbox=LocalSandbox(), background=service)
+        guide = agent.tools["bash"].schema.description
+        for rule in ("Keep going until it has a result", "don't do, retry or test it",
+                     "you will be told when it finishes", "Don't guess or describe its result",
+                     "end your turn"):
+            assert rule in guide
+        started = agent.tools["bash"].run(command="x", run_in_background=True, description="d")
+        assert "don't run this work again in the foreground" in started
+
+    def test_checking_a_running_task_says_it_will_be_told(self):
+        service, runner, _ = _service()
+        agent = TernoAgent(_DummyLLM(), sandbox=LocalSandbox(), background=service)
+        task = service.start(kind="python", payload="x", description="a")
+        output = agent.tools["background_output"]
+        assert "you will be told when it finishes" in output.run(task_id=task.id)
+        runner.states[task.handle] = RunnerState(running=False, exit_code=0)
+        assert "you will be told" not in output.run(task_id=task.id)
+
     def test_python_flag_says_it_is_a_fresh_process(self):
         service, _, _ = _service()
         agent = TernoAgent(_DummyLLM(), sandbox=LocalSandbox(), background=service)
