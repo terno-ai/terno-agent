@@ -5,6 +5,12 @@ from terno_agent.tools.ask_user import (
     Question,
     QuestionOption,
 )
+from terno_agent.tools.background import (
+    BackgroundOption,
+    BackgroundOutputTool,
+    StopBackgroundTaskTool,
+    background_tools,
+)
 from terno_agent.tools.code_exec import RunPythonTool
 from terno_agent.tools.files import EditFileTool, ReadFileTool, WriteFileTool
 from terno_agent.tools.memory import MemoryContextProvider
@@ -24,6 +30,10 @@ from terno_agent.tools.tasks import (
 from terno_agent.tools.web import WebFetchTool, WebSearchTool
 
 __all__ = [
+    "BackgroundOption",
+    "BackgroundOutputTool",
+    "StopBackgroundTaskTool",
+    "background_tools",
     "Answer",
     "AskCallback",
     "AskUserTool",

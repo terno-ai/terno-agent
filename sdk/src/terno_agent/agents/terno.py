@@ -18,7 +18,6 @@ from terno_agent.background import (
     SANDBOX_RUNNER,
     BackgroundTasks,
     SandboxBackgroundRunner,
-    background_tools,
 )
 from terno_agent.config import Config
 from terno_agent.core.cancel import CancelToken
@@ -57,6 +56,7 @@ from terno_agent.sandbox.factory import create_sandbox
 from terno_agent.sandbox.local import LocalSandbox
 from terno_agent.skills import ActivateSkillTool, Skill, SkillCatalog, discover_skills
 from terno_agent.tools.ask_user import AskCallback, AskUserTool
+from terno_agent.tools.background import background_tools
 from terno_agent.tools.code_exec import RunPythonTool
 from terno_agent.tools.files import EditFileTool, ReadFileTool, WriteFileTool
 from terno_agent.tools.memory import MemoryContextProvider
@@ -84,12 +84,6 @@ from terno_agent.tools.web import WebFetchTool, WebSearchTool
 # Upper bound on run_python/bash output held in memory when a
 # ToolOutputLimiter is active; the limiter decides what the model sees.
 _RAW_OUTPUT_CAP = 2_000_000
-
-_BACKGROUND_HINT = (
-    "If this work needs longer, start it with run_in_background instead of "
-    "retrying with a longer timeout."
-)
-
 
 class TernoAgent(BaseAgent):
     name = "terno"
@@ -155,7 +149,6 @@ class TernoAgent(BaseAgent):
         # Top-level agent only: subagents are not given it, so background
         # work and its notices stay with the conversation that started them.
         self.background = background
-        timeout_hint = _BACKGROUND_HINT if background is not None else ""
 
         resolved = _resolve_permissions(
             permission_policy=permission_policy,
@@ -195,7 +188,7 @@ class TernoAgent(BaseAgent):
                 default_timeout_s=bash_timeout_s,
                 cancel_token=token,
                 sandbox=sandbox,
-                timeout_hint=timeout_hint,
+                background=background,
                 **raw_output,
             ),
             # MonitorTool(
@@ -235,7 +228,7 @@ class TernoAgent(BaseAgent):
                     sandbox,
                     timeout_s=run_python_timeout_s,
                     cancel_token=token,
-                    timeout_hint=timeout_hint,
+                    background=background,
                     **raw_output,
                 )
             )

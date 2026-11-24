@@ -20,7 +20,9 @@ from terno_agent.background.runner import BackgroundRunner, OutputFileRunner
 from terno_agent.background.store import (
     COMPLETED,
     FAILED,
+    REPORTED_STATUSES,
     RUNNING,
+    STOP_REQUESTED,
     STOPPED,
     TIMED_OUT,
     BackgroundTask,
@@ -32,6 +34,12 @@ from terno_agent.core.exceptions import ToolError
 logger = logging.getLogger(__name__)
 
 SANDBOX_RUNNER = "sandbox"
+# A task still without a handle this long after it was created never got
+# started (whoever was starting it died). Far above any start call's timeout.
+START_GRACE_S = 600
+# A task out of reach this long past its time limit has been stopped by its
+# own wrapper (which enforces the limit in the sandbox), so it is over.
+DEADLINE_GRACE_S = 600
 # How much of the end of a finished task's output its notice carries.
 NOTICE_TAIL_CHARS = 1500
 
@@ -46,6 +54,7 @@ class BackgroundTasks:
         max_runtime_s: int = 3 * 3600,
         poll_interval_s: float = 15.0,
         clock: Callable[[], float] = time.time,
+        can_start: bool = True,
     ) -> None:
         if not runners:
             raise ValueError("BackgroundTasks needs at least one runner.")
@@ -58,6 +67,9 @@ class BackgroundTasks:
         self.poll_interval_s = poll_interval_s
         self._clock = clock
         self._last_refresh = float("-inf")
+        # False where tasks may be checked and stopped but not started, e.g.
+        # a turn nobody asked for, or a watcher outside any turn.
+        self.can_start = can_start
 
     # ----- lifecycle ---------------------------------------------------- #
 
@@ -70,6 +82,8 @@ class BackgroundTasks:
         runner: str = SANDBOX_RUNNER,
         metadata: dict | None = None,
     ) -> BackgroundTask:
+        if not self.can_start:
+            raise ToolError("Background tasks cannot be started here.")
         backend = self.runners.get(runner)
         if backend is None:
             raise ToolError(f"No background runner named {runner!r}.")
@@ -83,19 +97,32 @@ class BackgroundTasks:
             )
         task = self.store.create(description, kind=kind, runner=runner, metadata=metadata)
         try:
-            handle = backend.start(task, payload, max_runtime_s=self.max_runtime_s)
+            handle = backend.prepare(task)
         except Exception as exc:
-            self.store.finish(task.id, FAILED, error=str(exc))
-            self.store.update(task.id, notified=True)
+            # Nothing can run without a handle. The agent gets the error right
+            # here: nothing more to tell it.
+            self.store.update(task.id, status=FAILED, error=str(exc), notified=True)
             raise ToolError(f"Could not start the background task: {exc}") from exc
-        return self.store.update(task.id, handle=handle)
+        task = self.store.update(task.id, handle=handle)
+        try:
+            backend.start(handle, task, payload, max_runtime_s=self.max_runtime_s)
+        except Exception as exc:
+            # The start may still happen (e.g. its reply was lost): stop it
+            # like any other stop, retried until it is confirmed.
+            task = self.store.update(task.id, error=f"could not start: {exc}")
+            self._stop(task, FAILED)
+            raise ToolError(
+                f"Could not start the background task: {exc}. If any of it ran, it is being stopped."
+            ) from exc
+        return task
 
     def stop(self, task_id: str) -> BackgroundTask:
+        """Stop a task. It is recorded as stopped only once the stop reached
+        the work; otherwise the request is kept and :meth:`refresh` retries it."""
         task = self.store.get(task_id)
         if task.finished:
             return task
-        self._stop_quietly(task)
-        return self.store.update(task.id, status=STOPPED, notified=True)
+        return self._stop(task, STOPPED)
 
     def output(self, task_id: str, *, max_chars: int = 8000) -> str:
         self.refresh(force=True)
@@ -107,36 +134,34 @@ class BackgroundTasks:
         return f"{self.describe(task)}\n--- output ---\n{text or '(no output yet)'}"
 
     def refresh(self, *, force: bool = False) -> None:
-        """Bring running tasks up to date: record finished ones and stop any
-        that ran past the time limit. Throttled unless ``force``."""
+        """Bring running tasks up to date: record finished ones, retry stops
+        that did not get through, and stop any past the time limit. Throttled
+        unless ``force``."""
         now = self._clock()
         if not force and now - self._last_refresh < self.poll_interval_s:
             return
         self._last_refresh = now
-        limit = f"stopped after the {_duration(self.max_runtime_s)} limit"
         for task in self.store.running():
-            state = None
-            if task.handle:
-                try:
-                    state = self._runner(task).poll(task.handle)
-                except Exception as exc:
-                    # Treat as transient: the sandbox may be busy or restarting.
-                    logger.warning("Could not check background task %s: %s", task.id, exc)
-            if state is None or state.running:
-                if task.runtime_s(now) > self.max_runtime_s:
-                    self._stop_quietly(task)
-                    self.store.finish(task.id, TIMED_OUT, error=limit)
+            if not task.handle:
+                if task.runtime_s(now) > START_GRACE_S:
+                    self._record(task, _requested(task) or FAILED, error="it did not finish starting")
                 continue
-            ended = _clamp(state.ended_at, task.started_at, now) if state.ended_at is not None else None
-            if state.timed_out:
-                self.store.finish(task.id, TIMED_OUT, error=limit, finished_at=ended)
-            elif state.exit_code is None:
-                self.store.finish(
-                    task.id, FAILED, error=state.error or "ended unexpectedly", finished_at=ended
-                )
-            else:
-                status = COMPLETED if state.exit_code == 0 else FAILED
-                self.store.finish(task.id, status, exit_code=state.exit_code, finished_at=ended)
+            requested = _requested(task)
+            if requested and self._stop(task, requested).finished:
+                continue
+            try:
+                state = self._runner(task).poll(task.handle)
+            except Exception as exc:
+                logger.warning("Could not check background task %s: %s", task.id, exc)
+                state = None
+            if state is None or state.running:
+                runtime = task.runtime_s(now)
+                if state is None and runtime > self.max_runtime_s + DEADLINE_GRACE_S:
+                    self._record(task, _requested(task) or TIMED_OUT)
+                elif runtime > self.max_runtime_s:
+                    self._stop(task, TIMED_OUT)
+                continue
+            self._record_end(task, state, now)
 
     # ----- what the agent sees ------------------------------------------ #
 
@@ -175,6 +200,8 @@ class BackgroundTasks:
         ran = _duration(task.runtime_s(self._clock()))
         head = f'Background task {task.id} ("{task.description}")'
         if task.status == RUNNING:
+            if task.stop_requested:
+                return f"{head}: stopping (running for {ran}); the stop is retried until it gets through"
             return f"{head}: running for {ran}"
         detail = {
             COMPLETED: "completed",
@@ -218,13 +245,100 @@ class BackgroundTasks:
             raise ToolError(f"No background runner named {task.runner!r}.")
         return backend
 
-    def _stop_quietly(self, task: BackgroundTask) -> None:
+    def _stop(self, task: BackgroundTask, status: str) -> BackgroundTask:
+        """Stop the work and record it ended with ``status`` (STOPPED,
+        TIMED_OUT, or FAILED for a start that failed). The request is saved
+        first, so a check running meanwhile records the same outcome. Until a
+        check confirms the work is not running (no handle yet, the sandbox
+        busy, a start still arriving) it stays requested and the next refresh
+        retries it."""
+        requested = _requested(task)
+        if requested:
+            status = requested
+        else:
+            task = self.store.update(task.id, metadata={**task.metadata, STOP_REQUESTED: status})
         if not task.handle:
-            return
+            return task
+        runner = self._runner(task)
         try:
-            self._runner(task).stop(task.handle)
+            runner.stop(task.handle)
         except Exception as exc:
-            logger.warning("Could not stop background task %s: %s", task.id, exc)
+            logger.warning("Could not stop background task %s yet: %s", task.id, exc)
+            return task
+        try:
+            state = runner.poll(task.handle)
+        except Exception:
+            state = None  # the stop itself got through
+        if state is not None and state.running:
+            return task  # e.g. it started just after the stop: try again
+        if state is not None and _ended_by_itself(state):
+            self._record_end(task, state, self._clock())
+            return self.store.get(task.id)
+        return self._record(task, status)
+
+    def _record_end(self, task: BackgroundTask, state, now: float) -> None:
+        task = self.store.get(task.id)
+        ended = _clamp(state.ended_at, task.started_at, now) if state.ended_at is not None else None
+        if state.stopped:
+            self._record(task, _requested(task) or STOPPED, finished_at=ended)
+        elif state.timed_out:
+            self._record(task, TIMED_OUT, finished_at=ended, natural=True)
+        elif state.exit_code is None:
+            self._record(
+                task, FAILED, error=state.error or "ended unexpectedly", finished_at=ended, natural=True
+            )
+        else:
+            status = COMPLETED if state.exit_code == 0 else FAILED
+            self._record(task, status, exit_code=state.exit_code, finished_at=ended, natural=True)
+
+    def _record(
+        self,
+        task: BackgroundTask,
+        status: str,
+        *,
+        error: str = "",
+        exit_code: int | None = None,
+        finished_at: float | None = None,
+        natural: bool = False,
+    ) -> BackgroundTask:
+        """Record how the task ended; the first outcome recorded wins.
+
+        ``natural`` means the work ended by itself rather than by a stop.
+        Nothing is told about a task someone asked to stop, however it ended
+        (it may have finished just before the stop): its result is no longer
+        wanted, though it can still be read. Nor about a start that failed,
+        which the agent heard about at once, unless the work did run after
+        all. A time-limit stop is told.
+        """
+        requested = _requested(task)
+        told = (
+            status not in REPORTED_STATUSES
+            or requested == STOPPED
+            or (requested == FAILED and not natural)
+        )
+        fields = {"status": status, "finished_at": finished_at, "notified": told}
+        if exit_code is not None:
+            fields["exit_code"] = exit_code
+        if status == TIMED_OUT and not error:
+            error = f"stopped after the {_duration(self.max_runtime_s)} limit"
+        if error:
+            fields["error"] = error  # otherwise keep any recorded already
+        return self.store.update(task.id, **fields)
+
+
+def _ended_by_itself(state) -> bool:
+    """The work ended with an outcome of its own, not because it was stopped."""
+    return not state.running and not state.stopped and (
+        state.exit_code is not None or state.timed_out
+    )
+
+
+def _requested(task: BackgroundTask) -> str | None:
+    """The outcome a pending stop request will record, if there is one."""
+    value = task.metadata.get(STOP_REQUESTED)
+    if not value:
+        return None
+    return value if value in (STOPPED, TIMED_OUT, FAILED) else STOPPED  # once a plain True
 
 
 def _clamp(value: float, low: float, high: float) -> float:

@@ -3,6 +3,7 @@ the agent is told about finished work."""
 
 from __future__ import annotations
 
+import json
 import os
 import sys
 import time
@@ -22,12 +23,13 @@ from terno_agent.background import (
     BackgroundRunnerError,
     BackgroundTasks,
     InMemoryBackgroundTaskStore,
-    RunInBackgroundTool,
     RunnerState,
     SandboxBackgroundRunner,
     _sandbox_ops,
 )
 from terno_agent.background.runner import build_call
+from terno_agent.background.store import STOP_REQUESTED
+from terno_agent.tools.background import BackgroundOption
 from terno_agent.config import Config
 from terno_agent.core.exceptions import ToolError
 from terno_agent.core.messages import (
@@ -49,21 +51,25 @@ class _FakeRunner:
         self.stopped: list[str] = []
         self.fail_start = False
 
-    def start(self, task, payload, *, max_runtime_s):
+    def prepare(self, task):
+        return f"h{task.id}"
+
+    def start(self, handle, task, payload, *, max_runtime_s):
         if self.fail_start:
             raise BackgroundRunnerError("sandbox is down")
-        handle = f"h{task.id}"
         self.states[handle] = RunnerState(running=True)
-        return handle
 
     def poll(self, handle):
-        return self.states[handle]
+        return self.states.get(handle) or RunnerState(running=False, error="task files are missing")
 
     def read_output(self, handle, *, max_chars):
         return f"output of {handle}"[-max_chars:]
 
     def stop(self, handle):
         self.stopped.append(handle)
+        state = self.states.get(handle)
+        if state is None or state.running:
+            self.states[handle] = RunnerState(running=False, stopped=True)
 
 
 class _Clock:
@@ -266,13 +272,21 @@ def _wait_for_file(path, timeout=15.0) -> str:
     raise AssertionError(f"{path} never appeared")
 
 
+def _ops_start(root, name, **start_args):
+    handle = _sandbox_ops.prepare(root=root, name=name)["handle"]
+    assert _sandbox_ops.start(handle=handle, **start_args)["started"]
+    return handle
+
+
 class TestSandboxRunner:
     def _start(self, tmp_path, kind, payload, task_id="1"):
         store = InMemoryBackgroundTaskStore()
         runner = SandboxBackgroundRunner(LocalSandbox(), root_dir=str(tmp_path), cwd=str(tmp_path))
         task = store.create("t", kind=kind, runner="sandbox")
         task.id = task_id
-        return runner, runner.start(task, payload, max_runtime_s=600)
+        handle = runner.prepare(task)
+        runner.start(handle, task, payload, max_runtime_s=600)
+        return runner, handle
 
     def test_python_runs_detached_and_output_is_kept(self, tmp_path):
         runner, handle = self._start(tmp_path, "python", "print('hello from bg')")
@@ -323,18 +337,19 @@ class TestSandboxRunner:
         # it. The work runs where the call ran; the wrapper in its task dir.
         runner = SandboxBackgroundRunner(LocalSandbox(), root_dir=str(tmp_path))
         task = InMemoryBackgroundTaskStore().create("t", kind="python", runner="sandbox")
-        handle = runner.start(task, "import os; print(os.getcwd())", max_runtime_s=600)
+        handle = runner.prepare(task)
+        runner.start(handle, task, "import os; print(os.getcwd())", max_runtime_s=600)
         assert _wait(runner, handle).exit_code == 0
         output = runner.read_output(handle, max_chars=1000).strip()
         assert os.path.realpath(output) == os.path.realpath(os.getcwd())
 
     def test_missing_cwd_falls_back_to_the_task_directory(self, tmp_path):
         gone = tmp_path / "gone"
-        handle = _sandbox_ops.start(
-            root=str(tmp_path / "bg"), name="1-x", kind="python",
+        handle = _ops_start(
+            str(tmp_path / "bg"), "1-x", kind="python",
             payload="import os; print(os.getcwd())", cwd=str(gone), max_log_bytes=10_000,
             max_runtime_s=600,
-        )["handle"]
+        )
         deadline = time.time() + 15
         while _sandbox_ops.poll(handle=handle)["running"] and time.time() < deadline:
             time.sleep(0.1)
@@ -375,15 +390,25 @@ def _wait_dead(pid, timeout=10.0) -> bool:
 class TestSandboxOps:
     def _start(self, tmp_path, kind, payload, max_log_bytes=1_000_000, name=None,
                max_runtime_s=600):
-        return _sandbox_ops.start(
-            root=str(tmp_path),
-            name=name or f"7-{uuid.uuid4().hex[:8]}",
+        return _ops_start(
+            str(tmp_path),
+            name or f"7-{uuid.uuid4().hex[:8]}",
             kind=kind,
             payload=payload,
             cwd=str(tmp_path),
             max_log_bytes=max_log_bytes,
             max_runtime_s=max_runtime_s,
-        )["handle"]
+        )
+
+    def test_a_start_after_its_stop_never_runs(self, tmp_path):
+        handle = _sandbox_ops.prepare(root=str(tmp_path), name="9-late")["handle"]
+        _sandbox_ops.stop(handle=handle)  # the host gave up on the start
+        reply = _sandbox_ops.start(
+            handle=handle, kind="shell", payload="echo ran", cwd=str(tmp_path),
+            max_log_bytes=1000, max_runtime_s=60,
+        )
+        assert reply == {"started": False}
+        assert _sandbox_ops.poll(handle=handle)["stopped"] is True
 
     def _wait(self, handle):
         deadline = time.time() + 15
@@ -559,6 +584,10 @@ class TestAgentNotices:
         assert agent.run("hi").answer == "done"
 
 
+def _offers_flag(tool) -> bool:
+    return "run_in_background" in tool.schema.parameters["properties"]
+
+
 class _DummyLLM:
     model = "dummy"
 
@@ -569,17 +598,69 @@ class _DummyLLM:
 class TestTernoAgentWiring:
     def test_tools_off_by_default(self):
         agent = TernoAgent(_DummyLLM())
-        assert "run_in_background" not in agent.tools
-        assert agent.tools["bash"].timeout_hint == ""
+        assert "background_output" not in agent.tools
+        assert not _offers_flag(agent.tools["bash"])
 
     def test_tools_and_hints_with_a_service(self):
         service, _, _ = _service()
         agent = TernoAgent(_DummyLLM(), sandbox=LocalSandbox(), background=service)
-        for name in ("run_in_background", "background_output", "stop_background_task"):
+        assert "run_in_background" not in agent.tools
+        for name in ("background_output", "stop_background_task"):
             assert name in agent.tools
-        assert "run_in_background" in agent.tools["bash"].timeout_hint
-        assert "run_in_background" in agent.tools["run_python"].timeout_hint
+        assert _offers_flag(agent.tools["bash"])
+        assert _offers_flag(agent.tools["run_python"])
         assert service.take_notices in agent.notice_sources
+
+    def test_flag_hidden_where_tasks_cannot_start(self):
+        service, _, _ = _service(can_start=False)
+        agent = TernoAgent(_DummyLLM(), sandbox=LocalSandbox(), background=service)
+        assert not _offers_flag(agent.tools["bash"])
+        assert "background_output" in agent.tools
+        with pytest.raises(ToolError):
+            agent.tools["bash"].run(command="ls", run_in_background=True)
+        with pytest.raises(ToolError):
+            service.start(kind="shell", payload="ls", description="x")
+
+    def test_flag_starts_the_same_work_in_the_background(self):
+        service, _, _ = _service()
+        agent = TernoAgent(_DummyLLM(), sandbox=LocalSandbox(), background=service)
+        reply = agent.tools["run_python"].run(
+            code="print(1)", run_in_background=True, description="count rows"
+        )
+        assert 'Started background task 1 ("count rows")' in reply
+        reply = agent.tools["bash"].run(
+            command="make report", run_in_background=True, description="build report"
+        )
+        assert 'Started background task 2 ("build report")' in reply
+        tasks = {t.id: t for t in service.store.running()}
+        assert (tasks["1"].kind, tasks["2"].kind) == ("python", "shell")
+
+    def test_background_run_needs_a_description(self):
+        service, _, _ = _service()
+        agent = TernoAgent(_DummyLLM(), sandbox=LocalSandbox(), background=service)
+        with pytest.raises(ToolError):
+            agent.tools["bash"].run(command="ls", run_in_background=True)
+        assert service.store.running() == []
+
+    def test_python_flag_says_it_is_a_fresh_process(self):
+        service, _, _ = _service()
+        agent = TernoAgent(_DummyLLM(), sandbox=LocalSandbox(), background=service)
+        assert "fresh Python process" in agent.tools["run_python"].schema.description
+        assert "fresh Python process" not in agent.tools["bash"].schema.description
+
+    def test_repeated_timeouts_get_a_firmer_hint(self):
+        from terno_agent.sandbox.base import ExecutionResult
+
+        class _Slow:
+            def run_python(self, code, *, timeout_s=30):
+                return ExecutionResult(stdout="", stderr="", exit_code=1, timed_out=True)
+
+        service, _, _ = _service()
+        tool = TernoAgent(_DummyLLM(), sandbox=_Slow(), background=service).tools["run_python"]
+        first = tool.run(code="x")
+        second = tool.run(code="x")
+        assert "run_in_background" in first and "2 times" not in first
+        assert "2 times" in second and "foreground again" in second
 
     @staticmethod
     def _config(monkeypatch, **overrides) -> Config:
@@ -601,25 +682,14 @@ class TestTernoAgentWiring:
         config = self._config(monkeypatch, background_max_running=2)
         sandbox = LocalSandbox()
         agent = TernoAgent.from_config(config, sandbox=sandbox)
-        assert "run_in_background" in agent.tools
+        assert _offers_flag(agent.tools["bash"])
         assert agent.background.max_running == 2
         assert agent.background.runners["sandbox"].sandbox is sandbox
 
     def test_never_falls_back_to_the_host(self, monkeypatch):
         agent = TernoAgent.from_config(self._config(monkeypatch))
         assert agent.background is None
-        assert "run_in_background" not in agent.tools
-        assert agent.tools["bash"].timeout_hint == ""
-
-    def test_run_in_background_needs_exactly_one_payload(self):
-        service, _, _ = _service()
-        tool = TernoAgent(_DummyLLM(), background=service).tools["run_in_background"]
-        with pytest.raises(ToolError):
-            tool.run(description="x")
-        with pytest.raises(ToolError):
-            tool.run(description="x", code="1", command="ls")
-
-        assert "Started background task 1" in tool.run(description="x", code="print(1)")
+        assert not _offers_flag(agent.tools["bash"])
 
     def test_background_output_caps_max_chars(self):
         service, _, _ = _service()
@@ -679,12 +749,41 @@ class TestServiceFailures:
         assert service.store.get(task.id).status == RUNNING
         assert "a" in service.context_block()
 
-    def test_stop_is_recorded_even_if_the_sandbox_fails(self):
+    def test_a_stop_that_fails_is_kept_and_retried(self):
         service, runner, _ = _service()
         task = service.start(kind="python", payload="x", description="a")
-        runner.stop = mock.Mock(side_effect=RuntimeError("gone"))
-        stopped = service.stop(task.id)
+        real_stop = runner.stop
+        runner.stop = mock.Mock(side_effect=RuntimeError("busy"))
+        pending = service.stop(task.id)
+        assert (pending.status, pending.stop_requested) == (RUNNING, True)
+        assert "stopping" in service.describe(pending)
+        runner.stop = real_stop
+        service.refresh(force=True)
+        stopped = service.store.get(task.id)
         assert (stopped.status, stopped.notified) == (STOPPED, True)
+        assert runner.stopped == [task.handle]
+
+    def test_work_with_no_handle_yet_is_stopped_once_it_has_one(self):
+        service, runner, _ = _service()
+        task = service.store.create("a", kind="python", runner="sandbox")
+        assert service.stop(task.id).stop_requested
+        service.store.update(task.id, handle="h9")
+        service.refresh(force=True)
+        assert service.store.get(task.id).status == STOPPED
+        assert runner.stopped == ["h9"]
+
+    def test_time_limit_stop_that_fails_still_ends_as_timed_out(self):
+        service, runner, clock = _service(max_runtime_s=60)
+        task = service.start(kind="python", payload="x", description="slow")
+        real_stop = runner.stop
+        runner.stop = mock.Mock(side_effect=RuntimeError("busy"))
+        clock.now += 61
+        service.refresh(force=True)
+        assert service.store.get(task.id).status == RUNNING
+        runner.stop = real_stop
+        service.refresh(force=True)
+        assert service.store.get(task.id).status == TIMED_OUT
+        assert "timed out" in service.take_notices()[0]
 
     def test_stop_never_hides_a_finish_that_won(self):
         store = InMemoryBackgroundTaskStore()
@@ -693,6 +792,141 @@ class TestServiceFailures:
         store.update(task.id, status=STOPPED, notified=True)
         got = store.get(task.id)
         assert (got.status, got.notified) == (COMPLETED, False)
+
+
+class TestStopOutcomes:
+    def test_a_start_that_never_saved_its_handle_fails_after_the_grace(self):
+        from terno_agent.background.service import START_GRACE_S
+
+        service, _, clock = _service()
+        task = service.store.create("a", kind="python", runner="sandbox")
+        service.refresh(force=True)
+        assert service.store.get(task.id).status == RUNNING
+        clock.now += START_GRACE_S + 1
+        service.refresh(force=True)
+        failed = service.store.get(task.id)
+        assert (failed.status, failed.error) == (FAILED, "it did not finish starting")
+
+    def test_a_stop_of_a_start_that_never_saved_its_handle_ends_stopped(self):
+        from terno_agent.background.service import START_GRACE_S
+
+        service, _, clock = _service()
+        task = service.store.create("a", kind="python", runner="sandbox")
+        service.stop(task.id)
+        clock.now += START_GRACE_S + 1
+        service.refresh(force=True)
+        assert service.store.get(task.id).status == STOPPED
+        assert service.take_notices() == []
+
+    def test_work_seen_ending_from_a_stop_is_recorded_stopped_not_failed(self):
+        # Another process is stopping it; this check only sees it end.
+        service, runner, _ = _service()
+        task = service.start(kind="python", payload="x", description="a")
+        runner.states[task.handle] = RunnerState(running=False, stopped=True, exit_code=-15)
+        service.refresh(force=True)
+        assert service.store.get(task.id).status == STOPPED
+        assert service.take_notices() == []
+
+    def test_stop_saves_its_outcome_before_stopping(self):
+        service, runner, _ = _service()
+        task = service.start(kind="python", payload="x", description="a")
+        seen = []
+        runner.stop = lambda handle: seen.append(service.store.get(task.id).stop_requested)
+        service.stop(task.id)
+        assert seen == [True]
+
+    def test_work_that_ended_by_itself_keeps_its_outcome_when_stopped(self):
+        service, runner, _ = _service()
+        task = service.start(kind="python", payload="x", description="a")
+        runner.states[task.handle] = RunnerState(running=False, exit_code=0)
+        assert service.stop(task.id).status == COMPLETED
+        # Its result was no longer wanted: kept, but not announced.
+        assert service.take_notices() == []
+
+    def test_work_ending_by_itself_after_a_stop_request_is_not_announced(self):
+        # The stop was asked for elsewhere (an edit) after this check loaded it.
+        service, runner, _ = _service()
+        task = service.start(kind="python", payload="x", description="a")
+        service.store.update(task.id, metadata={STOP_REQUESTED: STOPPED})
+        runner.states[task.handle] = RunnerState(running=False, exit_code=0)
+        service._record_end(task, runner.states[task.handle], time.time())
+        assert service.store.get(task.id).status == COMPLETED
+        assert service.take_notices() == []
+
+    def test_time_limit_stop_still_announces_a_natural_end(self):
+        service, runner, clock = _service(max_runtime_s=60)
+        task = service.start(kind="python", payload="x", description="a")
+        runner.states[task.handle] = RunnerState(running=False, exit_code=0)
+        service._stop(task, TIMED_OUT)
+        assert "completed" in service.take_notices()[0]
+
+    def test_work_out_of_reach_past_its_deadline_is_recorded_timed_out(self):
+        from terno_agent.background.service import DEADLINE_GRACE_S
+
+        service, runner, clock = _service(max_runtime_s=60)
+        task = service.start(kind="python", payload="x", description="slow")
+        runner.poll = mock.Mock(side_effect=RuntimeError("unreachable"))
+        runner.stop = mock.Mock(side_effect=RuntimeError("unreachable"))
+        clock.now += 61
+        service.refresh(force=True)
+        assert service.store.get(task.id).status == RUNNING  # still trying
+        clock.now += DEADLINE_GRACE_S
+        service.refresh(force=True)
+        assert service.store.get(task.id).status == TIMED_OUT
+
+    def test_failed_start_is_written_once_and_already_told(self):
+        service, runner, _ = _service()
+        runner.fail_start = True
+        seen = []
+        service.store.set_on_change(lambda t: seen.append((t.status, t.notified)))
+        with pytest.raises(ToolError):
+            service.start(kind="python", payload="x", description="a")
+        assert seen[-1] == (FAILED, True)
+        assert (RUNNING, False) in seen and (FAILED, False) not in seen
+
+    def _lost_start(self, service, runner, ran):
+        """A start whose reply is lost; ``ran`` is what the work did anyway."""
+        def start(handle, task, payload, *, max_runtime_s):
+            if ran is not None:
+                runner.states[handle] = ran
+            raise BackgroundRunnerError("reply lost")
+
+        runner.start = start
+        with pytest.raises(ToolError, match="being stopped"):
+            service.start(kind="python", payload="x", description="a")
+        return service.store.list()[-1]
+
+    def test_lost_start_that_ran_is_stopped_and_recorded_failed(self):
+        service, runner, _ = _service()
+        task = self._lost_start(service, runner, RunnerState(running=True))
+        task = service.store.get(task.id)
+        assert runner.stopped == [task.handle]
+        assert (task.status, task.notified) == (FAILED, True)
+        assert "could not start" in task.error
+
+    def test_lost_start_is_stopped_once_the_sandbox_answers(self):
+        service, runner, _ = _service()
+        real_stop = runner.stop
+        runner.stop = mock.Mock(side_effect=RuntimeError("busy"))
+        task = self._lost_start(service, runner, RunnerState(running=True))
+        assert service.store.get(task.id).status == RUNNING
+        runner.stop = real_stop
+        service.refresh(force=True)
+        assert service.store.get(task.id).status == FAILED
+        assert service.take_notices() == []  # the agent heard at once
+
+    def test_lost_start_that_finished_is_announced(self):
+        # It did run after all: the agent was told it failed, so say so.
+        service, runner, _ = _service()
+        task = self._lost_start(service, runner, RunnerState(running=False, exit_code=0))
+        assert service.store.get(task.id).status == COMPLETED
+        assert "completed" in service.take_notices()[0]
+
+    def test_long_description_is_cut(self):
+        from terno_agent.background.store import MAX_DESCRIPTION_CHARS
+
+        task = InMemoryBackgroundTaskStore().create("x" * 1000, kind="python", runner="sandbox")
+        assert len(task.description) == MAX_DESCRIPTION_CHARS
 
 
 class TestRunnerErrors:
@@ -716,28 +950,31 @@ class TestRunnerErrors:
         with pytest.raises(BackgroundRunnerError, match="bad reply"):
             SandboxBackgroundRunner(Garbled()).poll("/x")
 
-    def test_failed_start_stops_whatever_did_start(self):
+    def test_start_runs_in_the_prepared_handle(self):
         calls = []
 
-        class LostReply:
+        class Sandbox:
             def run_python(self, code, **kwargs):
                 calls.append(code)
-                raise TimeoutError("reply lost")
+                from terno_agent.sandbox.base import ExecutionResult
 
-        runner = SandboxBackgroundRunner(LostReply(), root_dir="/r")
+                reply = {"handle": "/r/1-x"} if "'prepare'" in code else {"started": True}
+                return ExecutionResult(stdout=_sandbox_ops.MARKER + json.dumps(reply), stderr="", exit_code=0)
+
+        runner = SandboxBackgroundRunner(Sandbox(), root_dir="/r")
         task = InMemoryBackgroundTaskStore().create("t", kind="python", runner="sandbox")
-        with pytest.raises(BackgroundRunnerError):
-            runner.start(task, "print(1)", max_runtime_s=60)
-        assert len(calls) == 2 and "'stop'" in calls[1]
+        handle = runner.prepare(task)
+        runner.start(handle, task, "print(1)", max_runtime_s=60)
+        assert handle == "/r/1-x" and "/r/1-x" in calls[1]
 
 
 @posix_only
 class TestProcessLifecycle:
     def _start(self, tmp_path, payload, kind="shell", max_runtime_s=600):
-        return _sandbox_ops.start(
-            root=str(tmp_path), name=f"t-{uuid.uuid4().hex[:8]}", kind=kind, payload=payload,
+        return _ops_start(
+            str(tmp_path), f"t-{uuid.uuid4().hex[:8]}", kind=kind, payload=payload,
             cwd=str(tmp_path), max_log_bytes=100_000, max_runtime_s=max_runtime_s,
-        )["handle"]
+        )
 
     def _wait(self, handle, timeout=15.0):
         deadline = time.time() + timeout
@@ -778,7 +1015,7 @@ class TestProcessLifecycle:
         time.sleep(0.5)
         _sandbox_ops.stop(handle=handle, grace_s=2)
         reply = self._wait(handle)
-        assert reply.get("exit_code") not in (None, 0)
+        assert reply["stopped"] and reply.get("exit_code") not in (None, 0)
 
     def test_wrapper_enforces_the_time_limit(self, tmp_path):
         handle = self._start(tmp_path, "sleep 30", max_runtime_s=1)
@@ -869,16 +1106,14 @@ class TestRicherNotices:
                 return f"/bg/{handle}/output.log"
 
         service = BackgroundTasks({"sandbox": FileRunner()}, poll_interval_s=0)
-        tool = RunInBackgroundTool(service)
-        assert "Its output is written to /bg/h1/output.log." in tool.run(
-            description="x", code="print(1)"
-        )
+        option = BackgroundOption(service, kind="python")
+        assert "Its output is written to /bg/h1/output.log." in option.start("print(1)", "x")
         service.runners["sandbox"].states["h1"] = RunnerState(running=False, exit_code=0)
         assert "or open /bg/h1/output.log" in service.take_notices()[0]
 
     def test_no_file_named_for_runners_without_one(self):
         service, _, _ = _service()
-        assert "written to" not in RunInBackgroundTool(service).run(description="x", code="1")
+        assert "written to" not in BackgroundOption(service, kind="python").start("1", "x")
 
     def test_sandbox_runner_output_path_follows_the_sandbox_style(self):
         runner = SandboxBackgroundRunner(LocalSandbox())

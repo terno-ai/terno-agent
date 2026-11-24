@@ -20,7 +20,7 @@ from functools import cache
 from typing import Protocol, runtime_checkable
 
 from terno_agent.background import _sandbox_ops
-from terno_agent.background.store import BackgroundTask
+from terno_agent.background.store import PYTHON, SHELL, BackgroundTask
 from terno_agent.sandbox.base import Sandbox
 from terno_agent.sandbox.local import LocalSandbox
 
@@ -32,6 +32,7 @@ class RunnerState:
     exit_code: int | None = None
     # The work outlived its time limit and was stopped.
     timed_out: bool = False
+    stopped: bool = False
     error: str = ""
     ended_at: float | None = None
 
@@ -42,10 +43,16 @@ class BackgroundRunnerError(Exception):
 
 @runtime_checkable
 class BackgroundRunner(Protocol):
-    def start(self, task: BackgroundTask, payload: str, *, max_runtime_s: float) -> str:
+    def prepare(self, task: BackgroundTask) -> str:
+        """Reserve where the task will run and return its handle for the
+        other calls. Nothing runs yet: the handle is saved first, so work
+        whose start reply is lost can still be checked and stopped."""
+        ...
+
+    def start(self, handle: str, task: BackgroundTask, payload: str, *, max_runtime_s: float) -> None:
         """Start ``payload`` (code or a command, per ``task.kind``) without
-        waiting for it; return a handle for the other calls. The runner should
-        stop the work itself after ``max_runtime_s``."""
+        waiting for it. The runner should stop the work itself after
+        ``max_runtime_s``, and must not start it once ``stop(handle)`` ran."""
         ...
 
     def poll(self, handle: str) -> RunnerState: ...
@@ -127,32 +134,27 @@ class SandboxBackgroundRunner:
         self.call_timeout_s = call_timeout_s
         self.max_log_bytes = max_log_bytes
 
-    def start(self, task: BackgroundTask, payload: str, *, max_runtime_s: float) -> str:
-        if task.kind not in ("python", "shell"):
+    def prepare(self, task: BackgroundTask) -> str:
+        if task.kind not in (PYTHON, SHELL):
             raise BackgroundRunnerError(f"Unsupported background task kind: {task.kind!r}")
-        # Named here, so work whose start reply is lost can still be stopped.
         name = f"{_safe_name(task.id)}-{uuid.uuid4().hex[:12]}"
-        try:
-            reply = self._call(
-                "start",
-                root=self.root_dir,
-                name=name,
-                kind=task.kind,
-                payload=payload,
-                cwd=self.cwd,
-                max_log_bytes=self.max_log_bytes,
-                max_runtime_s=max_runtime_s,
-            )
-            handle = reply.get("handle")
-            if not handle:
-                raise BackgroundRunnerError("The sandbox did not return a task handle.")
-            return str(handle)
-        except BackgroundRunnerError:
-            try:
-                self._call("stop", root=self.root_dir, name=name)
-            except BackgroundRunnerError:
-                pass
-            raise
+        handle = self._call("prepare", root=self.root_dir, name=name).get("handle")
+        if not handle:
+            raise BackgroundRunnerError("The sandbox did not return a task handle.")
+        return str(handle)
+
+    def start(self, handle: str, task: BackgroundTask, payload: str, *, max_runtime_s: float) -> None:
+        reply = self._call(
+            "start",
+            handle=handle,
+            kind=task.kind,
+            payload=payload,
+            cwd=self.cwd,
+            max_log_bytes=self.max_log_bytes,
+            max_runtime_s=max_runtime_s,
+        )
+        if not reply.get("started"):
+            raise BackgroundRunnerError("It was stopped before it started.")
 
     def poll(self, handle: str) -> RunnerState:
         reply = self._call("poll", handle=handle)
@@ -161,6 +163,7 @@ class SandboxBackgroundRunner:
             running=bool(reply.get("running")),
             exit_code=int(exit_code) if exit_code is not None else None,
             timed_out=bool(reply.get("timed_out")),
+            stopped=bool(reply.get("stopped")),
             error=str(reply.get("error") or ""),
             ended_at=float(reply["ended_at"]) if reply.get("ended_at") is not None else None,
         )

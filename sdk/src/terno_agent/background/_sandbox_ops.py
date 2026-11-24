@@ -5,7 +5,8 @@ sends this module's source through ``run_python`` and calls :func:`dispatch`.
 It must therefore stay self-contained: standard library only, nothing from
 ``terno_agent``, and syntax the sandbox's Python can run (3.8+).
 
-Each task has its own directory, named by the host::
+Each task has its own directory, made by :func:`prepare` and named by the
+host::
 
     <root>/<name>/
         _sandbox_ops.py   copy of this module; runs the task detached
@@ -13,6 +14,8 @@ Each task has its own directory, named by the host::
         pid               pid of the detached wrapper (leads its process group)
         output.log        combined stdout/stderr, trimmed to its tail if large
         timed_out         written when the wrapper stopped the work at its deadline
+        stopped           written by stop(): before it kills the work, or so
+                          work not started yet never starts
         exit_code         written when the work ends (always, even on errors)
 
 The wrapper stays up for the task's lifetime: it copies output to the log,
@@ -39,6 +42,7 @@ LOG_FILE = "output.log"
 PID_FILE = "pid"
 EXIT_FILE = "exit_code"
 TIMED_OUT_FILE = "timed_out"
+STOPPED_FILE = "stopped"
 SPEC_FILE = "spec.json"
 MODULE_FILE = "_sandbox_ops.py"
 
@@ -60,21 +64,30 @@ _WINDOWS_NO_WINDOW = 0x08000000
 # --------------------------------------------------------------------------- #
 
 
+def prepare(*, root: str, name: str) -> dict:
+    """Make the task's directory and return its handle. Nothing runs yet: the
+    host saves the handle first, so it can always stop what it starts."""
+    root = _prepare_root(root)
+    _prune(root)
+    task_dir = os.path.join(root, name)
+    os.mkdir(task_dir)
+    return {"handle": task_dir}
+
+
 def start(
     *,
-    root: str,
-    name: str,
+    handle: str,
     kind: str,
     payload: str,
     cwd: str,
     max_log_bytes: int,
     max_runtime_s: float,
 ) -> dict:
-    """Start the work detached and return its handle (the task directory)."""
-    root = _prepare_root(root)
-    _prune(root)
-    task_dir = os.path.join(root, name)
-    os.mkdir(task_dir)
+    """Start the work detached in its prepared directory, unless it was
+    stopped already (a start that arrives late, after the host gave up)."""
+    task_dir = handle
+    if os.path.exists(os.path.join(task_dir, STOPPED_FILE)):
+        return {"started": False}
 
     spec = {
         "argv": _command(task_dir, kind, payload),
@@ -97,24 +110,30 @@ def start(
         [sys.executable, os.path.join(task_dir, MODULE_FILE), "wrap", task_dir], **options
     )
     _write_atomic(os.path.join(task_dir, PID_FILE), str(wrapper.pid))
-    return {"handle": task_dir}
+    return {"started": True}
 
 
 def poll(*, handle: str) -> dict:
     if os.path.exists(os.path.join(handle, TIMED_OUT_FILE)):
         return {"running": False, "timed_out": True, "ended_at": _ended_at(handle, TIMED_OUT_FILE)}
     exit_code = _read_exit_code(handle)
-    if exit_code is not None:
-        return {"running": False, "exit_code": exit_code, "ended_at": _ended_at(handle, EXIT_FILE)}
-    pid = _read_pid(handle)
-    if pid is None:
-        return {"running": False, "error": "task files are missing (was the sandbox restarted?)"}
-    if _wrapper_alive(pid, handle):
-        return {"running": True}
-    exit_code = _read_exit_code(handle)
-    if exit_code is not None:
-        return {"running": False, "exit_code": exit_code, "ended_at": _ended_at(handle, EXIT_FILE)}
-    return {"running": False, "error": "the process ended without an exit code"}
+    if exit_code is None:
+        pid = _read_pid(handle)
+        if pid is None:
+            if os.path.exists(os.path.join(handle, STOPPED_FILE)):
+                return {"running": False, "stopped": True, "ended_at": _ended_at(handle, STOPPED_FILE)}
+            return {"running": False, "error": "task files are missing (was the sandbox restarted?)"}
+        if _wrapper_alive(pid, handle):
+            return {"running": True}
+        exit_code = _read_exit_code(handle)
+    if os.path.exists(os.path.join(handle, STOPPED_FILE)):
+        reply = {"running": False, "stopped": True, "ended_at": _ended_at(handle, STOPPED_FILE)}
+        if exit_code is not None:
+            reply["exit_code"] = exit_code
+        return reply
+    if exit_code is None:
+        return {"running": False, "error": "the process ended without an exit code"}
+    return {"running": False, "exit_code": exit_code, "ended_at": _ended_at(handle, EXIT_FILE)}
 
 
 def read_output(*, handle: str, max_chars: int) -> dict:
@@ -132,21 +151,22 @@ def read_output(*, handle: str, max_chars: int) -> dict:
     return {"output": tail, "truncated": truncated}
 
 
-def stop(
-    *, handle: str = "", root: str = "", name: str = "", grace_s: float = STOP_GRACE_S
-) -> dict:
-    """Stop the task's whole process group: politely, then by force.
-
-    Takes the handle, or the root and name it was started with (to stop work
-    whose start reply was lost).
-    """
-    task_dir = handle or os.path.join(_prepare_root(root), name)
-    pid = _read_pid(task_dir)
+def stop(*, handle: str, grace_s: float = STOP_GRACE_S) -> dict:
+    """Stop the task's whole process group: politely, then by force. Work
+    that has not started yet is marked so it never does."""
+    task_dir = handle
     # Once it has finished, its pid may belong to another process.
-    if pid is None or _read_exit_code(task_dir) is not None:
+    if _read_exit_code(task_dir) is not None:
+        return {}
+    pid = _read_pid(task_dir)
+    if pid is None:
+        if os.path.isdir(task_dir):
+            _write_atomic(os.path.join(task_dir, STOPPED_FILE), "1")
         return {}
     if not _wrapper_alive(pid, task_dir):
         return {}
+
+    _write_atomic(os.path.join(task_dir, STOPPED_FILE), "1")
     if _IS_WINDOWS:
         subprocess.run(["taskkill", "/F", "/T", "/PID", str(pid)], capture_output=True)
         return {}
@@ -154,7 +174,13 @@ def stop(
     return {}
 
 
-OPERATIONS = {"start": start, "poll": poll, "read_output": read_output, "stop": stop}
+OPERATIONS = {
+    "prepare": prepare,
+    "start": start,
+    "poll": poll,
+    "read_output": read_output,
+    "stop": stop,
+}
 
 
 def dispatch(operation: str, args_json: str) -> None:
@@ -183,6 +209,9 @@ def wrap(task_dir: str) -> None:
 def _run_work(task_dir: str) -> int:
     spec = _read_spec(task_dir)
     log = _Log(os.path.join(task_dir, LOG_FILE), int(spec["max_log_bytes"]))
+    if os.path.exists(os.path.join(task_dir, STOPPED_FILE)):
+        log.note("stopped before it started")
+        return 1
     cwd = spec["cwd"]
     if not os.path.isdir(cwd):
         log.note(f"working directory {cwd} is gone; running in {task_dir}")

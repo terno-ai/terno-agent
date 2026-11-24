@@ -99,7 +99,8 @@ class Config:
     # subagents, which may later run on a model with a different limit.
     max_tools: int | None = None
     # ----- background tasks ------------------------------------------------ #
-    # Offer run_in_background / background_output / stop_background_task.
+    # Offer bash/run_python's run_in_background flag, background_output and
+    # stop_background_task.
     # Needs a sandbox (docker, local, ...): with sandbox "none" they are off.
     # A host can instead pass its own ``background`` service to from_config.
     background_tasks_enabled: bool = False

@@ -15,6 +15,8 @@ import inspect
 from pathlib import Path
 from typing import Any
 
+from terno_agent.background import SHELL, BackgroundTasks
+from terno_agent.tools.background import BackgroundOption
 from terno_agent.core.cancel import CancelToken
 from terno_agent.core.exceptions import AgentCancelled, ToolError
 from terno_agent.core.tool import ToolSchema
@@ -33,7 +35,7 @@ class BashTool:
         default_timeout_s: int = 120,
         cancel_token: CancelToken | None = None,
         max_output_chars: int = _MAX_OUTPUT_BYTES,
-        timeout_hint: str = "",
+        background: BackgroundTasks | None = None,
     ) -> None:
         self.workdir = workdir
         # Bash is always sandbox-backed. With no sandbox configured we run
@@ -43,14 +45,14 @@ class BashTool:
         self.default_timeout_s = default_timeout_s
         self.cancel_token = cancel_token
         self.max_output_chars = max_output_chars
-        # Appended when a command times out, e.g. to point at run_in_background.
-        self.timeout_hint = timeout_hint
+        self.background = BackgroundOption(background, kind=SHELL)
+        self.timeouts = 0
 
     @property
     def schema(self) -> ToolSchema:
         return ToolSchema(
             name="bash",
-            description=(
+            description=self.background.describe(
                 "Run a shell command (POSIX `sh -c`) and return combined "
                 "stdout+stderr and the exit code. Output is truncated if very "
                 "large. Be careful with destructive commands (rm -rf, force "
@@ -70,9 +72,10 @@ class BashTool:
                         "type": "integer",
                         "description": (
                             "Optional wall-clock timeout in seconds "
-                            "(default 120)."
+                            f"(default {self.default_timeout_s})."
                         ),
                     },
+                    **self.background.properties(),
                 },
                 "required": ["command"],
             },
@@ -82,6 +85,8 @@ class BashTool:
         command = (kwargs.get("command") or "").strip()
         if not command:
             raise ToolError("bash requires a 'command' argument.")
+        if self.background.requested(kwargs):
+            return self.background.start(command, kwargs.get("description"))
         timeout = int(kwargs.get("timeout_s") or self.default_timeout_s)
         if timeout <= 0:
             raise ToolError("timeout_s must be positive.")
@@ -107,8 +112,10 @@ class BashTool:
         suffix = ""
         if result.timed_out:
             suffix = f"\n[timed out after {timeout}s]"
-            if self.timeout_hint:
-                suffix += f"\n{self.timeout_hint}"
+            self.timeouts += 1
+            note = self.background.timeout_note(self.timeouts)
+            if note:
+                suffix += f"\n{note}"
         return _format_output(
             exit_code=result.exit_code,
             stdout=result.stdout,

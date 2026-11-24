@@ -27,6 +27,12 @@ TIMED_OUT = "timed_out"
 
 STATUSES = (RUNNING, COMPLETED, FAILED, STOPPED, TIMED_OUT)
 FINISHED_STATUSES = frozenset(STATUSES) - {RUNNING}
+REPORTED_STATUSES = FINISHED_STATUSES - {STOPPED}
+
+PYTHON = "python"
+SHELL = "shell"
+STOP_REQUESTED = "stop_requested"
+MAX_DESCRIPTION_CHARS = 200
 
 _UPDATABLE = frozenset(
     {"handle", "status", "exit_code", "error", "finished_at", "notified", "metadata"}
@@ -39,7 +45,7 @@ BackgroundTaskCallback = Callable[["BackgroundTask"], None]
 class BackgroundTask:
     id: str
     description: str
-    # What to run ("python", "shell", or a host-defined kind) and which
+    # What to run (PYTHON, SHELL, or a host-defined kind) and which
     # registered runner runs it.
     kind: str
     runner: str
@@ -57,6 +63,10 @@ class BackgroundTask:
     @property
     def finished(self) -> bool:
         return self.status in FINISHED_STATUSES
+
+    @property
+    def stop_requested(self) -> bool:
+        return bool(self.metadata.get(STOP_REQUESTED))
 
     def runtime_s(self, now: float | None = None) -> float:
         end = self.finished_at if self.finished_at is not None else (now or time.time())
@@ -99,9 +109,9 @@ class BackgroundTaskStore(ABC):
         runner: str,
         metadata: dict[str, Any] | None = None,
     ) -> BackgroundTask:
-        description = (description or "").strip()
+        description = (description or "").strip()[:MAX_DESCRIPTION_CHARS]
         if not description:
-            raise ToolError("A background task needs a short description.")
+            raise ToolError("A background task needs a short 'description' for the user.")
         task = self._create(description, kind=kind, runner=runner, metadata=metadata or {})
         self._notify(task)
         return task
