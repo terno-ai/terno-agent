@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import os
+import signal
 import sys
 import time
 import uuid
@@ -407,6 +408,13 @@ class TestSandboxOps:
         states = _sandbox_ops.poll_many(handles=[done, missing])["states"]
         assert states[done]["exit_code"] == 0
         assert "missing" in states[missing]["error"]
+
+    def test_a_task_still_starting_counts_as_running(self, tmp_path):
+        handle = _sandbox_ops.prepare(root=str(tmp_path), name="9-new")["handle"]
+        assert _sandbox_ops.poll(handle=handle) == {"running": True}
+        old = time.time() - _sandbox_ops.START_GRACE_S - 1
+        os.utime(os.path.join(handle, _sandbox_ops.PREPARED_FILE), (old, old))
+        assert _sandbox_ops.poll(handle=handle)["error"] == "it did not finish starting"
 
     def test_a_start_after_its_stop_never_runs(self, tmp_path):
         handle = _sandbox_ops.prepare(root=str(tmp_path), name="9-late")["handle"]
@@ -1086,6 +1094,23 @@ class TestProcessLifecycle:
                 pass  # macOS: only zombies left, not yet reaped
             time.sleep(0.1)
         return False
+
+    def test_processes_left_running_end_with_the_task(self, tmp_path):
+        pidfile = tmp_path / "bgpid"
+        handle = self._start(tmp_path, f"sleep 60 & echo $! > {pidfile}; echo done")
+        reply = self._wait(handle)
+        assert reply["exit_code"] == 0
+        pid = int(pidfile.read_text())
+        deadline = time.time() + 10
+        while time.time() < deadline:
+            try:
+                os.kill(pid, 0)
+            except ProcessLookupError:
+                break
+            time.sleep(0.1)
+        else:
+            os.kill(pid, signal.SIGKILL)
+            raise AssertionError("the background sleep outlived its task")
 
     def test_stop_kills_work_that_ignores_sigterm(self, tmp_path):
         handle = self._start(tmp_path, "trap '' TERM; sleep 30")

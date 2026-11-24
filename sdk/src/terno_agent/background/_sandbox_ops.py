@@ -14,6 +14,7 @@ host::
         pid               pid of the detached wrapper (leads its process group)
         output.log        combined stdout/stderr, trimmed to its tail if large
         timed_out         written when the wrapper stopped the work at its deadline
+        prepared          written by prepare(): the task is starting until its pid
         stopped           written by stop(): before it kills the work, or so
                           work not started yet never starts
         exit_code         written when the work ends (always, even on errors)
@@ -43,10 +44,13 @@ PID_FILE = "pid"
 EXIT_FILE = "exit_code"
 TIMED_OUT_FILE = "timed_out"
 STOPPED_FILE = "stopped"
+PREPARED_FILE = "prepared"
 SPEC_FILE = "spec.json"
 MODULE_FILE = "_sandbox_ops.py"
 
 DEFAULT_ROOT_NAME = "terno-background"
+# A prepared task with no process this long after is taken to never start.
+START_GRACE_S = 600
 # Finished task directories older than this are removed when a task starts.
 RETENTION_S = 7 * 24 * 3600
 # How long stopped work gets to exit before it is killed, and how long output
@@ -71,6 +75,7 @@ def prepare(*, root: str, name: str) -> dict:
     _prune(root)
     task_dir = os.path.join(root, name)
     os.mkdir(task_dir)
+    _write_atomic(os.path.join(task_dir, PREPARED_FILE), "1")
     return {"handle": task_dir}
 
 
@@ -122,7 +127,12 @@ def poll(*, handle: str) -> dict:
         if pid is None:
             if os.path.exists(os.path.join(handle, STOPPED_FILE)):
                 return {"running": False, "stopped": True, "ended_at": _ended_at(handle, STOPPED_FILE)}
-            return {"running": False, "error": "task files are missing (was the sandbox restarted?)"}
+            prepared_at = _ended_at(handle, PREPARED_FILE)
+            if prepared_at is None:
+                return {"running": False, "error": "task files are missing (was the sandbox restarted?)"}
+            if time.time() - prepared_at < START_GRACE_S:
+                return {"running": True}  # still starting
+            return {"running": False, "error": "it did not finish starting"}
         if _wrapper_alive(pid, handle):
             return {"running": True}
         exit_code = _read_exit_code(handle)
@@ -209,7 +219,8 @@ def dispatch(operation: str, args_json: str) -> None:
 
 def wrap(task_dir: str) -> None:
     """Run the task, copy its output to the log, enforce its deadline and
-    record its exit code. The exit code is written whatever happens."""
+    record its exit code. (A deadline stop kills the whole group, wrapper
+    included, before that: poll then goes by the timed_out file.)"""
     if not _IS_WINDOWS:
         signal.signal(signal.SIGTERM, signal.SIG_IGN)
     exit_code = 1
@@ -253,8 +264,56 @@ def _run_work(task_dir: str) -> int:
                 _write_atomic(os.path.join(task_dir, TIMED_OUT_FILE), "1")
                 log.note("stopped: reached its time limit")
                 _stop_work(child)
+    # The task owns everything it started: what it left running in the
+    # background (``cmd &``, nohup) ends with it, or it would run unwatched.
+    left = _end_leftovers()
+    if left:
+        log.note(f"stopped {left} process(es) it left running")
     reader.join(DRAIN_S)
     return exit_code
+
+
+def _end_leftovers(grace_s: float = STOP_GRACE_S) -> int:
+    """Stop the other processes of this wrapper's group and return how many
+    there were. The wrapper itself is spared."""
+    if _IS_WINDOWS:
+        return 0
+    group, me = os.getpgrp(), os.getpid()
+    others = _group_members(group, exclude=me)
+    if others is None:
+        # No /proc (macOS): ask politely; the wrapper ignores SIGTERM.
+        try:
+            os.killpg(group, signal.SIGTERM)
+        except OSError:
+            pass
+        return 0
+    found = len(others)
+    for sig in (signal.SIGTERM, signal.SIGKILL):
+        for pid in others:
+            try:
+                os.kill(pid, sig)
+            except OSError:
+                pass
+        deadline = time.monotonic() + grace_s
+        while others and time.monotonic() < deadline:
+            time.sleep(0.1)
+            others = _group_members(group, exclude=me) or []
+        if not others:
+            break
+    return found
+
+
+def _group_members(group: int, *, exclude: int):
+    """Live pids of a process group from Linux /proc, or None without it."""
+    if not os.path.isdir("/proc"):
+        return None
+    members = []
+    for entry in os.listdir("/proc"):
+        if entry.isdigit() and int(entry) != exclude:
+            info = _proc_info(int(entry))
+            if info is not None and info[1] == group and info[0] != "Z":
+                members.append(int(entry))
+    return members
 
 
 def _default_sigterm() -> None:
@@ -467,13 +526,9 @@ def _kill_group(group: int, grace_s: float) -> None:
 
 def _group_alive(group: int) -> bool:
     """Any process of the group is still running (zombies do not count)."""
-    if os.path.isdir("/proc"):
-        for entry in os.listdir("/proc"):
-            if entry.isdigit():
-                info = _proc_info(int(entry))
-                if info is not None and info[1] == group and info[0] != "Z":
-                    return True
-        return False
+    members = _group_members(group, exclude=-1)
+    if members is not None:
+        return bool(members)
     try:
         os.killpg(group, 0)
     except ProcessLookupError:
