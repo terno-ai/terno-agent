@@ -14,9 +14,15 @@ from __future__ import annotations
 
 import logging
 import time
+from collections import defaultdict
 from collections.abc import Callable, Mapping
 
-from terno_agent.background.runner import BackgroundRunner, OutputFileRunner
+from terno_agent.background.runner import (
+    BackgroundRunner,
+    BatchPollRunner,
+    OutputFileRunner,
+    RunnerState,
+)
 from terno_agent.background.store import (
     COMPLETED,
     FAILED,
@@ -141,6 +147,7 @@ class BackgroundTasks:
         if not force and now - self._last_refresh < self.poll_interval_s:
             return
         self._last_refresh = now
+        to_check = []
         for task in self.store.running():
             if not task.handle:
                 if task.runtime_s(now) > START_GRACE_S:
@@ -149,11 +156,10 @@ class BackgroundTasks:
             requested = _requested(task)
             if requested and self._stop(task, requested).finished:
                 continue
-            try:
-                state = self._runner(task).poll(task.handle)
-            except Exception as exc:
-                logger.warning("Could not check background task %s: %s", task.id, exc)
-                state = None
+            to_check.append(task)
+        states = self._poll(to_check)
+        for task in to_check:
+            state = states.get(task.id)
             if state is None or state.running:
                 runtime = task.runtime_s(now)
                 if state is None and runtime > self.max_runtime_s + DEADLINE_GRACE_S:
@@ -244,6 +250,31 @@ class BackgroundTasks:
         if backend is None:
             raise ToolError(f"No background runner named {task.runner!r}.")
         return backend
+
+    def _poll(self, tasks: list[BackgroundTask]) -> dict[str, RunnerState]:
+        """Check tasks, one call per runner when it can check several at once."""
+        by_runner = defaultdict(list)
+        for task in tasks:
+            by_runner[task.runner].append(task)
+        states = {}
+        for group in by_runner.values():
+            try:
+                runner = self._runner(group[0])
+                if isinstance(runner, BatchPollRunner):
+                    found = runner.poll_many([t.handle for t in group])
+                    if not isinstance(found, dict):
+                        raise TypeError(f"poll_many returned {type(found).__name__}")
+                    states.update({t.id: found[t.handle] for t in group if t.handle in found})
+                    continue
+            except Exception as exc:
+                logger.warning("Could not check background tasks %s: %s", [t.id for t in group], exc)
+                continue
+            for task in group:
+                try:
+                    states[task.id] = runner.poll(task.handle)
+                except Exception as exc:
+                    logger.warning("Could not check background task %s: %s", task.id, exc)
+        return states
 
     def _stop(self, task: BackgroundTask, status: str) -> BackgroundTask:
         """Stop the work and record it ended with ``status`` (STOPPED,

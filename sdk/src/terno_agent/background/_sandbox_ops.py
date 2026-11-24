@@ -136,6 +136,18 @@ def poll(*, handle: str) -> dict:
     return {"running": False, "exit_code": exit_code, "ended_at": _ended_at(handle, EXIT_FILE)}
 
 
+def poll_many(*, handles: list) -> dict:
+    """:func:`poll` for several tasks in one call. A task that cannot be
+    read now is left out, to be checked again next time."""
+    states = {}
+    for handle in handles:
+        try:
+            states[handle] = poll(handle=handle)
+        except OSError:
+            continue
+    return {"states": states}
+
+
 def read_output(*, handle: str, max_chars: int) -> dict:
     try:
         log = open(os.path.join(handle, LOG_FILE), "rb")
@@ -178,6 +190,7 @@ OPERATIONS = {
     "prepare": prepare,
     "start": start,
     "poll": poll,
+    "poll_many": poll_many,
     "read_output": read_output,
     "stop": stop,
 }

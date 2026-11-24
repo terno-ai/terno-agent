@@ -400,6 +400,14 @@ class TestSandboxOps:
             max_runtime_s=max_runtime_s,
         )
 
+    def test_poll_many_checks_several_tasks_at_once(self, tmp_path):
+        done = self._start(tmp_path, "shell", "true")
+        self._wait(done)
+        missing = str(tmp_path / "gone")
+        states = _sandbox_ops.poll_many(handles=[done, missing])["states"]
+        assert states[done]["exit_code"] == 0
+        assert "missing" in states[missing]["error"]
+
     def test_a_start_after_its_stop_never_runs(self, tmp_path):
         handle = _sandbox_ops.prepare(root=str(tmp_path), name="9-late")["handle"]
         _sandbox_ops.stop(handle=handle)  # the host gave up on the start
@@ -794,6 +802,67 @@ class TestServiceFailures:
         assert (got.status, got.notified) == (COMPLETED, False)
 
 
+class TestBatchPolling:
+    class _BatchRunner(_FakeRunner):
+        def __init__(self):
+            super().__init__()
+            self.batches = []
+
+        def poll(self, handle):  # pragma: no cover - must not be used
+            raise AssertionError("checked one by one")
+
+        def poll_many(self, handles):
+            self.batches.append(list(handles))
+            return {h: self.states[h] for h in handles if h in self.states}
+
+    def test_all_running_tasks_are_checked_in_one_call(self):
+        runner = self._BatchRunner()
+        service = BackgroundTasks({"sandbox": runner}, poll_interval_s=0)
+        a = service.start(kind="python", payload="x", description="a")
+        b = service.start(kind="python", payload="x", description="b")
+        runner.states[a.handle] = RunnerState(running=False, exit_code=0)
+        runner.batches.clear()
+        service.refresh(force=True)
+        assert runner.batches == [[a.handle, b.handle]]
+        assert service.store.get(a.id).status == COMPLETED
+        assert service.store.get(b.id).status == RUNNING
+
+    def test_a_task_left_out_of_the_reply_counts_as_still_running(self):
+        runner = self._BatchRunner()
+        service = BackgroundTasks({"sandbox": runner}, poll_interval_s=0)
+        task = service.start(kind="python", payload="x", description="a")
+        del runner.states[task.handle]
+        service.refresh(force=True)
+        assert service.store.get(task.id).status == RUNNING
+
+    def test_an_unknown_runner_does_not_stop_the_others_being_checked(self):
+        runner = self._BatchRunner()
+        service = BackgroundTasks({"sandbox": runner}, poll_interval_s=0)
+        good = service.start(kind="python", payload="x", description="a")
+        orphan = service.store.create("old", kind="python", runner="renamed")
+        service.store.update(orphan.id, handle="h-old")
+        runner.states[good.handle] = RunnerState(running=False, exit_code=0)
+        service.refresh(force=True)
+        assert service.store.get(good.id).status == COMPLETED
+        assert service.store.get(orphan.id).status == RUNNING
+
+    def test_a_malformed_batch_reply_leaves_the_tasks_running(self):
+        runner = self._BatchRunner()
+        service = BackgroundTasks({"sandbox": runner}, poll_interval_s=0)
+        task = service.start(kind="python", payload="x", description="a")
+        runner.poll_many = mock.Mock(return_value=None)
+        service.refresh(force=True)
+        assert service.store.get(task.id).status == RUNNING
+
+    def test_a_failed_batch_leaves_the_tasks_running(self):
+        runner = self._BatchRunner()
+        service = BackgroundTasks({"sandbox": runner}, poll_interval_s=0)
+        task = service.start(kind="python", payload="x", description="a")
+        runner.poll_many = mock.Mock(side_effect=RuntimeError("busy"))
+        service.refresh(force=True)
+        assert service.store.get(task.id).status == RUNNING
+
+
 class TestStopOutcomes:
     def test_a_start_that_never_saved_its_handle_fails_after_the_grace(self):
         from terno_agent.background.service import START_GRACE_S
@@ -949,6 +1018,20 @@ class TestRunnerErrors:
 
         with pytest.raises(BackgroundRunnerError, match="bad reply"):
             SandboxBackgroundRunner(Garbled()).poll("/x")
+
+    def test_poll_many_through_a_real_sandbox(self, tmp_path):
+        runner = SandboxBackgroundRunner(LocalSandbox(), root_dir=str(tmp_path), cwd=str(tmp_path))
+        store = InMemoryBackgroundTaskStore()
+        handles = []
+        for payload in ("print(1)", "import time; time.sleep(30)"):
+            task = store.create("t", kind="python", runner="sandbox")
+            handle = runner.prepare(task)
+            runner.start(handle, task, payload, max_runtime_s=60)
+            handles.append(handle)
+        _wait(runner, handles[0])
+        states = runner.poll_many(handles)
+        assert states[handles[0]].exit_code == 0 and states[handles[1]].running
+        runner.stop(handles[1])
 
     def test_start_runs_in_the_prepared_handle(self):
         calls = []

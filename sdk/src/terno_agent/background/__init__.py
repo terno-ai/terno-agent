@@ -4,6 +4,7 @@ it, with the agent told when it finishes."""
 from terno_agent.background.runner import (
     BackgroundRunner,
     BackgroundRunnerError,
+    BatchPollRunner,
     OutputFileRunner,
     RunnerState,
     SandboxBackgroundRunner,
@@ -41,6 +42,7 @@ __all__ = [
     "TIMED_OUT",
     "BackgroundRunner",
     "BackgroundRunnerError",
+    "BatchPollRunner",
     "BackgroundTask",
     "BackgroundTaskStore",
     "BackgroundTasks",

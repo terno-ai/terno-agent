@@ -65,6 +65,14 @@ class BackgroundRunner(Protocol):
 
 
 @runtime_checkable
+class BatchPollRunner(Protocol):
+    """Optional: a runner that checks several tasks in one call. A handle
+    missing from the result could not be checked this time."""
+
+    def poll_many(self, handles: list[str]) -> dict[str, RunnerState]: ...
+
+
+@runtime_checkable
 class OutputFileRunner(Protocol):
     """Optional: a runner whose task output is a file the agent can open."""
 
@@ -157,16 +165,11 @@ class SandboxBackgroundRunner:
             raise BackgroundRunnerError("It was stopped before it started.")
 
     def poll(self, handle: str) -> RunnerState:
-        reply = self._call("poll", handle=handle)
-        exit_code = reply.get("exit_code")
-        return RunnerState(
-            running=bool(reply.get("running")),
-            exit_code=int(exit_code) if exit_code is not None else None,
-            timed_out=bool(reply.get("timed_out")),
-            stopped=bool(reply.get("stopped")),
-            error=str(reply.get("error") or ""),
-            ended_at=float(reply["ended_at"]) if reply.get("ended_at") is not None else None,
-        )
+        return _state(self._call("poll", handle=handle))
+
+    def poll_many(self, handles: list[str]) -> dict[str, RunnerState]:
+        reply = self._call("poll_many", handles=list(handles))
+        return {handle: _state(raw) for handle, raw in (reply.get("states") or {}).items()}
 
     def read_output(self, handle: str, *, max_chars: int) -> str:
         reply = self._call("read_output", handle=handle, max_chars=max_chars)
@@ -203,6 +206,18 @@ class SandboxBackgroundRunner:
         raise BackgroundRunnerError(f"Sandbox {operation} failed: {detail}")
 
 
+def _state(reply: dict) -> RunnerState:
+    exit_code = reply.get("exit_code")
+    return RunnerState(
+        running=bool(reply.get("running")),
+        exit_code=int(exit_code) if exit_code is not None else None,
+        timed_out=bool(reply.get("timed_out")),
+        stopped=bool(reply.get("stopped")),
+        error=str(reply.get("error") or ""),
+        ended_at=float(reply["ended_at"]) if reply.get("ended_at") is not None else None,
+    )
+
+
 def _safe_name(task_id: str) -> str:
     cleaned = "".join(c for c in str(task_id) if c.isalnum() or c in "-_")
     if not cleaned:
@@ -212,6 +227,7 @@ def _safe_name(task_id: str) -> str:
 
 __all__ = [
     "BackgroundRunner",
+    "BatchPollRunner",
     "BackgroundRunnerError",
     "OutputFileRunner",
     "RunnerState",
