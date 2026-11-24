@@ -60,6 +60,17 @@ class FakeSandbox:
         if "connect_all" in code:
             if self.connect_fatal:
                 out = _envelope({"ok": False, "fatal": self.connect_fatal})
+            elif "__CFGS_B64__" not in code and "_cfgs = json.loads" in code:
+                # Batched connect: one call for every server, which also
+                # returns the connected servers' tools.
+                m = re.search(r'_cfgs = json\.loads\(base64\.b64decode\("([^"]+)"\)', code)
+                names = {c["name"] for c in json.loads(base64.b64decode(m.group(1)).decode())}
+                out = _envelope({
+                    "ok": True,
+                    "errors": self.connect_errors,
+                    "tools": [t for t in self.tools if t.get("server_name") in names
+                              and t.get("server_name") not in self.connect_errors],
+                })
             else:
                 out = _envelope({"ok": True, "errors": self.connect_errors})
             return ExecutionResult(stdout=out, stderr="", exit_code=0)
@@ -288,5 +299,49 @@ def test_manager_builds_tools_through_sandbox_factory():
         # A tool call routes back through the sandbox and renders as text.
         tool = next(t for t in manager.tools() if t.tool_name == "alpha")
         assert tool.run() == "hello from tool" or "tool-said-hi" in tool.run()
+    finally:
+        manager.shutdown()
+
+
+def test_manager_connects_all_sandbox_servers_in_one_call():
+    """Several servers connect in ONE run_python (parallel inside the
+    sandbox, like the legacy path); a failing server is skipped, others load."""
+    sandbox = FakeSandbox(
+        connect_errors={"broken": "401 Unauthorized"},
+        tools=[
+            {"server_name": "a", "tool_name": "one", "description": "", "input_schema": {}},
+            {"server_name": "b", "tool_name": "two", "description": "", "input_schema": {}},
+            {"server_name": "b", "tool_name": "three", "description": "", "input_schema": {}},
+        ],
+    )
+    manager = McpManager.start_from_configs(
+        [
+            StdioServerConfig(name="a", command="x"),
+            StdioServerConfig(name="b", command="y"),
+            StdioServerConfig(name="broken", command="z"),
+        ],
+        session_factory=sandbox_mcp_session_factory(sandbox),
+    )
+    try:
+        connect_calls = [c for c, _ in sandbox.calls if "connect_all" in c]
+        assert len(connect_calls) == 1
+        assert not [c for c, _ in sandbox.calls if "_server = base64" in c]  # no per-server list calls
+        names = sorted(t.schema.name for t in manager.tools())
+        assert names == ["mcp__a__one", "mcp__b__three", "mcp__b__two"]
+        # Connected servers can be called afterwards.
+        tool = next(t for t in manager.tools() if t.tool_name == "two")
+        assert "tool-said-hi" in tool.run()
+    finally:
+        manager.shutdown()
+
+
+def test_manager_batched_connect_fatal_loads_nothing():
+    sandbox = FakeSandbox(connect_fatal="kernel died")
+    manager = McpManager.start_from_configs(
+        [StdioServerConfig(name="a", command="x"), StdioServerConfig(name="b", command="y")],
+        session_factory=sandbox_mcp_session_factory(sandbox),
+    )
+    try:
+        assert manager.tools() == []
     finally:
         manager.shutdown()

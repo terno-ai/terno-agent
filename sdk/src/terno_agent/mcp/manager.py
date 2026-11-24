@@ -119,6 +119,10 @@ class McpManager:
             _warn(f"mcp bridge failed to start: {exc}")
             return
 
+        connect_many = getattr(factory, "connect_many", None)
+        if connect_many is not None:
+            self._connect_servers_together(configs, factory, connect_many)
+            return
         for cfg in configs:
             self._connect_server(cfg, factory)
 
@@ -144,6 +148,41 @@ class McpManager:
         self._tools.clear()
 
     # ----- internals ----------------------------------------------------- #
+
+    def _connect_servers_together(
+        self,
+        configs: list[McpServerConfig],
+        factory: SessionFactory,
+        connect_many: Callable[[list[Any]], Any],
+    ) -> None:
+        """Connect every server in one call, in parallel (in-sandbox path).
+
+        A server that fails is skipped with a warning; the rest still load.
+        """
+        sessions = []
+        for cfg in configs:
+            try:
+                sessions.append(factory(cfg))
+            except TernoError as exc:
+                _warn(f"mcp server '{cfg.name}' not loaded: {exc}")
+            except Exception as exc:
+                _warn(f"mcp server '{cfg.name}' failed to initialize: {exc}")
+        if not sessions:
+            return
+
+        try:
+            results = self._bridge.submit(connect_many(sessions), timeout=30)
+        except Exception as exc:
+            _warn(f"mcp servers failed to connect: {exc}")
+            return
+
+        for session in sessions:
+            name = session.config.name
+            error, raw_tools = results.get(name, ("no result returned", []))
+            if error:
+                _warn(f"mcp server '{name}' failed to connect: {error}")
+                continue
+            self._register(session.config, session, raw_tools)
 
     def _connect_server(self, cfg: McpServerConfig, factory: SessionFactory) -> None:
         try:
@@ -175,6 +214,10 @@ class McpManager:
                 pass
             return
 
+        self._register(cfg, session, mcp_tools)
+
+    def _register(self, cfg: McpServerConfig, session: Any, mcp_tools: list[Any]) -> None:
+        """Wrap a connected server's listed tools as ``McpTool``s."""
         tools: list[McpTool] = []
         timeout_s = float(getattr(cfg, "timeout_s", None) or 120)
         for t in mcp_tools:
