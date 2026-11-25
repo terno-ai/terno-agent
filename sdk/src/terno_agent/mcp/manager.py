@@ -11,6 +11,7 @@ rest of terno — keeps running.
 
 from __future__ import annotations
 
+import asyncio
 import sys
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -28,6 +29,13 @@ from terno_agent.mcp.session import McpSession
 from terno_agent.mcp.tool import McpTool
 
 SessionFactory = Callable[[McpServerConfig], "McpSessionLike"]
+
+# Host-side startup: servers connecting at once (same limit as the sandbox's
+# in-container client), and per-server time limits in seconds.
+MAX_CONCURRENT_CONNECTS = 5
+CONNECT_TIMEOUT_S = 30
+LIST_TIMEOUT_S = 15
+CLOSE_TIMEOUT_S = 5
 
 
 class McpSessionLike:
@@ -143,8 +151,7 @@ class McpManager:
         if connect_many is not None:
             self._connect_servers_together(eager, factory, connect_many)
             return
-        for cfg in eager:
-            self._connect_server(cfg, factory)
+        self._connect_servers_concurrently(eager, factory)
 
     def tools(self) -> list[McpTool]:
         return list(self._tools)
@@ -239,38 +246,46 @@ class McpManager:
         except Exception as exc:
             _warn(f"mcp on_tools_discovered failed for '{server}': {exc}")
 
-    def _connect_server(self, cfg: McpServerConfig, factory: SessionFactory) -> None:
-        try:
-            session = factory(cfg)
-        except TernoError as exc:
-            _warn(f"mcp server '{cfg.name}' not loaded: {exc}")
-            return
-        except Exception as exc:
-            _warn(f"mcp server '{cfg.name}' failed to initialize: {exc}")
-            return
+    def _connect_servers_concurrently(
+        self, configs: list[McpServerConfig], factory: SessionFactory
+    ) -> None:
+        """Connect host-side servers (stdio / HTTP from this process) at the
+        same time on the bridge loop, at most ``MAX_CONCURRENT_CONNECTS`` at
+        once, so startup waits for the slowest server rather than the sum.
 
-        try:
-            self._bridge.submit(session.connect(), timeout=30)
-        except Exception as exc:
-            _warn(f"mcp server '{cfg.name}' failed to connect: {exc}")
+        Each server keeps its own connect / list-tools time limits and fails
+        on its own: a server that fails is skipped with a warning and closed;
+        the rest still load.
+        """
+        sessions: list[tuple[McpServerConfig, Any]] = []
+        for cfg in configs:
             try:
-                self._bridge.submit(session.aclose(), timeout=5)
-            except Exception:
-                pass
+                sessions.append((cfg, factory(cfg)))
+            except TernoError as exc:
+                _warn(f"mcp server '{cfg.name}' not loaded: {exc}")
+            except Exception as exc:
+                _warn(f"mcp server '{cfg.name}' failed to initialize: {exc}")
+        if not sessions:
             return
 
+        # Room for every wave of MAX_CONCURRENT_CONNECTS servers to use its
+        # full per-server budget before the whole batch is given up on.
+        waves = -(-len(sessions) // MAX_CONCURRENT_CONNECTS)
+        per_server = CONNECT_TIMEOUT_S + LIST_TIMEOUT_S + CLOSE_TIMEOUT_S
         try:
-            mcp_tools = self._bridge.submit(session.list_tools(), timeout=15)
+            results = self._bridge.submit(
+                _connect_and_list_all(sessions), timeout=waves * per_server + 5
+            )
         except Exception as exc:
-            _warn(f"mcp server '{cfg.name}' failed to list tools: {exc}")
-            try:
-                self._bridge.submit(session.aclose(), timeout=5)
-            except Exception:
-                pass
+            _warn(f"mcp servers failed to connect: {exc}")
             return
 
-        self._register(cfg, session, mcp_tools)
-        self._report(cfg.name, mcp_tools)
+        for (cfg, session), (stage, error, mcp_tools) in zip(sessions, results):
+            if error is not None:
+                _warn(f"mcp server '{cfg.name}' failed to {stage}: {error}")
+                continue
+            self._register(cfg, session, mcp_tools)
+            self._report(cfg.name, mcp_tools)
 
     def _register(self, cfg: McpServerConfig, session: Any, mcp_tools: list[Any]) -> None:
         """Wrap a connected server's listed tools as ``McpTool``s."""
@@ -299,6 +314,34 @@ class McpManager:
 
 def _default_session_factory(cfg: McpServerConfig) -> McpSession:
     return McpSession(cfg)
+
+
+async def _connect_and_list_all(
+    sessions: list[tuple[McpServerConfig, Any]],
+) -> list[tuple[str, Exception | None, list[Any]]]:
+    """Connect and list tools for every session concurrently (on the bridge
+    loop). Returns, per session in order, ``(stage, error, tools)``: ``error``
+    is None on success, else ``stage`` says which step failed."""
+    limit = asyncio.Semaphore(MAX_CONCURRENT_CONNECTS)
+
+    async def one(cfg: McpServerConfig, session: Any) -> tuple[str, Exception | None, list[Any]]:
+        async with limit:
+            stage = "connect"
+            try:
+                await asyncio.wait_for(session.connect(), timeout=CONNECT_TIMEOUT_S)
+                stage = "list tools"
+                tools = await asyncio.wait_for(session.list_tools(), timeout=LIST_TIMEOUT_S)
+                return stage, None, list(tools)
+            except Exception as exc:
+                if isinstance(exc, asyncio.TimeoutError):
+                    exc = TimeoutError(f"timed out during {stage}")
+                try:
+                    await asyncio.wait_for(session.aclose(), timeout=CLOSE_TIMEOUT_S)
+                except Exception:
+                    pass
+                return stage, exc, []
+
+    return await asyncio.gather(*(one(cfg, s) for cfg, s in sessions))
 
 
 def _attr(obj: Any, key: str) -> Any:
