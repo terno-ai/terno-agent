@@ -50,6 +50,8 @@ class FakeSandbox:
         self.call_output = call_output
         self.connect_fatal = connect_fatal
         self.calls: list[tuple[str, int]] = []
+        # Servers the in-container client already holds a live session for.
+        self.live: set[str] = set()
 
     def run_python(self, code: str, *, timeout_s: int = 30, **_):
         self.calls.append((code, timeout_s))
@@ -57,6 +59,8 @@ class FakeSandbox:
         if "find_spec('mcp_client')" in code:
             marker = "__MCP_CLIENT_OK__" if self.has_mcp_client else "__MCP_CLIENT_NO__"
             return ExecutionResult(stdout=marker + "\n", stderr="", exit_code=0)
+        if "_connected_now" in code:
+            return ExecutionResult(stdout=self._connect_and_call(code), stderr="", exit_code=0)
         if "connect_all" in code:
             if self.connect_fatal:
                 out = _envelope({"ok": False, "fatal": self.connect_fatal})
@@ -65,6 +69,7 @@ class FakeSandbox:
                 # returns the connected servers' tools.
                 m = re.search(r'_cfgs = json\.loads\(base64\.b64decode\("([^"]+)"\)', code)
                 names = {c["name"] for c in json.loads(base64.b64decode(m.group(1)).decode())}
+                self.live |= names - set(self.connect_errors)
                 out = _envelope({
                     "ok": True,
                     "errors": self.connect_errors,
@@ -96,6 +101,28 @@ class FakeSandbox:
     def _decode_server(code: str) -> str:
         m = re.search(r'_server = base64\.b64decode\("([^"]+)"\)', code)
         return base64.b64decode(m.group(1)).decode() if m else ""
+
+    def _connect_and_call(self, code: str) -> str:
+        """Emulate the lazy first-call snippet: connect unless live, check
+        the tool exists, call it."""
+        def arg(var):
+            m = re.search(var + r' = (?:json\.loads\()?base64\.b64decode\("([^"]+)"\)', code)
+            return base64.b64decode(m.group(1)).decode()
+        name = json.loads(arg("_cfg"))["name"]
+        tool = arg("_tool")
+        connected_now = False
+        if name not in self.live:
+            if self.connect_fatal or name in self.connect_errors:
+                return _envelope({"ok": False,
+                                  "connect_error": self.connect_fatal or self.connect_errors[name]})
+            self.live.add(name)
+            connected_now = True
+        schemas = [t for t in self.tools if t.get("server_name") == name]
+        if tool not in {t["tool_name"] for t in schemas}:
+            return _envelope({"ok": False, "missing": True, "tools": schemas,
+                              "connected_now": connected_now})
+        return _envelope({"ok": True, "output": self.call_output, "connected_now": connected_now,
+                          "tools": schemas if connected_now else []})
 
 
 # --------------------------------------------------------------------------- #
@@ -185,13 +212,16 @@ def test_connect_fatal_when_mcp_client_missing():
         asyncio.run(session.connect())
 
 
-def test_list_and_call_require_connect():
-    sandbox = FakeSandbox()
+def test_list_requires_connect_but_call_connects_itself():
+    sandbox = FakeSandbox(tools=[{"server_name": "srv", "tool_name": "t", "description": "",
+                                  "input_schema": {}}])
     session = SandboxMcpSession(StdioServerConfig(name="srv", command="x"), sandbox)
     with pytest.raises(ToolError):
         asyncio.run(session.list_tools())
-    with pytest.raises(ToolError):
-        asyncio.run(session.call_tool("t", {}))
+    # A call on an unconnected session connects it in the same sandbox call.
+    result = asyncio.run(session.call_tool("t", {}))
+    assert result.content[0]["text"] == "tool-said-hi"
+    assert session._connected
 
 
 def test_run_python_transport_failure_becomes_fatal():
@@ -333,6 +363,133 @@ def test_manager_connects_all_sandbox_servers_in_one_call():
         assert "tool-said-hi" in tool.run()
     finally:
         manager.shutdown()
+
+
+def _cached(name, *tools):
+    return StdioServerConfig(
+        name=name, command="x",
+        cached_tools=tuple({"name": t, "description": f"cached {t}", "inputSchema": {}} for t in tools),
+    )
+
+
+def _live(server, *tools):
+    return [{"server_name": server, "tool_name": t, "description": f"live {t}", "input_schema": {}}
+            for t in tools]
+
+
+def test_lazy_cached_server_does_not_connect_at_start():
+    sandbox = FakeSandbox(tools=_live("ads", "spend"))
+    discovered = []
+    manager = McpManager.start_from_configs(
+        [_cached("ads", "spend")],
+        session_factory=sandbox_mcp_session_factory(sandbox),
+        on_tools_discovered=lambda s, t: discovered.append((s, [x["name"] for x in t])),
+    )
+    try:
+        assert sandbox.calls == []  # nothing ran in the sandbox at startup
+        assert [t.schema.name for t in manager.tools()] == ["mcp__ads__spend"]
+        assert discovered == []
+    finally:
+        manager.shutdown()
+
+
+def test_lazy_first_call_connects_once_and_reports_live_tools():
+    sandbox = FakeSandbox(tools=_live("ads", "spend", "new_tool"))
+    discovered = []
+    manager = McpManager.start_from_configs(
+        [_cached("ads", "spend")],
+        session_factory=sandbox_mcp_session_factory(sandbox),
+        on_tools_discovered=lambda s, t: discovered.append((s, sorted(x["name"] for x in t))),
+    )
+    try:
+        tool = manager.tools()[0]
+        assert "tool-said-hi" in tool.run()
+        assert len(sandbox.calls) == 1  # connect + call in one sandbox call
+        assert discovered == [("ads", ["new_tool", "spend"])]  # live list handed back
+        assert "tool-said-hi" in tool.run()  # second call: plain call, no reconnect
+        assert len(sandbox.calls) == 2 and "_connected_now" not in sandbox.calls[1][0]
+        assert len(discovered) == 1
+    finally:
+        manager.shutdown()
+
+
+def test_lazy_server_already_live_in_container_is_not_reported():
+    """A later message in the same chat: the container still holds the
+    connection, so no reconnect and no cache write."""
+    sandbox = FakeSandbox(tools=_live("ads", "spend"))
+    sandbox.live.add("ads")
+    discovered = []
+    manager = McpManager.start_from_configs(
+        [_cached("ads", "spend")],
+        session_factory=sandbox_mcp_session_factory(sandbox),
+        on_tools_discovered=lambda s, t: discovered.append(s),
+    )
+    try:
+        assert "tool-said-hi" in manager.tools()[0].run()
+        assert discovered == []
+    finally:
+        manager.shutdown()
+
+
+def test_lazy_removed_tool_gives_clear_error_and_refreshes_cache():
+    sandbox = FakeSandbox(tools=_live("ads", "spend_v2"))
+    discovered = []
+    manager = McpManager.start_from_configs(
+        [_cached("ads", "spend")],
+        session_factory=sandbox_mcp_session_factory(sandbox),
+        on_tools_discovered=lambda s, t: discovered.append([x["name"] for x in t]),
+    )
+    try:
+        with pytest.raises(ToolError, match="no longer exists.*spend_v2"):
+            manager.tools()[0].run()
+        assert discovered == [["spend_v2"]]
+    finally:
+        manager.shutdown()
+
+
+def test_lazy_connect_failure_is_a_readable_tool_error():
+    sandbox = FakeSandbox(connect_errors={"ads": "401 Unauthorized"})
+    manager = McpManager.start_from_configs(
+        [_cached("ads", "spend")],
+        session_factory=sandbox_mcp_session_factory(sandbox),
+    )
+    try:
+        with pytest.raises(ToolError, match="unavailable right now: 401 Unauthorized"):
+            manager.tools()[0].run()
+    finally:
+        manager.shutdown()
+
+
+def test_uncached_servers_connect_at_start_and_are_reported():
+    """Only servers without a cache connect at startup (one parallel call);
+    their live tools go to the host so the next message can be lazy."""
+    sandbox = FakeSandbox(tools=_live("ads", "spend") + _live("fresh", "a", "b"))
+    discovered = []
+    manager = McpManager.start_from_configs(
+        [_cached("ads", "spend"), StdioServerConfig(name="fresh", command="y")],
+        session_factory=sandbox_mcp_session_factory(sandbox),
+        on_tools_discovered=lambda s, t: discovered.append((s, sorted(x["name"] for x in t))),
+    )
+    try:
+        assert len(sandbox.calls) == 1
+        m = re.search(r'_cfgs = json\.loads\(base64\.b64decode\("([^"]+)"\)', sandbox.calls[0][0])
+        assert [c["name"] for c in json.loads(base64.b64decode(m.group(1)))] == ["fresh"]
+        assert discovered == [("fresh", ["a", "b"])]
+        assert sorted(t.schema.name for t in manager.tools()) == [
+            "mcp__ads__spend", "mcp__fresh__a", "mcp__fresh__b"]
+    finally:
+        manager.shutdown()
+
+
+def test_cached_tools_parsed_from_config_dict():
+    from terno_agent.mcp.config import load_mcp_config_from_dict
+    [cfg] = load_mcp_config_from_dict({"mcpServers": {"ads": {
+        "url": "https://x.example/mcp",
+        "cachedTools": [{"name": "spend", "description": "d", "inputSchema": {"type": "object"}},
+                        {"bad": "entry"}],
+    }}})
+    assert cfg.cached_tools == ({"name": "spend", "description": "d",
+                                 "inputSchema": {"type": "object"}},)
 
 
 def test_manager_batched_connect_fatal_loads_nothing():

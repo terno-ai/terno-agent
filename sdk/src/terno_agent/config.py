@@ -94,6 +94,12 @@ class Config:
     # LLM round trip) than it saves.
     mcp_defer_tools: bool = False
     mcp_defer_min_tokens: int = 3_000
+    # Called as ``fn(server_name, tools)`` whenever a server's live tool list
+    # is fetched (startup connect, or the first call of a lazily connected
+    # server), with ``{"name", "description", "inputSchema"}`` dicts. Hosts
+    # use it to refresh the ``cachedTools`` they pass in ``mcp_servers``.
+    # Called from a worker thread with no running event loop.
+    mcp_on_tools_discovered: object = None
     # Most tools one request may carry (providers reject more, e.g. OpenAI's
     # 128). Caps loading of deferred tools; ``None`` means no cap. Passed to
     # subagents, which may later run on a model with a different limit.
