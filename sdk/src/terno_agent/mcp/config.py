@@ -79,6 +79,10 @@ class StdioServerConfig:
     runner: RunnerBlock | None = None
     cwd: str | None = None
     timeout_s: int | None = None
+    # Tools the host already knows for this server (``cachedTools``), as
+    # ``{"name", "description", "inputSchema"}`` dicts. When set, the server
+    # is not connected at startup; it connects on its first tool call.
+    cached_tools: tuple[dict[str, Any], ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -88,6 +92,8 @@ class HttpServerConfig:
     transport: str = "sse"  # auto-resolved at load time
     headers: dict[str, str] = field(default_factory=dict)
     timeout_s: int | None = None
+    # See StdioServerConfig.cached_tools.
+    cached_tools: tuple[dict[str, Any], ...] = ()
 
 
 McpServerConfig = StdioServerConfig | HttpServerConfig
@@ -217,6 +223,7 @@ def _parse_http(name: str, entry: dict[str, Any]) -> HttpServerConfig:
         transport=transport,
         headers=headers,
         timeout_s=_optional_int(entry.get("timeout_s"), name, "timeout_s"),
+        cached_tools=_parse_cached_tools(entry.get("cachedTools")),
     )
 
 
@@ -239,6 +246,7 @@ def _parse_stdio(
             env=env,
             cwd=cwd,
             timeout_s=timeout_s,
+            cached_tools=_parse_cached_tools(entry.get("cachedTools")),
         )
 
     runner_raw = entry["runner"]
@@ -251,7 +259,26 @@ def _parse_stdio(
         env=env,
         cwd=cwd,
         timeout_s=timeout_s,
+        cached_tools=_parse_cached_tools(entry.get("cachedTools")),
     )
+
+
+def _parse_cached_tools(raw: Any) -> tuple[dict[str, Any], ...]:
+    """Read a server's ``cachedTools`` list. Malformed entries are dropped;
+    an empty result means "no cache", so the server connects at startup."""
+    if not isinstance(raw, list):
+        return ()
+    tools = []
+    for t in raw:
+        if not isinstance(t, dict) or not isinstance(t.get("name"), str) or not t["name"]:
+            continue
+        schema = t.get("inputSchema")
+        tools.append({
+            "name": t["name"],
+            "description": t.get("description") if isinstance(t.get("description"), str) else "",
+            "inputSchema": schema if isinstance(schema, dict) else {"type": "object", "properties": {}},
+        })
+    return tuple(tools)
 
 
 def _parse_runner(name: str, raw: dict[str, Any]) -> RunnerBlock:

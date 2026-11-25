@@ -81,6 +81,9 @@ class SandboxMcpSession:
         self._connected = False
         call_timeout = getattr(config, "timeout_s", None) or _DEFAULT_CALL_TIMEOUT_S
         self._call_timeout_s = min(int(call_timeout), _DEFAULT_CALL_TIMEOUT_S)
+        # Set by McpManager for lazily registered servers: called with the
+        # live tool list when the first call (re)connects the server.
+        self.on_tools_discovered: Callable[[str, list[dict[str, Any]]], None] | None = None
 
     # ----- lifecycle ----------------------------------------------------- #
 
@@ -130,9 +133,7 @@ class SandboxMcpSession:
 
     async def call_tool(self, name: str, args: dict[str, Any]) -> Any:
         if not self._connected:
-            raise ToolError(
-                f"mcp session for '{self.config.name}' is not connected"
-            )
+            return await self._connect_and_call(name, args)
         code = (
             _CALL_TEMPLATE.replace("__SERVER_B64__", _b64(self.config.name))
             .replace("__TOOL_B64__", _b64(name))
@@ -159,6 +160,63 @@ class SandboxMcpSession:
         self._connected = False
 
     # ----- internals ----------------------------------------------------- #
+
+    async def _connect_and_call(self, name: str, args: dict[str, Any]) -> Any:
+        """First call on a lazily registered server, in ONE sandbox call:
+        connect it unless the container already has it live, check the tool
+        still exists, then run it. A fresh connect reports the live tool list
+        so the host can refresh its cache."""
+        server = self.config.name
+        code = (
+            _CONNECT_AND_CALL_TEMPLATE
+            .replace("__CFG_B64__", _b64(json.dumps(self._container_config)))
+            .replace("__TOOL_B64__", _b64(name))
+            .replace("__ARGS_B64__", _b64(json.dumps(args or {})))
+        )
+        async with self._lock:
+            envelope = await self._run(code, timeout_s=self._call_timeout_s)
+
+        if envelope.get("connect_error"):
+            raise ToolError(
+                f"MCP server '{server}' is unavailable right now: "
+                f"{envelope['connect_error']}. Tell the user; they may need to "
+                "reconnect it in Settings > Connectors."
+            )
+        if not envelope.get("ok") and not envelope.get("missing"):
+            raise ToolError(
+                f"mcp {server}.{name} (in-sandbox): {envelope.get('fatal') or 'call failed'}"
+            )
+
+        self._connected = True
+        live = envelope.get("tools") or []
+        if envelope.get("connected_now") or envelope.get("missing"):
+            await self._report_tools(live)
+
+        if envelope.get("missing"):
+            names = ", ".join(sorted(t.get("tool_name", "") for t in live)) or "(none)"
+            raise ToolError(
+                f"Tool '{name}' no longer exists on MCP server '{server}'. "
+                f"Its current tools are: {names}. The tool list will be "
+                "updated from the next message."
+            )
+        return _CallResult(str(envelope.get("output") or ""))
+
+    async def _report_tools(self, live: list[dict[str, Any]]) -> None:
+        if self.on_tools_discovered is None:
+            return
+        tools = [
+            {
+                "name": t.get("tool_name") or "tool",
+                "description": t.get("description") or "",
+                "inputSchema": t.get("input_schema") or {"type": "object", "properties": {}},
+            }
+            for t in live
+        ]
+        try:
+            # Off the bridge's event loop: hosts may do blocking work (DB).
+            await asyncio.to_thread(self.on_tools_discovered, self.config.name, tools)
+        except Exception:
+            pass
 
     async def _run(self, code: str, *, timeout_s: int) -> dict[str, Any]:
         """Execute ``code`` in the sandbox and parse the sentinel envelope."""
@@ -223,12 +281,79 @@ def sandbox_mcp_supported(sandbox: Any) -> bool:
 
 
 def sandbox_mcp_session_factory(sandbox: Any) -> Callable[[McpServerConfig], SandboxMcpSession]:
-    """Build a ``session_factory`` for :class:`McpManager` bound to ``sandbox``."""
+    """Build a ``session_factory`` for :class:`McpManager` bound to ``sandbox``.
+
+    The factory also carries ``connect_many``, which :class:`McpManager` uses
+    to connect every server in one sandbox call (in parallel) instead of one
+    call per server.
+    """
 
     def factory(cfg: McpServerConfig) -> SandboxMcpSession:
         return SandboxMcpSession(cfg, sandbox)
 
+    async def connect_many(sessions: list[SandboxMcpSession]) -> dict[str, tuple[str | None, list[dict[str, Any]]]]:
+        return await sandbox_connect_many(sandbox, sessions)
+
+    factory.connect_many = connect_many  # type: ignore[attr-defined]
+    # Sessions connect inside their first call_tool, so servers with cached
+    # tools can skip the startup connect.
+    factory.supports_lazy_connect = True  # type: ignore[attr-defined]
     return factory
+
+
+async def sandbox_connect_many(
+    sandbox: Any, sessions: list[SandboxMcpSession]
+) -> dict[str, tuple[str | None, list[dict[str, Any]]]]:
+    """Connect all ``sessions`` and list their tools in ONE ``run_python``.
+
+    Same as terno-ai's legacy ``initialize_mcp_tools``: the in-container
+    ``connect_all`` connects the servers concurrently (``asyncio.gather``) and
+    skips any already connected in this container, so the wait is the slowest
+    server rather than the sum of all of them.
+
+    Returns ``{server name: (error or None, tool dicts)}``. A server with an
+    error is left unconnected; the others are marked connected.
+    """
+    if not sessions:
+        return {}
+    cfgs = [s._container_config for s in sessions]
+    code = _CONNECT_MANY_TEMPLATE.replace("__CFGS_B64__", _b64(json.dumps(cfgs)))
+    try:
+        result = await asyncio.to_thread(
+            sandbox.run_python, code, timeout_s=_CONNECT_TIMEOUT_S
+        )
+        stdout = getattr(result, "stdout", "") or ""
+        envelope = _parse_envelope(stdout)
+        if envelope is None:
+            stderr = (getattr(result, "stderr", "") or "").strip()
+            envelope = {"ok": False, "fatal": stderr or "no result envelope in sandbox output"}
+    except Exception as exc:  # sandbox transport failure
+        envelope = {"ok": False, "fatal": f"sandbox run_python failed: {exc}"}
+
+    if not envelope.get("ok"):
+        fatal = str(envelope.get("fatal") or "connect failed")
+        return {s.config.name: (fatal, []) for s in sessions}
+
+    errors = envelope.get("errors") or {}
+    schemas = envelope.get("tools") or []
+    out: dict[str, tuple[str | None, list[dict[str, Any]]]] = {}
+    for s in sessions:
+        name = s.config.name
+        err = errors.get(name)
+        if err:
+            out[name] = (str(err), [])
+            continue
+        s._connected = True
+        out[name] = (None, [
+            {
+                "name": t.get("tool_name") or "tool",
+                "description": t.get("description") or "",
+                "inputSchema": t.get("input_schema") or {"type": "object", "properties": {}},
+            }
+            for t in schemas
+            if t.get("server_name") == name
+        ])
+    return out
 
 
 # --------------------------------------------------------------------------- #
@@ -356,6 +481,57 @@ try:
         _emit({"ok": True, "errors": errors or {}})
 except Exception as e:
     _emit({"ok": False, "fatal": "connect failed: " + repr(e)})
+'''
+
+
+_CONNECT_MANY_TEMPLATE = _PREAMBLE + '''
+try:
+    if importlib.util.find_spec("mcp_client") is None:
+        _emit({"ok": False, "fatal": "mcp_client module not available inside sandbox"})
+    else:
+        from mcp_client import mcp_manager
+        mcp, _ = mcp_manager.get_or_create_client()
+        _cfgs = json.loads(base64.b64decode("__CFGS_B64__").decode())
+        _live = getattr(mcp, "_sessions", {}) or {}
+        _to_connect = [c for c in _cfgs if c["name"] not in _live]
+        errors = mcp.run_async(mcp.connect_all(_to_connect)) if _to_connect else {}
+        _names = {c["name"] for c in _cfgs}
+        _schemas = [s for s in (mcp.get_tool_schemas() or []) if s.get("server_name") in _names]
+        _emit({"ok": True, "errors": errors or {}, "tools": _schemas})
+except Exception as e:
+    _emit({"ok": False, "fatal": "connect failed: " + repr(e)})
+'''
+
+
+_CONNECT_AND_CALL_TEMPLATE = _PREAMBLE + '''
+try:
+    if importlib.util.find_spec("mcp_client") is None:
+        _emit({"ok": False, "connect_error": "mcp_client module not available inside sandbox"})
+    else:
+        from mcp_client import mcp_manager
+        mcp, _ = mcp_manager.get_or_create_client()
+        _cfg = json.loads(base64.b64decode("__CFG_B64__").decode())
+        _tool = base64.b64decode("__TOOL_B64__").decode()
+        _args = json.loads(base64.b64decode("__ARGS_B64__").decode())
+        _name = _cfg["name"]
+        _connected_now = False
+        _err = None
+        if _name not in (getattr(mcp, "_sessions", {}) or {}):
+            _err = (mcp.run_async(mcp.connect_all([_cfg])) or {}).get(_name)
+            _connected_now = _err is None
+        if _err:
+            _emit({"ok": False, "connect_error": str(_err)})
+        else:
+            _schemas = [s for s in (mcp.get_tool_schemas() or []) if s.get("server_name") == _name]
+            if _tool not in {s.get("tool_name") for s in _schemas}:
+                _emit({"ok": False, "missing": True, "tools": _schemas, "connected_now": _connected_now})
+            else:
+                _out = mcp.run_async(mcp.call_tool(_name, _tool, _args))
+                _emit({"ok": True, "output": _out if isinstance(_out, str) else str(_out),
+                       "connected_now": _connected_now,
+                       "tools": _schemas if _connected_now else []})
+except Exception as e:
+    _emit({"ok": False, "fatal": "call failed: " + repr(e)})
 '''
 
 

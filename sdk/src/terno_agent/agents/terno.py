@@ -490,12 +490,14 @@ class TernoAgent(BaseAgent):
                 )
             elif config.mcp_servers:
                 mcp_manager = McpManager.start_from_dict(
-                    config.mcp_servers, session_factory=session_factory
+                    config.mcp_servers, session_factory=session_factory,
+                    on_tools_discovered=config.mcp_on_tools_discovered,
                 )
             else:
                 mcp_manager = McpManager.start_from_path(
                     config.mcp_config_path or None,
                     session_factory=session_factory,
+                    on_tools_discovered=config.mcp_on_tools_discovered,
                 )
             if mcp_manager is not None:
                 atexit.register(mcp_manager.shutdown)
