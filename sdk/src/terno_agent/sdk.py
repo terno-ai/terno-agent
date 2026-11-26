@@ -38,6 +38,7 @@ if TYPE_CHECKING:
     from terno_agent.knowledge.store import KnowledgeStore
     from terno_agent.sandbox.base import Sandbox
     from terno_agent.skills import Skill
+    from terno_agent.tools.schedules import ScheduleStore
     from terno_agent.tools.tasks import TaskStore
 
 
@@ -82,6 +83,7 @@ class Agent:
         session_id: str | None = None,
         extra_skills: "list[Skill] | None" = None,
         background: BackgroundTasks | None = None,
+        schedule_store: "ScheduleStore | None" = None,
     ) -> None:
         self.config = config or _build_config(
             api_key=api_key,
@@ -114,6 +116,7 @@ class Agent:
             permission_policy=permission_policy,
             extra_skills=extra_skills,
             background=background,
+            schedule_store=schedule_store,
         )
         self._closed = False
 
@@ -155,6 +158,7 @@ class Agent:
         task_store: "TaskStore | None" = None,
         extra_skills: "list[Skill] | None" = None,
         background: BackgroundTasks | None = None,
+        schedule_store: "ScheduleStore | None" = None,
     ) -> Agent:
         """Build an `Agent` from an explicit `Config`.
 
@@ -178,6 +182,9 @@ class Agent:
         runners). Without it, ``config.background_tasks_enabled`` decides
         whether the SDK builds a sandbox-backed, in-memory one (only when there
         is a sandbox).
+
+        Pass ``schedule_store`` to let the agent create, list, update and
+        delete scheduled tasks through the ``schedule_*`` tools.
         """
         return cls(
             config=config,
@@ -192,6 +199,7 @@ class Agent:
             task_store=task_store,
             extra_skills=extra_skills,
             background=background,
+            schedule_store=schedule_store,
         )
 
     # ----- Inference --------------------------------------------------------- #
