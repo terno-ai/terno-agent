@@ -4897,7 +4897,7 @@ wheels = [
 
 [[package]]
 name = "terno-agent"
-version = "0.3.12"
+version = "0.3.22"
 source = { editable = "." }
 dependencies = [
     { name = "pydantic" },
@@ -4905,6 +4905,7 @@ dependencies = [
     { name = "pyyaml" },
     { name = "rich" },
     { name = "sqlalchemy" },
+    { name = "tzdata", marker = "sys_platform == 'win32'" },
 ]
 
 [package.optional-dependencies]
@@ -4996,6 +4997,7 @@ requires-dist = [
     { name = "swebench", marker = "extra == 'benchmarks'" },
     { name = "terminal-bench", marker = "python_full_version >= '3.12' and extra == 'benchmarks'" },
     { name = "twine", marker = "extra == 'dev'", specifier = ">=5.0" },
+    { name = "tzdata", marker = "sys_platform == 'win32'" },
 ]
 provides-extras = ["anthropic", "openai", "docker", "postgres", "mysql", "mcp", "milvus", "benchmarks", "all", "dev"]
 
