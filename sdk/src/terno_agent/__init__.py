@@ -10,6 +10,11 @@ from terno_agent.core.permissions import (
     PermissionRequest,
 )
 from terno_agent.sdk import Agent
+from terno_agent.tools.schedules import (
+    InMemoryScheduleStore,
+    Schedule,
+    ScheduleStore,
+)
 from terno_agent.tools.tasks import (
     InMemoryTaskStore,
     Task,
@@ -20,11 +25,14 @@ __version__ = "0.2.0"
 __all__ = [
     "Agent",
     "Config",
+    "InMemoryScheduleStore",
     "InMemoryTaskStore",
     "PermissionDecision",
     "PermissionMode",
     "PermissionPolicy",
     "PermissionRequest",
+    "Schedule",
+    "ScheduleStore",
     "Task",
     "TaskListUpdate",
     "TaskStore",

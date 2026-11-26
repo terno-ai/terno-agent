@@ -54,6 +54,7 @@ from terno_agent.tools.code_exec import RunPythonTool
 from terno_agent.tools.files import EditFileTool, ReadFileTool, WriteFileTool
 from terno_agent.tools.memory import MemoryContextProvider
 from terno_agent.tools.monitor import MonitorTool
+from terno_agent.tools.schedules import ScheduleStore, schedule_tools
 from terno_agent.tools.search import GlobTool, GrepTool
 from terno_agent.tools.shell import BashTool
 from terno_agent.tools.subagent import SpawnAgentTool
@@ -117,6 +118,8 @@ class TernoAgent(BaseAgent):
         defer_mcp_tools: bool = False,
         defer_mcp_min_tokens: int = 3_000,
         max_tools: int | None = None,
+        schedule_store: ScheduleStore | None = None,
+        defer_schedule_tools: bool = True,
     ) -> None:
         self.workdir = (workdir or Path.cwd()).resolve()
         if max_iterations is not None:
@@ -139,6 +142,7 @@ class TernoAgent(BaseAgent):
         # MEMORY.md index(es) and folder paths into each turn's context.
         self.memory_context = memory_context
         self.ask_callback = ask_callback
+        self.schedule_store = schedule_store
 
         resolved = _resolve_permissions(
             permission_policy=permission_policy,
@@ -227,17 +231,25 @@ class TernoAgent(BaseAgent):
         # the model then sees only their names until it loads them.
         mcp_tools = list(mcp_manager.tools()) if mcp_manager is not None else []
         deferred: list = []
-        tool_search: ToolSearchTool | None = None
         if (
             mcp_tools
             and defer_mcp_tools
             and estimate_schema_tokens(mcp_tools) >= defer_mcp_min_tokens
         ):
-            deferred = mcp_tools
-            tool_search = ToolSearchTool()
-            tools.append(tool_search)
+            deferred.extend(mcp_tools)
         else:
             tools.extend(mcp_tools)
+        # Schedule tools exist only when the host passes a store (they need
+        # something that actually runs schedules). Subagents never get them.
+        if schedule_store is not None:
+            if defer_schedule_tools:
+                deferred.extend(schedule_tools(schedule_store))
+            else:
+                tools.extend(schedule_tools(schedule_store))
+        tool_search: ToolSearchTool | None = None
+        if deferred:
+            tool_search = ToolSearchTool()
+            tools.append(tool_search)
         if memory_store is not None:
             tools.append(SearchMemoryTool(memory_store))
         # File-based memory needs no dedicated tools: the main agent reads and
@@ -407,6 +419,7 @@ class TernoAgent(BaseAgent):
         sandbox: Sandbox | None = None,
         task_store: TaskStore | None = None,
         extra_skills: list[Skill] | None = None,
+        schedule_store: ScheduleStore | None = None,
     ) -> TernoAgent:
         """Build a :class:`TernoAgent` from a :class:`Config`.
 
@@ -423,6 +436,9 @@ class TernoAgent(BaseAgent):
 
         Pass ``extra_skills`` to add host-built skills that are not read from
         disk; they are not filtered by ``skill_allowlist``.
+
+        Pass ``schedule_store`` to offer the ``schedule_*`` tools (deferred
+        behind ``tool_search``); without it the agent cannot schedule.
         """
         if not config.llm_api_key:
             raise ConfigError(
@@ -536,6 +552,7 @@ class TernoAgent(BaseAgent):
             defer_mcp_tools=config.mcp_defer_tools,
             defer_mcp_min_tokens=config.mcp_defer_min_tokens,
             max_tools=config.max_tools,
+            schedule_store=schedule_store,
             tool_output_limiter=_build_tool_output_limiter(
                 config, workdir=resolved_workdir, sandbox=sandbox
             ),

@@ -37,6 +37,7 @@ if TYPE_CHECKING:
     from terno_agent.knowledge.store import KnowledgeStore
     from terno_agent.sandbox.base import Sandbox
     from terno_agent.skills import Skill
+    from terno_agent.tools.schedules import ScheduleStore
     from terno_agent.tools.tasks import TaskStore
 
 
@@ -80,6 +81,7 @@ class Agent:
         is_org_admin: bool | None = None,
         session_id: str | None = None,
         extra_skills: "list[Skill] | None" = None,
+        schedule_store: "ScheduleStore | None" = None,
     ) -> None:
         self.config = config or _build_config(
             api_key=api_key,
@@ -111,6 +113,7 @@ class Agent:
             task_store=task_store,
             permission_policy=permission_policy,
             extra_skills=extra_skills,
+            schedule_store=schedule_store,
         )
         self._closed = False
 
@@ -151,6 +154,7 @@ class Agent:
         sandbox: "Sandbox | None" = None,
         task_store: "TaskStore | None" = None,
         extra_skills: "list[Skill] | None" = None,
+        schedule_store: "ScheduleStore | None" = None,
     ) -> Agent:
         """Build an `Agent` from an explicit `Config`.
 
@@ -169,6 +173,9 @@ class Agent:
 
         Pass ``extra_skills`` to add host-built skills that are not read from
         disk; they are not filtered by ``skill_allowlist``.
+
+        Pass ``schedule_store`` to let the agent create, list, update and
+        delete scheduled tasks through the ``schedule_*`` tools.
         """
         return cls(
             config=config,
@@ -182,6 +189,7 @@ class Agent:
             sandbox=sandbox,
             task_store=task_store,
             extra_skills=extra_skills,
+            schedule_store=schedule_store,
         )
 
     # ----- Inference --------------------------------------------------------- #
